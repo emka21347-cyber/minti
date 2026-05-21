@@ -13,9 +13,8 @@ dist/
 *.test
 *.out
 /cland/cland
-/cland/cland.exe
-/runtime-adapter/runtime-adapter
-/runtime-adapter/runtime-adapter.exe
+/runtime-adapter/minti-runtime
+runtime-adapter/dist/
 vendor/
 
 # Python (build scripts, tests)
