@@ -80,10 +80,13 @@ else
 fi
 
 # ---------- Base packages ----------
-info "Ensuring base packages (curl, ca-certificates, gnupg)..."
+# zstd is required by the current Ollama install script for extracting its
+# release tarball; without it the Ollama installer aborts. lsb-release is
+# kept for any later distro-version code that wants a normalized lookup.
+info "Ensuring base packages (curl, ca-certificates, gnupg, zstd)..."
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    curl ca-certificates gnupg lsb-release >/dev/null
+    curl ca-certificates gnupg lsb-release zstd >/dev/null
 ok "Base packages present."
 
 # ---------- GPU detection (informational) ----------
