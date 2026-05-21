@@ -1,0 +1,37 @@
+[Unit]
+Description=MINTI runtime adapter (AI backend proxy)
+Documentation=https://github.com/minti
+After=network-online.target ollama.service
+Wants=network-online.target
+# We DEPEND on Ollama only weakly: Ollama may not be installed, or the user
+# may have switched the backend to a remote API. Don't refuse to start if
+# Ollama is missing; the /minti/health endpoint will report the state.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/minti-runtime --config /etc/minti/runtime.yaml
+Restart=on-failure
+RestartSec=3
+User=minti
+Group=minti
+
+# Filesystem hardening — minti-runtime only reads its config and writes logs.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/minti
+ReadOnlyPaths=/etc/minti
+
+# Network — localhost only by design.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Misc
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

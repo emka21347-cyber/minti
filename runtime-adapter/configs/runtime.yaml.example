@@ -1,0 +1,33 @@
+# /etc/minti/runtime.yaml — config for minti-runtime
+#
+# This file is OPTIONAL. If missing, minti-runtime falls back to defaults
+# (ollama backend on http://127.0.0.1:11434, listening on 127.0.0.1:7780).
+#
+# Edit values you want to change; leave the rest commented to keep defaults.
+
+listen:
+  address: 127.0.0.1     # bind address — localhost only (cland is the consumer)
+  port: 7780             # bind port
+
+backend:
+  # Which concrete runtime backs the chat endpoints.
+  #   ollama          — local Ollama HTTP API (default, M1)
+  #   llamacpp-server — llama.cpp's HTTP server (stub in M1, lands later)
+  #   localai         — LocalAI multi-backend (stub in M1, lands later)
+  #   remote-api      — proxy to Anthropic/OpenAI/etc. (stub in M1, lands later)
+  kind: ollama
+
+  # base_url is optional. Per-backend defaults:
+  #   ollama          → http://127.0.0.1:11434
+  #   llamacpp-server → http://127.0.0.1:8080
+  #   localai         → http://127.0.0.1:8080
+  #   remote-api      → vendor-specific (e.g. https://api.anthropic.com)
+  # base_url: http://127.0.0.1:11434
+
+  # Below fields apply only to backend.kind = remote-api.
+  # vendor:    anthropic         # anthropic | openai | openrouter | groq | custom-openai-compatible
+  # model:     claude-opus-4-7   # remote model identifier
+  # api_key_id: anthropic-1      # reference into the local key store; NEVER put the raw key here
+
+telemetry:
+  log_level: info          # debug | info | warn | error
