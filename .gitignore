@@ -1,0 +1,58 @@
+# Build artifacts
+build/
+dist/
+*.deb
+*.rpm
+*.msi
+*.pkg
+*.iso
+*.tar.gz
+
+# Go
+*.exe
+*.test
+*.out
+/cland/cland
+/cland/cland.exe
+/runtime-adapter/runtime-adapter
+/runtime-adapter/runtime-adapter.exe
+vendor/
+
+# Python (build scripts, tests)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets (NEVER commit)
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+clan-key
+fabric.key
+api-keys.yaml
+.env
+.env.local
+
+# Local dev
+*.log
+audit.jsonl
+.minti/
+
+# Reprepro / aptly state
+apt-repo/db/
+apt-repo/conf/distributions.local
+
+# Temp
+*.tmp
+*.bak
