@@ -127,13 +127,25 @@ fi
 chown -R minti:minti /var/lib/minti
 
 # ---------- minti-runtime (optional in M1; ships when binary is built) ----------
-runtime_bin="${repo_root}/runtime-adapter/minti-runtime"
+# Look for the binary in both the native-build location and the cross-compile
+# dist/ location. The first one found wins. Linux native build → runtime-adapter/minti-runtime.
+# Windows cross-compile for Linux → runtime-adapter/dist/minti-runtime-linux-amd64.
+runtime_bin=""
+for candidate in \
+    "${repo_root}/runtime-adapter/minti-runtime" \
+    "${repo_root}/runtime-adapter/dist/minti-runtime-linux-amd64" \
+    "${repo_root}/runtime-adapter/dist/minti-runtime"; do
+    if [[ -x "${candidate}" ]]; then
+        runtime_bin="${candidate}"
+        break
+    fi
+done
 runtime_unit="${repo_root}/runtime-adapter/systemd/minti-runtime.service"
 runtime_cfg_example="${repo_root}/runtime-adapter/configs/runtime.yaml.example"
 
 runtime_status="skipped (binary not built)"
-if [[ -x "${runtime_bin}" ]]; then
-    info "Installing minti-runtime..."
+if [[ -n "${runtime_bin}" ]]; then
+    info "Installing minti-runtime (source: ${runtime_bin#${repo_root}/})..."
     install -m 0755 "${runtime_bin}" /usr/local/bin/minti-runtime
     install -m 0644 "${runtime_unit}" /etc/systemd/system/minti-runtime.service
     # Don't overwrite an existing runtime.yaml that the user has edited.
