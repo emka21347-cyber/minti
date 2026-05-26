@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. We've completed **M0** (repo + protocol spec + install script) and **M1** (per-node AI runtime adapter), and validated the whole stack end-to-end on real Linux (WSL2 Debian 13). A persistent VirtualBox VM is configured as the primary dev/test environment. **M2 is next**: scaffold the five MCP servers and the first debian tool pack `minti-pack-recon`.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M2 are done and validated** in the `minti-dev` Linux Mint VM: install path works, runtime daemon serves OpenAI/Ollama-compatible chat, 5 MCP tool servers (`fs`, `shell`, `recon`, `http`, `pkg`) speak stdio MCP through a policy-gated framework, and `minti-pack-recon` debian metapackage installs the nmap/masscan/whois/dig toolchain. Acceptance smoke: `mcptest mcp-recon nmap_scan target=127.0.0.1` runs nmap with audit-logged consent; the deny path refuses with a policy reason. **M3 is next**: bundle `opencode` and document the Claude Code preset against the same local endpoint.
 
 ---
 
@@ -30,14 +30,23 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 - **Validation pass** — Full install + chat smoke test on real Debian 13 in WSL2. Two install bugs caught + fixed.
 - **Dev environment** — Linux Mint 22.3 Xfce VM in VirtualBox with the entire MINTI stack installed.
 
+- **M2 — MCP servers + first tool pack** (2026-05-26 ✓ validated end-to-end in the `minti-dev` VM)
+  - 5 MCP servers under `mcp-servers/cmd/mcp-{fs,shell,recon,http,pkg}/`, each speaking stdio MCP via the official `github.com/modelcontextprotocol/go-sdk` v1.6.1.
+  - Shared framework in `mcp-servers/internal/{policy,audit,permission,mcpserve,proc}/`. Every tool call routes through policy → audit transparently.
+  - `mcptest` stdio test harness in `cmd/mcptest/` — renders consent prompt on TTY.
+  - `minti-pack-recon` debian metapackage in `packs/recon/debian/` — Depends: nmap, masscan, whois, dnsutils|bind9-dnsutils. Recommends: theharvester, amass. Suggests: rustscan, golang-go.
+  - `install.sh` extended: stages MCP binaries to `/opt/minti/mcp/`, installs `mcptest` to `/usr/local/bin/`, writes default `/etc/minti/policy.yaml`, prepares `~/.minti/` for the invoking user.
+  - `docs/clan-protocol.md` §7.2 extended with `deny_tools` per-namespace kill switch + `allow_raw_socket` recon gate + system+user policy overlay.
+  - **Acceptance:** `mcptest --yes --arg target=127.0.0.1 /opt/minti/mcp/minti-mcp-recon nmap_scan` ran a real `nmap -sV -T3 --top-ports 1000 127.0.0.1` (returned 22/ssh + 631/cups in 6.2s) with the call audited.
+  - **Deny path:** same call with `mcp.recon.deny_tools: [nmap_scan]` in `~/.minti/policy.yaml` → refused before nmap spawn; audit log shows `decision: deny, reason: tool 'nmap_scan' is on recon.deny_tools`.
+
 ### Next 🟡
-- **M2 — MCP servers + first tool pack** (PRD §8, ~2 weeks part-time)
-  - Five MCP servers under `mcp-servers/`: `fs`, `shell`, `recon`, `http`, `pkg`
-  - First debian metapackage: `minti-pack-recon` (nmap, masscan, rustscan, whois, dnsx, naabu, amass, theHarvester) under `packs/recon/`
-  - Each server is small + well-spec'd → **prime candidate for Tier-3 delegation** to local LLMs per the build workflow
+- **M3 — Agent client integration** (PRD §8, ~1 week part-time)
+  - Bundle `opencode` (sst, MIT) and pre-configure it to talk to `minti-runtime` at `127.0.0.1:7780`.
+  - Document Claude Code config preset pointing at the same endpoint (per P1: optional, never bundled).
+  - Validate end-to-end: agent client → minti-runtime → ollama; agent client invokes `minti-mcp-recon.nmap_scan` and renders the consent prompt itself (rather than via `mcptest`).
 
 ### Future 🔲
-- M3: Agent client integration (`opencode` bundled, Claude Code preset documented)
 - M4: Clan Layer v1 — `cland` daemon (the iceberg, 4 weeks)
 - M5: Cross-platform Clan Agent (Windows + macOS)
 - M6: Security hardening + remaining packs (webapp, wireless, forensics) + Pack Manager
@@ -54,10 +63,11 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read PRD at C:\Users\aouad\.claude\plans\hello-can-we-create-abundant-hopper.md
-(v0.6) and STATUS.md in the repo root. M0+M1 are done. We start M2 —
-MCP servers + minti-pack-recon. Pre-flight check the system first (per
-my "check before you start" rule), then propose a task breakdown for
-M2 with explicit T2-direct vs T3-delegable tagging before writing code.
+(v0.6) and STATUS.md in the repo root. M0+M1+M2 are done and validated.
+We start M3 — bundle opencode + document Claude Code preset. Pre-flight
+check the system first (per my "check before you start" rule), then
+propose a task breakdown for M3 with explicit T2-direct vs T3-delegable
+tagging before writing code.
 ```
 
 ### Repo location

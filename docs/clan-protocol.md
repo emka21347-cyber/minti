@@ -325,24 +325,39 @@ Member B never prompts its user during cross-Clan execution. If B's policy forbi
 
 ### 7.2 Per-tool policy
 
-Each member has a `~/.minti/policy.yaml`:
+Two files are consulted, in order:
+
+- `/etc/minti/policy.yaml` — system defaults installed by `install.sh`.
+- `~/.minti/policy.yaml` — per-user overrides for the invoking user.
+
+The user file fully **replaces** corresponding system fields (it does not deep-merge lists). Missing files are treated as empty; the most-restrictive defaults apply when no file is present.
 
 ```yaml
 mcp:
   fs:
     allow: ["~/Documents", "~/Projects"]
     deny: ["~/.ssh", "~/.aws"]
+    deny_tools: []                # explicit per-tool kill switch
   shell:
-    mode: prompt   # prompt | allowlist | deny
+    mode: prompt                  # prompt | allowlist | deny
     allowlist: ["ls", "cat", "grep", "find"]
+    deny_tools: []
   recon:
     allow_remote_origin: true     # accept tool calls from other members
     require_local_user_present: false
+    allow_raw_socket: false       # gate nmap -sS
+    deny_tools: []
   pkg:
     require_sudo: true
+    deny_tools: []
+  http:
+    max_body_bytes: 1048576       # cap on fetch_url response body
+    deny_tools: []
 ```
 
-A remote tool call must pass *both* the origin member's prompt AND the executor's policy.
+`deny_tools` is a per-namespace allow-everything-except list, checked before any other rule for that namespace. `allow_raw_socket` gates nmap's SYN scan (`-sS`), which needs `CAP_NET_RAW`.
+
+A remote tool call (when cland routes it cross-Clan in M4) must pass *both* the origin member's prompt AND the executor's policy.
 
 ---
 

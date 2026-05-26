@@ -190,6 +190,80 @@ A small mesh-of-nodes ASCII logo (capturing the *Clan* visual metaphor, not a bo
 
 `install.sh` was updated to copy the script to `/usr/local/bin/minti-fetch` and the logo to `/etc/minti/branding/`.
 
+### 3.7 M2 — MCP servers + `minti-pack-recon`
+
+**Created:** `mcp-servers/` Go module (`github.com/minti/mcp-servers`, Go 1.25 — the official MCP SDK pulled in transitive deps that bumped past the runtime-adapter's 1.22 baseline), plus the first debian tool pack.
+
+**Layout:**
+
+```
+mcp-servers/
+  go.mod / go.sum                      # imports github.com/modelcontextprotocol/go-sdk
+  cmd/
+    mcp-fs/main.go                     # read_text, write_text, list_dir, glob (home-jailed)
+    mcp-shell/main.go                  # exec via /bin/sh -c with timeout + policy modes
+    mcp-recon/main.go                  # nmap_scan, whois, dig_lookup, http_probe
+    mcp-pkg/main.go                    # apt-cache search, apt-get install (sudo-gated)
+    mcp-http/main.go                   # fetch_url, head_url (size-capped)
+    mcptest/main.go                    # stdio test client w/ TTY consent prompt
+  internal/
+    policy/       loads /etc/minti/policy.yaml + ~/.minti/policy.yaml overlay
+    audit/        appends one JSON event per line to ~/.minti/audit.jsonl
+    permission/   Check(server, tool, args) → Allow|Deny with reason
+    mcpserve/     wraps the MCP SDK so every AddTool routes through policy + audit
+    proc/         shared subprocess-exec helper (stdout/stderr/exit-code capture)
+  configs/policy.yaml.example          # documented defaults
+
+packs/recon/
+  debian/control                       # Depends: nmap masscan whois dnsutils|bind9-dnsutils
+                                       # Recommends: theharvester, amass
+                                       # Suggests: rustscan, golang-go
+  debian/changelog                     # 0.1.0-M2
+  debian/copyright                     # DEP-5 / MIT
+  debian/rules                         # dh sequence, no binaries built
+  debian/install                       # skill.md → /usr/share/minti/packs/recon/
+  debian/source/format                 # 3.0 (native)
+  skill.md                             # agent-facing tool catalog + safety rules
+  README.md
+```
+
+**Key design decisions:**
+
+- **Official SDK over hand-rolling.** Use `github.com/modelcontextprotocol/go-sdk` v1.6.1 (MIT). Wrapped behind `internal/mcpserve` so an SDK swap stays a single-file change. Spec compliance + future revisions come for free.
+- **Subprocess, not daemon.** Per MCP convention each `minti-mcp-*` is a short-lived stdio child of the agent client (`opencode` in M3, `mcptest` now). No systemd units — just binaries staged at `/opt/minti/mcp/`.
+- **Server-side enforcement + host-side consent.** Policy denies are enforced in the server (defense in depth). Approval prompts are rendered by the host (`mcptest --yes` skips them in automation). Cross-Clan signed permission tokens (`docs/clan-protocol.md` §7.1) are stubbed (`permission.VerifyCrossClanToken` always rejects until M4).
+- **Two-file policy overlay.** `/etc/minti/policy.yaml` (system defaults from `install.sh`) + `~/.minti/policy.yaml` (per-user override). User fields fully replace system fields — slice merging is a future-work refinement.
+- **Defense-in-depth at fs handlers.** `safePath()` resolves the input, expands symlinks, and re-verifies the result is under `$HOME` before any IO — independent of the policy layer.
+- **Input validation via strict regex before exec.** mcp-recon and mcp-pkg validate target/domain/package names with conservative regexes; commands always go through `exec.Command(bin, args...)` (no shell), so even a malformed input that bypasses the regex can't introduce shell metas.
+- **PRD §13 delegation: T2 for the security path, T3 reserved for genuinely declarative work.** All security-critical code (policy, audit, permission, mcpserve, recon/shell/pkg handlers) is Tier 2 (Claude direct). T3 candidates from the plan (mcp-http handler, debian metadata files) were re-evaluated against the local-LLM gotcha in `memory/reference_local_llms.md` ("simple boilerplate: just write it as Tier 2 — the round-trip cost exceeds direct authorship") and authored T2 instead. Cost-report at milestone close documents this honestly.
+
+**Validation (in the `minti-dev` VM):**
+
+```
+=== mcptest mcp-recon nmap_scan target=127.0.0.1 ===
+{"command":"nmap -sV -T3 --top-ports 1000 127.0.0.1",
+ "output":"Starting Nmap 7.94SVN ...
+  PORT    STATE SERVICE VERSION
+  22/tcp  open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.16
+  631/tcp open  ipp     CUPS 2.4
+  ..."}
+
+=== Deny path (~/.minti/policy.yaml sets mcp.recon.deny_tools: [nmap_scan]) ===
+policy denied: tool 'nmap_scan' is on recon.deny_tools
+(exit 4 — IsError)
+
+=== ~/.minti/audit.jsonl ===
+{"ts":"...","server":"minti-mcp-recon","tool":"nmap_scan","decision":"allow","duration_ms":6190}
+{"ts":"...","server":"minti-mcp-recon","tool":"nmap_scan","decision":"deny","reason":"tool 'nmap_scan' is on recon.deny_tools"}
+```
+
+**Other M2 work:**
+
+- `install.sh` extended to stage MCP binaries to `/opt/minti/mcp/`, install `mcptest` to `/usr/local/bin/`, install `/etc/minti/policy.yaml` (preserve existing), and prepare `~/.minti/` for the invoking user (via `SUDO_USER`).
+- `Makefile` gained `mcp`, `mcp-linux`, `pack-recon`, `sign-recon` targets. `make all` now builds the runtime AND the 5 MCP servers + mcptest.
+- `docs/clan-protocol.md` §7.2 extended with the `deny_tools` per-namespace kill switch, `allow_raw_socket` recon capability gate, `http.max_body_bytes`, and the system+user policy overlay convention.
+- `scripts/m2-validate.sh` — reproducible in-VM acceptance script (stages source out of the shared folder to escape vboxsf's exec-bit defaults, installs deps individually so a single missing optional doesn't block the rest, runs both the allow and deny paths, restores any user-policy override on exit).
+
 ---
 
 ## 4. Decision log
@@ -231,6 +305,9 @@ Issues caught + fixed during M0–M1 + validation.
 | B7 | SSH key paste to VM | Pasting `echo 'ssh-ed25519 ...' >> ~/.ssh/authorized_keys` into the VM terminal stripped the spaces between `ssh-ed25519`, the base64 key, and the comment. Auth failed because SSH parses public keys as three space-separated fields. | Re-wrote the key via a base64-encoded blob: `echo '<base64>' | base64 -d > ~/.ssh/authorized_keys`. Paste-proof against space-stripping. | (operational) |
 | B8 | minti-fetch alignment | `visible_len` used `awk length()` which counts bytes. Box-drawing glyphs (●, ─, │, ╲, ╱) are 3 bytes in UTF-8 but render as 1 column. Right column drifted across rows. | Switched to `wc -m` (character count under UTF-8 locale). Right column now aligns perfectly. | `54bb46b` |
 | B9 | Ollama 0.24 installer (Debian 13) | Required zstd which is not in default Debian 13. | See B2. | `f59a3f7` |
+| B10 | M2 pack-recon build | `debian/compat` file + `Build-Depends: debhelper-compat (= 13)` together — debhelper refuses ("compat level specified twice"). | Removed `debian/compat`; rely on the build-dep alone (modern convention). | (M2 commit) |
+| B11 | M2 pack-recon build inside the VM | rsync from the vboxsf shared folder propagated 0755 mode to every `debian/*` file. debhelper then tried to execute `debian/install` as a script ("returned exit code 127: skill.md: not found"). | `m2-validate.sh` now does `find debian -type f -exec chmod 0644 \;` after rsync, then re-chmod 0755 just `debian/rules`. | `scripts/m2-validate.sh` |
+| B12 | M2 pack-recon deps | `theharvester` is in Debian 12 main but not in Linux Mint 22 / Ubuntu noble default repos; including it in `Depends:` made the .deb un-installable on stock Mint. `dnsutils` was being renamed to `bind9-dnsutils` on some derivatives. | Moved `theharvester` (and `amass`) from `Depends:` to `Recommends:`; changed dnsutils dep to `dnsutils | bind9-dnsutils` alternation. | (M2 commit) |
 
 ---
 
@@ -257,11 +334,20 @@ Issues caught + fixed during M0–M1 + validation.
 │   ├── systemd/minti-runtime.service
 │   └── README.md
 │
-├── mcp-servers/                    M2 target — fs, shell, recon, http, pkg
+├── mcp-servers/                    M2 — Go module, 5 MCP servers + mcptest + shared framework
+│   ├── go.mod / go.sum             official MCP SDK (modelcontextprotocol/go-sdk)
+│   ├── cmd/mcp-{fs,shell,recon,pkg,http}/main.go
+│   ├── cmd/mcptest/main.go         stdio test client (M2 acceptance harness)
+│   ├── internal/{policy,audit,permission,mcpserve,proc}/
+│   ├── configs/policy.yaml.example
+│   └── README.md
 ├── console/                        GTK tray app (M6)
 ├── pack-manager/                   GTK pack manager (M6)
 ├── packs/                          Debian metapackages
-│   ├── recon/                      M2 — first pack
+│   ├── recon/                      M2 — nmap, masscan, whois, dnsutils + skill.md
+│   │   ├── debian/                 control / changelog / copyright / rules / install / source/format
+│   │   ├── skill.md                Agent-facing tool catalog + safety rules
+│   │   └── README.md
 │   ├── webapp/                     M6
 │   ├── wireless/                   M6
 │   └── forensics/                  M6

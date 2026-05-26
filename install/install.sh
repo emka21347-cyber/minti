@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# MINTI installer v0 (M0) — prepares a Debian-family host to run MINTI later.
-# Idempotent: safe to re-run. Does NOT install cland or MCP servers (later milestones).
+# MINTI installer (M0–M2) — prepares a Debian-family host to run MINTI.
+# Idempotent: safe to re-run. Does NOT install cland (M4) or webapp/wireless/
+# forensics packs (M6).
 
 set -euo pipefail
 
-minti_version="0.1.0-M1"
+minti_version="0.1.0-M2"
 
 # Resolve repo root: install.sh lives at <repo>/install/install.sh, so
 # the staged artifacts (runtime-adapter binary, systemd unit, configs)
@@ -176,16 +177,98 @@ else
     warn "Build it with: cd runtime-adapter && go build -o minti-runtime ./cmd/minti-runtime"
 fi
 
+# ---------- MCP servers (M2) ----------
+# MCP servers are NOT daemons — they're spawned over stdio by agent clients
+# (opencode in M3, mcptest for local validation now). Just stage the binaries
+# under /opt/minti/mcp/ and let agents pick them up by path.
+mcp_dir="/opt/minti/mcp"
+install -d -m 0755 /opt/minti
+install -d -m 0755 "${mcp_dir}"
+
+mcp_status="skipped (binaries not built)"
+mcp_count=0
+mcp_total=5
+declare -a mcp_servers=(mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http)
+
+for s in "${mcp_servers[@]}"; do
+    bin=""
+    for candidate in \
+        "${repo_root}/mcp-servers/dist/minti-${s}-linux-amd64" \
+        "${repo_root}/mcp-servers/dist/minti-${s}"; do
+        if [[ -x "${candidate}" ]]; then bin="${candidate}"; break; fi
+    done
+    if [[ -n "${bin}" ]]; then
+        install -m 0755 "${bin}" "${mcp_dir}/minti-${s}"
+        mcp_count=$((mcp_count + 1))
+    else
+        warn "MCP binary missing: minti-${s} (run 'make mcp-linux' to build)"
+    fi
+done
+
+# mcptest stays useful through M3 — it's the only way to drive an MCP server
+# from the shell without an agent client.
+for candidate in \
+    "${repo_root}/mcp-servers/dist/mcptest-linux-amd64" \
+    "${repo_root}/mcp-servers/dist/mcptest"; do
+    if [[ -x "${candidate}" ]]; then
+        install -m 0755 "${candidate}" /usr/local/bin/mcptest
+        ok "Installed mcptest to /usr/local/bin/"
+        break
+    fi
+done
+
+if [[ "${mcp_count}" -gt 0 ]]; then
+    ok "Installed ${mcp_count}/${mcp_total} MCP servers to ${mcp_dir}"
+    mcp_status="${mcp_count}/${mcp_total} servers in ${mcp_dir}"
+fi
+
+# System default policy (preserved if already present — user may have edited).
+policy_example="${repo_root}/mcp-servers/configs/policy.yaml.example"
+if [[ -f "${policy_example}" ]]; then
+    if [[ ! -f /etc/minti/policy.yaml ]]; then
+        install -m 0644 "${policy_example}" /etc/minti/policy.yaml
+        ok "Wrote default /etc/minti/policy.yaml"
+    else
+        ok "Preserving existing /etc/minti/policy.yaml"
+    fi
+fi
+
+# Per-user state directory — audit log + per-user policy override land here.
+# Only when running under sudo do we know who the actual target user is.
+real_user="${SUDO_USER:-}"
+if [[ -n "${real_user}" && "${real_user}" != "root" ]]; then
+    user_home="$(getent passwd "${real_user}" | cut -d: -f6)"
+    if [[ -n "${user_home}" && -d "${user_home}" ]]; then
+        user_minti="${user_home}/.minti"
+        install -d -m 0755 -o "${real_user}" -g "${real_user}" "${user_minti}"
+        ok "Prepared ${user_minti}/ (owner: ${real_user})"
+    fi
+fi
+
+# ---------- minti-pack-recon (M2; optional — only if built locally) ----------
+# Build path: from a Debian host, `make pack-recon` produces a .deb in dist/.
+# Install path: dpkg -i dist/minti-pack-recon_*.deb (not done by this script —
+# we don't auto-install packs; the user picks them).
+pack_status="skipped (build with: make pack-recon)"
+shopt -s nullglob
+pack_files=( "${repo_root}"/dist/minti-pack-recon_*.deb )
+shopt -u nullglob
+if [[ ${#pack_files[@]} -gt 0 ]]; then
+    pack_status="built; install with: sudo dpkg -i ${pack_files[0]##*/}"
+fi
+
 # ---------- Done ----------
 printf "\n"
 printf "%s%s═══════════════════════════════════════════════════════%s\n" "${bold}" "${green}" "${reset}"
-printf "%s%s  MINTI M0 install complete (version %s)%s\n" "${bold}" "${green}" "${minti_version}" "${reset}"
+printf "%s%s  MINTI install complete (version %s)%s\n" "${bold}" "${green}" "${minti_version}" "${reset}"
 printf "%s%s═══════════════════════════════════════════════════════%s\n" "${bold}" "${green}" "${reset}"
 printf "  Host:    %s\n" "${PRETTY_NAME:-${ID} ${VERSION_ID}}"
 printf "  Arch:    %s\n" "${arch}"
 printf "  %s\n" "${gpu_summary}"
 printf "  Ollama:  %s\n" "$(ollama --version 2>&1 | head -1 || echo 'present')"
 printf "  Runtime: %s\n" "${runtime_status}"
+printf "  MCP:     %s\n" "${mcp_status}"
+printf "  Pack:    %s\n" "${pack_status}"
 printf "\n"
 printf "%sNext steps:%s\n" "${bold}" "${reset}"
 printf "  1. Pull a starter model (pick one matching your hardware):\n"
@@ -201,9 +284,13 @@ else
     printf "       cd %s/runtime-adapter && go build -o minti-runtime ./cmd/minti-runtime\n" "${repo_root}"
     printf "       then re-run this installer.\n"
 fi
-printf "  3. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
-printf "  4. This script is idempotent — safe to re-run after MINTI updates.\n"
-printf "  5. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
+printf "  3. Smoke-test an MCP tool:\n"
+printf "       mcptest --yes %s/minti-mcp-fs whoami\n" "${mcp_dir}"
+printf "  4. Build & install the recon tool pack (Debian/Ubuntu only):\n"
+printf "       make pack-recon && sudo dpkg -i dist/minti-pack-recon_*.deb\n"
+printf "  5. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
+printf "  6. This script is idempotent — safe to re-run after MINTI updates.\n"
+printf "  7. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
 printf "\n"
 
 exit 0
