@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# minti-fetch — print the MINTI ASCII logo + system + Clan/runtime info,
+# in the spirit of neofetch/fastfetch but lightweight (pure bash, no deps
+# beyond standard userspace).
+#
+# Output: logo on the left, two-column info on the right. Honors NO_COLOR;
+# degrades to pure ASCII when terminal doesn't support ANSI (e.g. piped).
+#
+# Usage: minti-fetch [--no-color] [--plain] [--help]
+
+set -u
+
+# ---------- colors ----------
+if [[ "${NO_COLOR:-}" || "${MINTI_NO_COLOR:-}" || ! -t 1 ]]; then
+    bold="" dim="" reset=""
+    mint=""  # primary MINTI accent
+    node=""  # node colour
+    rule=""  # rules / dividers
+    label="" # field label
+    val=""   # field value
+else
+    bold=$'\e[1m'
+    dim=$'\e[2m'
+    reset=$'\e[0m'
+    # MINTI palette: cool green (mint) + cyan (nodes/agents) — open + techy
+    mint=$'\e[38;5;42m'   # mint green
+    node=$'\e[38;5;81m'   # bright cyan
+    rule=$'\e[38;5;245m'  # mid grey for dividers
+    label=$'\e[38;5;250m' # light grey for labels
+    val=$'\e[38;5;255m'   # near-white for values
+fi
+
+# ---------- args ----------
+case "${1:-}" in
+    --no-color|--plain)
+        bold="" dim="" reset="" mint="" node="" rule="" label="" val="" ;;
+    --help|-h)
+        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+esac
+
+# ---------- gather info (best-effort, never fail) ----------
+hostname_v="$(hostname 2>/dev/null || echo unknown)"
+distro_v="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-Linux}}" || echo Linux)"
+minti_v="$(cat /etc/minti/version 2>/dev/null || echo 'not installed')"
+kernel_v="$(uname -r 2>/dev/null || echo unknown)"
+arch_v="$(uname -m 2>/dev/null || echo unknown)"
+shell_v="${SHELL##*/}"
+uptime_v="$(uptime -p 2>/dev/null | sed 's/^up //' || echo unknown)"
+cpu_v="$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || echo unknown)"
+ram_total="$(free -h --si 2>/dev/null | awk '/^Mem:/ {print $2}' || echo ?)"
+ram_used="$(free -h --si 2>/dev/null | awk '/^Mem:/ {print $3}' || echo ?)"
+gpu_v="$(command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo 'none / CPU')"
+
+# Runtime status (probe local minti-runtime)
+runtime_status="not running"
+runtime_models=""
+runtime_kind=""
+if curl -s --max-time 1 http://127.0.0.1:7780/minti/health >/dev/null 2>&1; then
+    runtime_v="$(curl -s --max-time 1 http://127.0.0.1:7780/minti/version 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+    runtime_status="active (${runtime_v:-?})"
+    runtime_kind="$(curl -s --max-time 1 http://127.0.0.1:7780/minti/capabilities 2>/dev/null | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')"
+    # First resident model name
+    runtime_models="$(curl -s --max-time 1 http://127.0.0.1:7780/minti/capabilities 2>/dev/null | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -3 | paste -sd', ' -)"
+    [[ -z "$runtime_models" ]] && runtime_models='(none pulled)'
+fi
+
+# Clan status (best-effort, since cland doesn't exist yet — placeholder for M4+)
+clan_id="$(cat /etc/minti/clan-id 2>/dev/null || echo 'not joined')"
+clan_role="$(cat /etc/minti/clan-role 2>/dev/null || echo 'standalone')"
+clan_orch="$(cat /etc/minti/clan-orchestrator 2>/dev/null || echo '-')"
+
+# ---------- logo lines (12 rows) ----------
+logo=(
+"${node}       ●───●───●${reset}"
+"${node}      ╱ │   │   ╲${reset}"
+"${node}     ●──┼───●───┼──●${reset}"
+"${node}     │  │   ║   │  │${reset}"
+"${node}     ●──┼───●───┼──●${reset}"
+"${node}      ╲ │   │   ╱${reset}"
+"${node}       ●───●───●${reset}"
+""
+"       ${bold}${mint}M I N T I${reset}"
+"       ${rule}─────────${reset}"
+"       ${dim}Open agents.${reset}"
+"       ${dim}Open weights.${reset}"
+"       ${dim}Clan-aware.${reset}"
+)
+
+# ---------- info lines (paired by index with logo) ----------
+info=(
+"${bold}${mint}${USER}${reset}${rule}@${reset}${bold}${mint}${hostname_v}${reset}"
+"${rule}────────────────────────────${reset}"
+"${label}OS:${reset}        ${val}MINTI ${minti_v}${reset} ${dim}(${distro_v})${reset}"
+"${label}Kernel:${reset}    ${val}${kernel_v}${reset} ${dim}${arch_v}${reset}"
+"${label}Uptime:${reset}    ${val}${uptime_v}${reset}"
+"${label}Shell:${reset}     ${val}${shell_v}${reset}"
+"${label}CPU:${reset}       ${val}${cpu_v}${reset}"
+"${label}GPU:${reset}       ${val}${gpu_v}${reset}"
+"${label}RAM:${reset}       ${val}${ram_used} / ${ram_total}${reset}"
+"${label}Runtime:${reset}   ${val}${runtime_status}${reset}${runtime_kind:+ ${dim}(${runtime_kind})${reset}}"
+"${label}Models:${reset}    ${val}${runtime_models:-not running}${reset}"
+"${label}Clan:${reset}      ${val}${clan_id}${reset} ${dim}role=${clan_role}${reset}"
+"${label}Orch:${reset}      ${val}${clan_orch}${reset}"
+)
+
+# ---------- render side-by-side ----------
+# Pad logo lines to a fixed visible width so info aligns. We strip ANSI
+# escapes, then count UTF-8 CHARACTERS (wc -m) not bytes — the logo uses
+# box-drawing glyphs (●, ─, │, ╲, ╱) that are multi-byte but 1-column.
+visible_len() {
+    # shellcheck disable=SC2001
+    local stripped
+    stripped="$(printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g')"
+    printf '%s' "$stripped" | wc -m | tr -d ' \n'
+}
+
+pad_to() {
+    local s="$1" target="$2"
+    local vlen
+    vlen="$(visible_len "$s")"
+    local pad=$((target - vlen))
+    (( pad < 0 )) && pad=0
+    printf '%s%*s' "$s" "$pad" ''
+}
+
+LOGO_WIDTH=24
+rows=${#logo[@]}
+[[ ${#info[@]} -gt $rows ]] && rows=${#info[@]}
+
+echo
+for ((i=0; i<rows; i++)); do
+    left="${logo[i]:-}"
+    right="${info[i]:-}"
+    printf '%s  %s\n' "$(pad_to "$left" "$LOGO_WIDTH")" "$right"
+done
+echo

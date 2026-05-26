@@ -129,6 +129,15 @@ else
 fi
 chown -R minti:minti /var/lib/minti
 
+# ---------- branding: minti-fetch (logo + system/Clan info) ----------
+fetch_bin_src="${repo_root}/branding/minti-fetch"
+if [[ -f "${fetch_bin_src}" ]]; then
+    install -m 0755 "${fetch_bin_src}" /usr/local/bin/minti-fetch
+    install -d -m 0755 /etc/minti/branding
+    [[ -f "${repo_root}/branding/logo.txt" ]] && install -m 0644 "${repo_root}/branding/logo.txt" /etc/minti/branding/logo.txt
+    ok "Installed minti-fetch (run anytime to see Clan/system status)."
+fi
+
 # ---------- minti-runtime (optional in M1; ships when binary is built) ----------
 # Look for the binary in both the native-build location and the cross-compile
 # dist/ location. The first one found wins. Linux native build → runtime-adapter/minti-runtime.
@@ -194,6 +203,7 @@ else
 fi
 printf "  3. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
 printf "  4. This script is idempotent — safe to re-run after MINTI updates.\n"
+printf "  5. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
 printf "\n"
 
 exit 0
