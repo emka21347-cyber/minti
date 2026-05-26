@@ -190,6 +190,117 @@ A small mesh-of-nodes ASCII logo (capturing the *Clan* visual metaphor, not a bo
 
 `install.sh` was updated to copy the script to `/usr/local/bin/minti-fetch` and the logo to `/etc/minti/branding/`.
 
+### 3.8 M3 — Agent client integration (opencode + Claude Code preset)
+
+**Created:** the agent layer that turns minti-runtime + the M2 MCP servers
+into a usable agent UX. Two things shipped:
+
+1. **Anthropic `/v1/messages` surface** added to `runtime-adapter`. Required
+   by PRD G3 ("Claude Code config preset pointing at the Clan endpoint")
+   and §6.2 (Anthropic shape is optional but supported as a `remote-api`
+   client-facing shape — same machinery, now wired locally).
+2. **opencode (sst, MIT) bundled** via the official upstream installer plus
+   a system-wide config registering MINTI's runtime + 5 MCP servers.
+
+**Layout additions:**
+
+```
+runtime-adapter/
+  internal/server/
+    messages.go              # M3 — /v1/messages handler + Anthropic SSE writer
+    messages_test.go         # M3 — translation tests + httptest integration
+
+install/
+  opencode.config.example.json   # M3 — opencode default config template
+
+docs/
+  claude-code-preset.md      # M3 — env-var preset for Claude Code users
+
+scripts/
+  m3-validate.sh             # M3 — in-VM acceptance script
+```
+
+**`/v1/messages` design notes:**
+
+- **Scope: text-only content blocks.** A request whose `content` is a bare
+  string or a `[{type:"text", text:"..."}]` array is translated to the
+  internal `Message` type. Mixed/tool-use/image content blocks return 400
+  with a clear error message — those land in M3.5 alongside tool-call
+  pass-through.
+- **`system` field is honored** as a prefixed system-role message in the
+  internal request. Verified: `Be brief. One word answers.` system prompt
+  with `Reply with exactly the word PONG.` → model returned exactly `PONG`.
+- **Auth headers accepted and ignored.** `x-api-key` and
+  `anthropic-version` headers are stripped silently — the call never
+  leaves the box, but Claude Code refuses to start without a key set, so
+  we accept any non-empty string.
+- **SSE event ordering** matches Anthropic's spec: `message_start →
+  content_block_start → N × content_block_delta → content_block_stop →
+  message_delta → message_stop`. Validation showed 12 content_block_delta
+  events for a 30-token completion.
+
+**opencode bundling notes:**
+
+- The official installer (`curl -fsSL https://opencode.ai/install | bash`)
+  drops the binary at `~/.opencode/bin/opencode` — install.sh runs it as
+  `$SUDO_USER` (not root) so the binary lands in the human's home, then
+  symlinks `/usr/local/bin/opencode → ...`. This sidesteps "I installed as
+  root and now my user can't find it" footguns.
+- System config template at `/etc/minti/opencode.config.example.json`
+  registers minti-runtime as a custom `@ai-sdk/openai-compatible` provider
+  with `baseURL: "http://127.0.0.1:7780/v1"` plus all 5 MCP servers as
+  stdio local commands.
+- Per-user default at `~/.config/opencode/opencode.json` is dropped only
+  if absent — existing user configs are preserved.
+
+**Claude Code preset:** documented in `docs/claude-code-preset.md`. Two
+env vars (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) + `claude mcp add`
+recipe for each MINTI MCP server. Tool calls flow directly via stdio to
+`/opt/minti/mcp/*` — not through `/v1/messages` — so the M3.5 tool-use
+content block gap doesn't actually block tool execution from Claude Code.
+What it blocks is *natively-Anthropic tool-call passthrough*, which lands
+in M3.5.
+
+**Validation (in the `minti-dev` VM):**
+
+```
+=== /v1/messages — non-streaming ===
+type: message  role: assistant  stop: end_turn
+content: PONG
+usage: {'input_tokens': 41, 'output_tokens': 3}
+
+=== /v1/messages — streaming SSE event counts ===
+message_start: 1, content_block_start: 1, content_block_delta: 12,
+content_block_stop: 1, message_delta: 1, message_stop: 1
+final: data: {"type":"message_stop"}
+
+=== opencode v1.15.10 installed ===
+resolved: /usr/local/bin/opencode -> /home/minti/.opencode/bin/opencode
+
+=== opencode config registers ===
+minti-fs, minti-shell, minti-recon, minti-pkg, minti-http
+provider baseURL: http://127.0.0.1:7780/v1
+
+=== Regression: mcp-recon nmap_scan via mcptest ===
+nmap -sV -T3 --top-ports 1000 127.0.0.1 → 22/ssh, 631/cups (6.4s)
+```
+
+**What's NOT in M3 (deferred):**
+
+- Tool-use content blocks over `/v1/messages` — return 400. Claude Code
+  uses tool-call content blocks heavily; the workaround is its own MCP
+  layer (which works fine against MINTI's stdio servers). True API-level
+  tool passthrough is M3.5.
+- A fully-autonomous opencode TUI session against MINTI (typing prompts,
+  watching the consent UI render, watching the audit log fill) is an
+  interactive test — the milestone validates the wiring but does not
+  scripted-replay an interactive session.
+- Anthropic auth (the real x-api-key validation). Not needed: M3 routes
+  only to `localhost`. Real auth lands in M4 alongside HMAC for Clan
+  traffic.
+
+---
+
 ### 3.7 M2 — MCP servers + `minti-pack-recon`
 
 **Created:** `mcp-servers/` Go module (`github.com/minti/mcp-servers`, Go 1.25 — the official MCP SDK pulled in transitive deps that bumped past the runtime-adapter's 1.22 baseline), plus the first debian tool pack.
@@ -308,6 +419,7 @@ Issues caught + fixed during M0–M1 + validation.
 | B10 | M2 pack-recon build | `debian/compat` file + `Build-Depends: debhelper-compat (= 13)` together — debhelper refuses ("compat level specified twice"). | Removed `debian/compat`; rely on the build-dep alone (modern convention). | (M2 commit) |
 | B11 | M2 pack-recon build inside the VM | rsync from the vboxsf shared folder propagated 0755 mode to every `debian/*` file. debhelper then tried to execute `debian/install` as a script ("returned exit code 127: skill.md: not found"). | `m2-validate.sh` now does `find debian -type f -exec chmod 0644 \;` after rsync, then re-chmod 0755 just `debian/rules`. | `scripts/m2-validate.sh` |
 | B12 | M2 pack-recon deps | `theharvester` is in Debian 12 main but not in Linux Mint 22 / Ubuntu noble default repos; including it in `Depends:` made the .deb un-installable on stock Mint. `dnsutils` was being renamed to `bind9-dnsutils` on some derivatives. | Moved `theharvester` (and `amass`) from `Depends:` to `Recommends:`; changed dnsutils dep to `dnsutils | bind9-dnsutils` alternation. | (M2 commit) |
+| B13 | M3 install.sh runtime restart | `systemctl is-active && systemctl enable --now` is a no-op when the service is already running — meaning install.sh would replace the binary on disk but leave the old code in memory. Original disk-hash-old vs disk-hash-new check also failed when an *earlier* install.sh run had already done the replacement-without-restart, since both pre and post hashes then match the new binary. | Now compares `sha256sum /usr/local/bin/minti-runtime` (newly installed) against `sha256sum /proc/$MainPID/exe` (what the running process is actually executing). Mismatch → `systemctl restart`. Catches the stale-in-memory case regardless of how many times install.sh has run. | (M3 commit) |
 
 ---
 
@@ -357,7 +469,8 @@ Issues caught + fixed during M0–M1 + validation.
 │   └── minti-fetch                 Neofetch-style status command
 │
 ├── docs/
-│   └── clan-protocol.md            Wire-level Clan protocol spec (v0.1)
+│   ├── clan-protocol.md            Wire-level Clan protocol spec (v0.1)
+│   └── claude-code-preset.md       M3 — env-var + `claude mcp add` recipe for routing Claude Code at MINTI
 │
 ├── install/
 │   └── install.sh                  v1 installer (script path) — idempotent

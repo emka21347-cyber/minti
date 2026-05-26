@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M2 are done and validated** in the `minti-dev` Linux Mint VM: install path works, runtime daemon serves OpenAI/Ollama-compatible chat, 5 MCP tool servers (`fs`, `shell`, `recon`, `http`, `pkg`) speak stdio MCP through a policy-gated framework, and `minti-pack-recon` debian metapackage installs the nmap/masscan/whois/dig toolchain. Acceptance smoke: `mcptest mcp-recon nmap_scan target=127.0.0.1` runs nmap with audit-logged consent; the deny path refuses with a policy reason. **M3 is next**: bundle `opencode` and document the Claude Code preset against the same local endpoint.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 is next**: the Clan daemon `cland` (the iceberg — leader-lease election + HMAC + pinned cert + key rotation + cross-Clan tool routing).
 
 ---
 
@@ -40,18 +40,29 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
   - **Acceptance:** `mcptest --yes --arg target=127.0.0.1 /opt/minti/mcp/minti-mcp-recon nmap_scan` ran a real `nmap -sV -T3 --top-ports 1000 127.0.0.1` (returned 22/ssh + 631/cups in 6.2s) with the call audited.
   - **Deny path:** same call with `mcp.recon.deny_tools: [nmap_scan]` in `~/.minti/policy.yaml` → refused before nmap spawn; audit log shows `decision: deny, reason: tool 'nmap_scan' is on recon.deny_tools`.
 
+- **M3 — Agent client integration** (2026-05-26 ✓ validated end-to-end in the `minti-dev` VM)
+  - **Anthropic `/v1/messages` surface added to `runtime-adapter`** (non-streaming + SSE). Test bench: real `llama3.2:3b` returned a clean Anthropic-shaped envelope with `type: message`, proper `stop_reason`, usage stats; SSE emitted all 6 event types in spec order (message_start, content_block_start, 12 content_block_delta, content_block_stop, message_delta, message_stop). Tool-use content blocks in messages are rejected with a clear 400 — deferred to M3.5.
+  - **opencode v1.15.10 (sst, MIT) bundled** via the official installer, symlinked from `~/.opencode/bin/opencode` to `/usr/local/bin/opencode` so all users find it on PATH. System config template at `/etc/minti/opencode.config.example.json` + per-user default dropped at `~/.config/opencode/opencode.json` (preserved if already present). Config registers `minti-runtime` as a custom `@ai-sdk/openai-compatible` provider at `http://127.0.0.1:7780/v1` and all 5 stdio MCP servers by path.
+  - **Claude Code preset** documented at `docs/claude-code-preset.md` — env-var (`ANTHROPIC_BASE_URL=http://127.0.0.1:7780`) + `claude mcp add` recipe. Tool execution flows directly via stdio to `/opt/minti/mcp/*`; chat reasoning flows through `/v1/messages` against the local model.
+  - **install.sh idempotency hardening**: now compares the new on-disk binary's hash to the running process's `/proc/PID/exe` hash. Catches the failure mode where a prior install replaced the binary on disk but never restarted the service (B13 in DOCUMENTATION.md).
+
 ### Next 🟡
-- **M3 — Agent client integration** (PRD §8, ~1 week part-time)
-  - Bundle `opencode` (sst, MIT) and pre-configure it to talk to `minti-runtime` at `127.0.0.1:7780`.
-  - Document Claude Code config preset pointing at the same endpoint (per P1: optional, never bundled).
-  - Validate end-to-end: agent client → minti-runtime → ollama; agent client invokes `minti-mcp-recon.nmap_scan` and renders the consent prompt itself (rather than via `mcptest`).
+- **M4 — Clan Layer v1** (PRD §8, ~4 weeks part-time — "the iceberg"):
+  - `cland` daemon in Go (cross-compiles to Linux/Windows/macOS via PRD D11).
+  - mDNS discovery service `_minti-clan._tcp.local`.
+  - Membership state machine (`unaffiliated → invited → admitted → active → demoted/revoked`).
+  - Leader-lease + 2 s heartbeat / 8 s expiry election (PRD §5.0 D10 / docs/clan-protocol.md §5).
+  - HTTPS endpoint on `:7777` with self-signed Clan cert pinned at join + HMAC auth with shared Clan Key.
+  - Whole-request routing: chat completions and MCP tool calls — the latter using the signed permission-token flow from clan-protocol.md §7.1 (`permission.VerifyCrossClanToken` shifts from M2 stub to real implementation).
+  - Key rotation `/clan/rotate-key` + member revocation `/clan/revoke` (PRD §6.4 / G9).
+  - This is the security/distributed-systems core — **stays Tier 2 entirely** per PRD §13.
 
 ### Future 🔲
-- M4: Clan Layer v1 — `cland` daemon (the iceberg, 4 weeks)
 - M5: Cross-platform Clan Agent (Windows + macOS)
 - M6: Security hardening + remaining packs (webapp, wireless, forensics) + Pack Manager
 - M7: Old-hardware smoke test
 - M8: v1.0 release
+- M3.5 (squeeze-in candidate): tool-use content blocks in `/v1/messages` (Claude Code's native tool-call shape over the API rather than via separate MCP stdio). Currently rejected with 400.
 
 ---
 
@@ -63,11 +74,14 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read PRD at C:\Users\aouad\.claude\plans\hello-can-we-create-abundant-hopper.md
-(v0.6) and STATUS.md in the repo root. M0+M1+M2 are done and validated.
-We start M3 — bundle opencode + document Claude Code preset. Pre-flight
-check the system first (per my "check before you start" rule), then
-propose a task breakdown for M3 with explicit T2-direct vs T3-delegable
-tagging before writing code.
+(v0.6) and STATUS.md in the repo root. M0+M1+M2+M3 are done and validated.
+We start M4 — the cland daemon (mDNS discovery + membership state machine +
+leader-lease election + HTTPS w/ pinned cert + HMAC + whole-request routing
++ key rotation + member revocation). This is the iceberg (~4 wks, the
+security/distributed-systems core, all Tier 2). Pre-flight check the system,
+then propose a phase breakdown before writing code — and start with the
+Clan Protocol Spec edits needed before the daemon, since PRD §13 says spec
+wins over clever code (P3).
 ```
 
 ### Repo location
