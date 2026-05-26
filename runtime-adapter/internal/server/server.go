@@ -38,6 +38,11 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleOpenAIChat)
 	mux.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 
+	// Anthropic compatibility (M3 — for Claude Code and other Anthropic-shaped
+	// clients to drive local models). Tool-use content blocks are M3.5+;
+	// text-only chat is supported now.
+	mux.HandleFunc("POST /v1/messages", s.handleAnthropicMessages)
+
 	// Ollama compatibility (pass-through translation through our backend)
 	mux.HandleFunc("POST /api/chat", s.handleOllamaChat)
 	mux.HandleFunc("GET /api/tags", s.handleOllamaTags)
@@ -97,7 +102,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"runtime": "minti-runtime",
-		"version": "0.1.0-M1",
+		"version": "0.1.0-M3",
 	})
 }
 
