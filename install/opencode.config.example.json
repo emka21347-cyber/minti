@@ -1,0 +1,49 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "_comment_minti": "MINTI default opencode config — installed by install.sh to ~/.config/opencode/opencode.json on first install. Edit freely; install.sh preserves user-modified copies.",
+
+  "provider": {
+    "minti-runtime": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "MINTI Runtime (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:7780/v1"
+      },
+      "models": {
+        "llama3.2:3b":     { "name": "Llama 3.2 3B (local, ~2 GB)" },
+        "qwen2.5:7b":      { "name": "Qwen 2.5 7B (local, ~5 GB)" },
+        "deepseek-r1:32b": { "name": "DeepSeek-R1 32B (local, ~19 GB)" },
+        "hermes3:8b":      { "name": "Hermes 3 8B (local, agent-tuned)" },
+        "hermes3:70b":     { "name": "Hermes 3 70B (local, agent-tuned)" }
+      }
+    }
+  },
+
+  "mcp": {
+    "minti-fs": {
+      "type": "local",
+      "command": ["/opt/minti/mcp/minti-mcp-fs"],
+      "enabled": true
+    },
+    "minti-shell": {
+      "type": "local",
+      "command": ["/opt/minti/mcp/minti-mcp-shell"],
+      "enabled": true
+    },
+    "minti-recon": {
+      "type": "local",
+      "command": ["/opt/minti/mcp/minti-mcp-recon"],
+      "enabled": true
+    },
+    "minti-pkg": {
+      "type": "local",
+      "command": ["/opt/minti/mcp/minti-mcp-pkg"],
+      "enabled": true
+    },
+    "minti-http": {
+      "type": "local",
+      "command": ["/opt/minti/mcp/minti-mcp-http"],
+      "enabled": true
+    }
+  }
+}

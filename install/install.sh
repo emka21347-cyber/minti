@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# MINTI installer (M0–M2) — prepares a Debian-family host to run MINTI.
+# MINTI installer (M0–M3) — prepares a Debian-family host to run MINTI.
 # Idempotent: safe to re-run. Does NOT install cland (M4) or webapp/wireless/
 # forensics packs (M6).
 
 set -euo pipefail
 
-minti_version="0.1.0-M2"
+minti_version="0.1.0-M3"
 
 # Resolve repo root: install.sh lives at <repo>/install/install.sh, so
 # the staged artifacts (runtime-adapter binary, systemd unit, configs)
@@ -159,9 +159,11 @@ runtime_cfg_example="${repo_root}/runtime-adapter/configs/runtime.yaml.example"
 runtime_status="skipped (binary not built)"
 if [[ -n "${runtime_bin}" ]]; then
     info "Installing minti-runtime (source: ${runtime_bin#${repo_root}/})..."
+
     install -m 0755 "${runtime_bin}" /usr/local/bin/minti-runtime
+    runtime_new_hash="$(sha256sum /usr/local/bin/minti-runtime | awk '{print $1}')"
+
     install -m 0644 "${runtime_unit}" /etc/systemd/system/minti-runtime.service
-    # Don't overwrite an existing runtime.yaml that the user has edited.
     if [[ ! -f /etc/minti/runtime.yaml ]]; then
         install -m 0644 "${runtime_cfg_example}" /etc/minti/runtime.yaml
         ok "Wrote default /etc/minti/runtime.yaml from example."
@@ -169,8 +171,30 @@ if [[ -n "${runtime_bin}" ]]; then
         ok "Preserving existing /etc/minti/runtime.yaml."
     fi
     systemctl daemon-reload
-    systemctl enable --now minti-runtime.service
-    runtime_status="installed and started"
+
+    # Decide whether to restart by comparing the new on-disk binary to what
+    # the running process is actually executing. This catches the case where
+    # an earlier install.sh run replaced the binary on disk but never
+    # restarted the service — `systemctl is-active && enable --now` is a
+    # no-op in that state, leaving stale code in memory.
+    should_restart=false
+    if systemctl is-active --quiet minti-runtime.service; then
+        runtime_pid="$(systemctl show -p MainPID --value minti-runtime.service)"
+        if [[ -n "${runtime_pid}" && "${runtime_pid}" != "0" ]]; then
+            running_hash="$(sha256sum "/proc/${runtime_pid}/exe" 2>/dev/null | awk '{print $1}')"
+            if [[ -z "${running_hash}" || "${running_hash}" != "${runtime_new_hash}" ]]; then
+                should_restart=true
+            fi
+        fi
+    fi
+    if [[ "${should_restart}" == "true" ]]; then
+        info "minti-runtime running stale binary — restarting service..."
+        systemctl restart minti-runtime.service
+        runtime_status="restarted with new binary"
+    else
+        systemctl enable --now minti-runtime.service
+        runtime_status="installed and started"
+    fi
     ok "minti-runtime running on 127.0.0.1:7780"
 else
     warn "minti-runtime binary not found at ${runtime_bin}; skipping service install."
@@ -245,6 +269,82 @@ if [[ -n "${real_user}" && "${real_user}" != "root" ]]; then
     fi
 fi
 
+# ---------- opencode (M3 — bundled agent client) ----------
+# Per PRD §6.3 + P1, opencode (sst, MIT) is the bundled default terminal agent.
+# We use upstream's official install script (a single shell-piped command) and
+# symlink the resulting binary into /usr/local/bin so all users find it on PATH.
+opencode_status="skipped"
+if command -v opencode >/dev/null 2>&1; then
+    opencode_status="already installed ($(opencode --version 2>&1 | head -1 || echo 'version-unknown'))"
+    ok "opencode already installed."
+else
+    info "Installing opencode via the official install script..."
+    # The official installer is non-interactive when piped. It writes to
+    # ~/.opencode/bin (HOME of the executing user); run it as $SUDO_USER if
+    # available so the binary lands in the human's home rather than /root.
+    real_user="${SUDO_USER:-root}"
+    if [[ "${real_user}" != "root" ]]; then
+        real_home="$(getent passwd "${real_user}" | cut -d: -f6)"
+        if su - "${real_user}" -c 'curl -fsSL https://opencode.ai/install | bash' >/dev/null 2>&1; then
+            ok "opencode install script completed (as ${real_user})."
+        else
+            warn "opencode install script failed under ${real_user}; trying as root..."
+            real_user="root"; real_home="/root"
+            curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || true
+        fi
+    else
+        real_home="/root"
+        curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || true
+    fi
+
+    # Symlink wherever the binary actually landed so PATH always finds it.
+    oc_bin=""
+    for candidate in \
+        "${real_home}/.opencode/bin/opencode" \
+        "${real_home}/.local/bin/opencode" \
+        "/root/.opencode/bin/opencode" \
+        "/usr/local/bin/opencode"; do
+        if [[ -x "${candidate}" ]]; then
+            oc_bin="${candidate}"
+            break
+        fi
+    done
+    if [[ -n "${oc_bin}" ]]; then
+        if [[ "${oc_bin}" != "/usr/local/bin/opencode" ]]; then
+            ln -sf "${oc_bin}" /usr/local/bin/opencode
+        fi
+        opencode_status="installed at ${oc_bin} (symlinked to /usr/local/bin)"
+        ok "${opencode_status}"
+    else
+        opencode_status="install failed — try manually: curl -fsSL https://opencode.ai/install | bash"
+        warn "opencode install: binary not found after install. ${opencode_status}"
+    fi
+fi
+
+# Install the MINTI opencode config template + drop into the invoking user's
+# home if they don't already have one. Preserves user-modified configs.
+oc_template_src="${repo_root}/install/opencode.config.example.json"
+oc_template_dst="/etc/minti/opencode.config.example.json"
+if [[ -f "${oc_template_src}" ]]; then
+    install -m 0644 "${oc_template_src}" "${oc_template_dst}"
+    ok "Wrote opencode config template to ${oc_template_dst}"
+
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        user_home="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
+        if [[ -n "${user_home}" && -d "${user_home}" ]]; then
+            user_oc_dir="${user_home}/.config/opencode"
+            user_oc="${user_oc_dir}/opencode.json"
+            if [[ ! -f "${user_oc}" ]]; then
+                install -d -m 0755 -o "${SUDO_USER}" -g "${SUDO_USER}" "${user_oc_dir}"
+                install -m 0644 -o "${SUDO_USER}" -g "${SUDO_USER}" "${oc_template_dst}" "${user_oc}"
+                ok "Installed default opencode config for ${SUDO_USER} at ${user_oc}"
+            else
+                ok "Preserving existing ${user_oc} for ${SUDO_USER}"
+            fi
+        fi
+    fi
+fi
+
 # ---------- minti-pack-recon (M2; optional — only if built locally) ----------
 # Build path: from a Debian host, `make pack-recon` produces a .deb in dist/.
 # Install path: dpkg -i dist/minti-pack-recon_*.deb (not done by this script —
@@ -268,6 +368,7 @@ printf "  %s\n" "${gpu_summary}"
 printf "  Ollama:  %s\n" "$(ollama --version 2>&1 | head -1 || echo 'present')"
 printf "  Runtime: %s\n" "${runtime_status}"
 printf "  MCP:     %s\n" "${mcp_status}"
+printf "  opencode: %s\n" "${opencode_status}"
 printf "  Pack:    %s\n" "${pack_status}"
 printf "\n"
 printf "%sNext steps:%s\n" "${bold}" "${reset}"
@@ -285,12 +386,14 @@ else
     printf "       then re-run this installer.\n"
 fi
 printf "  3. Smoke-test an MCP tool:\n"
-printf "       mcptest --yes %s/minti-mcp-fs whoami\n" "${mcp_dir}"
-printf "  4. Build & install the recon tool pack (Debian/Ubuntu only):\n"
+printf "       mcptest --yes --arg path=\$HOME %s/minti-mcp-fs list_dir\n" "${mcp_dir}"
+printf "  4. Launch the bundled agent (configure with /connect on first run):\n"
+printf "       opencode\n"
+printf "  5. Build & install the recon tool pack (Debian/Ubuntu only):\n"
 printf "       make pack-recon && sudo dpkg -i dist/minti-pack-recon_*.deb\n"
-printf "  5. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
-printf "  6. This script is idempotent — safe to re-run after MINTI updates.\n"
-printf "  7. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
+printf "  6. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
+printf "  7. This script is idempotent — safe to re-run after MINTI updates.\n"
+printf "  8. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
 printf "\n"
 
 exit 0
