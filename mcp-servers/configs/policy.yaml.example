@@ -1,0 +1,55 @@
+# MINTI MCP policy — system defaults installed at /etc/minti/policy.yaml.
+# Override per-user at ~/.minti/policy.yaml; user fields fully replace system
+# fields, so list-valued settings are *replaced*, not merged.
+#
+# Schema: docs/clan-protocol.md §7.2 (with deny_tools per-namespace extension
+# added in M2).
+
+mcp:
+  fs:
+    # Read/write/list/glob are confined to these prefixes (or anywhere under
+    # them). Tilde-expansion happens at policy-check time using the invoking
+    # user's $HOME.
+    allow:
+      - "~"
+    # Always denied, even if under an allow prefix.
+    deny:
+      - "~/.ssh"
+      - "~/.aws"
+      - "~/.minti/audit.jsonl"
+    # Specific fs tools that are entirely forbidden.
+    deny_tools: []
+
+  shell:
+    # prompt    — every shell.exec call must be approved by the host UI
+    # allowlist — server only runs commands whose first word matches `allowlist`
+    # deny      — shell server refuses every call
+    mode: prompt
+    allowlist:
+      - "ls"
+      - "cat"
+      - "grep"
+      - "find"
+      - "git"
+    deny_tools: []
+
+  recon:
+    # Whether this member accepts mcp-recon calls forwarded from other Clan
+    # members. Honored once cland (M4) is wired up; ignored in M2.
+    allow_remote_origin: false
+    require_local_user_present: true
+    # nmap SYN scans (`-sS`) require raw-socket capability — disabled by
+    # default; enable explicitly to allow stealth scans.
+    allow_raw_socket: false
+    deny_tools: []
+
+  pkg:
+    # apt-get install must be sudo'd; only an admin can enable this on a
+    # multi-user box.
+    require_sudo: true
+    deny_tools: []
+
+  http:
+    # Maximum response body in bytes. Larger responses are truncated.
+    max_body_bytes: 1048576
+    deny_tools: []
