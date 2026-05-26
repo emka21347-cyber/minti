@@ -1,0 +1,30 @@
+# MINTI cland — Clan daemon config (system defaults at /etc/minti/cland.yaml).
+# Schema is documented at docs/clan-protocol.md §2 + §4. Edits take effect
+# only on daemon restart.
+
+listen:
+  # The Clan-facing HTTPS listener. v1 is LAN-only; do NOT bind to a public
+  # interface unless you've thought hard about it.
+  address: "0.0.0.0"
+  port: 7777
+
+state:
+  # Where cland persists Clan-level secrets (clan_key, pinned cert) and the
+  # roster cache. Owned by the `minti` system user.
+  dir: "/var/lib/minti/cland"
+
+discovery:
+  # mDNS registration + browsing. Disable on VLAN-hostile networks; falls
+  # back to the manual `minti-cland peer-add <ip:port>` flow when off.
+  mdns_enabled: true
+  # Interface to bind mDNS to. Empty = all up + multicast-capable.
+  interface: ""
+
+runtime:
+  # Where this member's local minti-runtime listens. cland calls it over
+  # 127.0.0.1 when serving reasoning/inference requests as Orchestrator.
+  base_url: "http://127.0.0.1:7780"
+
+telemetry:
+  # debug | info | warn | error
+  log_level: "info"
