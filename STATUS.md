@@ -46,7 +46,16 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
   - **Claude Code preset** documented at `docs/claude-code-preset.md` — env-var (`ANTHROPIC_BASE_URL=http://127.0.0.1:7780`) + `claude mcp add` recipe. Tool execution flows directly via stdio to `/opt/minti/mcp/*`; chat reasoning flows through `/v1/messages` against the local model.
   - **install.sh idempotency hardening**: now compares the new on-disk binary's hash to the running process's `/proc/PID/exe` hash. Catches the failure mode where a prior install replaced the binary on disk but never restarted the service (B13 in DOCUMENTATION.md).
 
-### Next 🟡
+### In flight 🟡
+
+- **M4 — Clan Layer v1** (PRD §8, ~4 weeks part-time — "the iceberg"). Started 2026-05-27.
+  - **Phase 0 done** (commits `dccd7fb` + `577daed`): `docs/clan-protocol.md` bumped to v0.2 with 6 small additive edits surfaced by a local-LLM peer-review pass (qwen3.6 + deepseek-r1:32b + gemma4:31b). Edits: §3.3 12-word BIP39 mnemonic (128-bit, HKDF-expanded to clan_key); §6.4 `recently_failed` definition; §7.1 `target_member` in signed token claims + v1 honesty note; §10 `/v1/messages` + `/clan/peer-add` rows; §12 OQ-2 pulled into v1. Peer-review driver + raw reviews at `scripts/m4-peer-review.py` + `scripts/m4-reviews/`.
+  - **Phase A done** (commit `8b1c2fd`): `cland/` module bootstrap — `cmd/minti-cland/main.go` + `internal/{config,identity,state,auditlog}/`. Ed25519 keypair + UUIDv4 member_id persist to `<state_dir>/identity.json` mode 0600; Clan state at `clan.json` (also 0600 — holds `clan_key`) with atomic-rename writes; auditlog schema duplicated verbatim from `mcp-servers/internal/audit` (D-M4.6). All unit tests pass. Binary smoke-tested: first run generates identity, second run loads the same one.
+  - **Next:** Phase B — crypto + transport (HTTPS w/ self-signed cert + SPKI pinning; HMAC over `method|path|body|ts|nonce`; LRU-bounded nonce cache `10_000 × N_active_members`; `KeyProvider` interface from day one so Phase H's two-key grace window doesn't force a transport rewrite).
+  - Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
+
+### Next after M4
+
 - **M4 — Clan Layer v1** (PRD §8, ~4 weeks part-time — "the iceberg"):
   - `cland` daemon in Go (cross-compiles to Linux/Windows/macOS via PRD D11).
   - mDNS discovery service `_minti-clan._tcp.local`.
@@ -73,15 +82,14 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 ```
 Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
-then read PRD at C:\Users\aouad\.claude\plans\hello-can-we-create-abundant-hopper.md
-(v0.6) and STATUS.md in the repo root. M0+M1+M2+M3 are done and validated.
-We start M4 — the cland daemon (mDNS discovery + membership state machine +
-leader-lease election + HTTPS w/ pinned cert + HMAC + whole-request routing
-+ key rotation + member revocation). This is the iceberg (~4 wks, the
-security/distributed-systems core, all Tier 2). Pre-flight check the system,
-then propose a phase breakdown before writing code — and start with the
-Clan Protocol Spec edits needed before the daemon, since PRD §13 says spec
-wins over clever code (P3).
+then read STATUS.md and the M4 plan at
+C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (already approved
+2026-05-27 after a local-LLM peer-review pass). M0–M3 are done; M4 is in
+flight: Phase 0 (spec edits → clan-protocol v0.2, commits dccd7fb +
+577daed) and Phase A (cland module skeleton + identity + state, commit
+8b1c2fd) are committed and tested. Pre-flight check the system, then
+execute Phase B per the plan — crypto + transport (self-signed clan_cert
++ SPKI pinning + HMAC + LRU-bounded nonce cache + KeyProvider interface).
 ```
 
 ### Repo location
