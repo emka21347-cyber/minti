@@ -1,0 +1,697 @@
+You are reviewing a software engineering implementation plan for milestone M4 of the MINTI project. MINTI is a minimal Linux software layer plus a cross-OS "Clan" protocol that lets multiple machines share AI inference, agent work, and tool execution over a trusted LAN. M4 builds `cland`, the daemon implementing the Clan protocol.
+
+Your job is to find concrete problems, not to be polite. Be willing to say "looks good" for parts you agree with rather than padding criticism. Be willing to disagree with the plan author. Cite spec sections (e.g. "spec §5.4") or plan phases (e.g. "Phase E") by their identifier.
+
+Specifically look for, in this priority order:
+
+1. Security and distributed-systems risks. Replay attacks, split-brain, race conditions, TOCTOU, key leakage paths, missing nonce coverage, secrets in logs, election spoofing, partition-tolerance gaps.
+2. Spec-implementation drift. Places where the plan diverges from the Clan Protocol Spec without flagging it as an intentional spec edit.
+3. Sequencing problems. Phases that depend on something built later. Missing prerequisites. Tests that can't actually run with what the earlier phases produced.
+4. Scope cuts the plan does not acknowledge. PRD-required features the plan silently omits, or scope creep beyond PRD intent.
+5. Edge cases not covered by the 10-step verification gate. Failure modes that should be tested but aren't.
+6. Anything the plan is overconfident about. Library choices, sizing estimates, threat assumptions.
+
+End your review with a short verdict line like:
+  VERDICT: ship the plan as-is | ship after addressing items N..M | block on item K
+
+Below are TWO documents.
+
+==================================================================
+DOCUMENT 1: docs/clan-protocol.md  (the wire-level spec being implemented)
+==================================================================
+
+# Clan Protocol Specification — v0.1
+
+> Status: **Draft**, v1 implementation target.
+> Source of truth for the on-wire behavior of `cland` (Linux) and the cross-platform Clan Agent (Windows / macOS).
+> This document defines the protocol; the PRD ([../../../../.claude/plans/hello-can-we-create-abundant-hopper.md](../../../../.claude/plans/hello-can-we-create-abundant-hopper.md)) defines the product. Where they conflict, the PRD wins on intent and this document wins on wire details.
+
+---
+
+## 1. Glossary
+
+| Term | Meaning |
+|---|---|
+| **Clan** | A mutually-consenting trust group of machines that share AI inference, agent work, and tool execution. Identified by `clan_id` (UUIDv4) and authenticated by `clan_key` (32 random bytes). |
+| **Member** | A machine running `cland` (Linux) or the Clan Agent (Win/Mac) that has been admitted to a Clan. Identified by `member_id` (UUIDv4, generated at first run). |
+| **Orchestrator** | The member currently holding the lease (§5). Drives routing decisions. Exactly one at a time per Clan, plus brief overlap during failover. |
+| **Worker** | A member without the lease that contributes one or more non-`reasoning` capabilities. |
+| **Term** | A monotonically-increasing integer that identifies one continuous period of Orchestrator leadership. Increments on every successful election. |
+| **`reasoning_score`** | 0–100 integer per backend; comes from the model rubric (§6.3). Drives Orchestrator election only. |
+| **`system_score`** | 0–100 integer per node; derived from hardware probe (§6.4). Drives worker routing. |
+
+---
+
+## 2. Identity & Trust
+
+### 2.1 Member identity
+
+On first run, a member generates:
+
+- `member_id`: UUIDv4, persisted in `~/.minti/identity.json` (Linux/macOS) or `%APPDATA%\MINTI\identity.json` (Windows).
+- `member_keypair`: Ed25519. Public key advertised; private key never leaves the member. *(Used for v2 mTLS migration; in v1 we still rely on the shared Clan Key for authentication, but per-member keys are generated up-front so v2 doesn't require re-keying.)*
+
+### 2.2 Clan identity
+
+A Clan is described by:
+
+- `clan_id`: UUIDv4.
+- `clan_key`: 32 random bytes (HMAC-SHA256 key for v1 message authentication).
+- `clan_cert`: self-signed X.509 certificate held by the founding member; trusted via pinning on every subsequent join.
+
+The Clan's first member generates all three during the `clan create` flow. Subsequent members receive them through an **invite token** (§3.2) or **paste-key** (§3.3).
+
+### 2.3 Transport authentication
+
+All inter-member messages travel over **HTTPS** to the destination's Clan endpoint (default port `7777`). The TLS server presents `clan_cert`; the client pins it via the public-key hash captured at join. **No public CA is involved.**
+
+Every message also carries an HMAC over `(method, path, body, timestamp, nonce)`:
+
+```
+X-Minti-Member: <member_id>
+X-Minti-Timestamp: <unix-millis>
+X-Minti-Nonce: <16 random hex bytes>
+X-Minti-HMAC: <hex hmac-sha256 using clan_key>
+```
+
+Receivers verify:
+
+1. Timestamp is within ±60s of local clock.
+2. `(member_id, nonce)` has not been seen in the last 5 minutes (replay protection).
+3. HMAC matches.
+
+Failed verification → 401, no body. The audit log records the attempt.
+
+---
+
+## 3. Membership
+
+### 3.1 States
+
+```
+unaffiliated --(create)--> active (founder)
+unaffiliated --(invite + admit)--> admitted --(handshake)--> active
+admitted --(timeout 24h)--> unaffiliated
+active --(revoke)--> revoked --(48h grace)--> purged
+active --(self-leave)--> unaffiliated
+```
+
+### 3.2 Invite flow (preferred)
+
+1. An `active` member with sufficient authority (v1: any active member) calls `POST /clan/invite` with `{"ttl_seconds": <60..86400>, "as_role": "auto"}`.
+2. Server returns:
+   ```json
+   {
+     "token": "<base64url 32 bytes>",
+     "clan_id": "...", "clan_cert_pin": "sha256:...",
+     "lan_address": "192.168.1.42:7777",
+     "expires_at": "2026-05-21T18:30:00Z"
+   }
+   ```
+3. The candidate (running `cland --join <token>`) calls `POST /clan/join` on the issuer with `{"token": "...", "member_id": "...", "member_pubkey": "..."}`.
+4. Issuer verifies token, then returns `clan_key` (and `clan_cert` for pinning). Token is consumed (single use).
+5. Candidate persists `clan_id`, `clan_key`, pinned `clan_cert`, and transitions to `admitted`, then `active` on first successful capability advertisement.
+
+### 3.3 Paste-key flow (fallback)
+
+For low-friction joining without out-of-band token exchange:
+
+1. An existing member exposes the Clan Key as a QR code or 6-word BIP39-ish phrase in the Console.
+2. Candidate enters the phrase, plus the LAN address of any active member.
+3. Candidate connects, advertises identity, and is admitted on the active member's policy.
+
+**Trust caveat:** any sniffer in the QR/voice channel sees the Clan Key. Use only over trusted channels (sitting at the same desk, secure messenger).
+
+### 3.4 Revocation
+
+`POST /clan/revoke` `{"member_id": "...", "reason": "..."}`:
+
+- The revoker (any active member in v1) signs a revocation record with the Clan Key.
+- The record is gossiped to all active members within one heartbeat window (≤2s).
+- All members add the revoked member's pubkey hash to a **pin-revocation list** persisted on disk.
+- In-flight tool calls from/to the revoked member: cancelled with status `revoked`.
+- In-flight inference requests routed to the revoked member: retried once on another `inference`-capable member.
+- The revoked member is `purged` from rosters after 48h grace (so brief mistakes can be undone manually).
+
+### 3.5 Self-leave
+
+A member can call `POST /clan/leave` on itself. It signs the leave intent, broadcasts to peers, deletes local Clan secrets, and returns to `unaffiliated`.
+
+---
+
+## 4. Discovery & Capability Advertisement
+
+### 4.1 Discovery (mDNS, LAN only in v1)
+
+Every active member registers an mDNS service:
+
+- Service type: `_minti-clan._tcp.local`
+- Port: `7777`
+- TXT records:
+  - `clan_id=<uuid>`
+  - `member_id=<uuid>`
+  - `proto=1` (protocol version)
+
+mDNS is used **only for finding peers**. All authentication and capability data move over the authenticated HTTPS endpoint, not over mDNS.
+
+**Known limitations:** mDNS is blocked by some enterprise APs, doesn't cross VLANs, and may be filtered on captive-portal networks. v1 documents this; v2 adds manual unicast address-paste as a fallback.
+
+### 4.2 Capability advertisement
+
+Every 30s (and on capability change), each active member POSTs `/clan/advertise` to each known peer with:
+
+```json
+{
+  "member_id": "...",
+  "clan_id": "...",
+  "term": 17,
+  "os": "linux",
+  "hardware": {
+    "cpu_score": 1234,
+    "ram_gb": 64,
+    "vram_gb": 32,
+    "gpu": "NVIDIA RTX 5090",
+    "on_battery": false,
+    "uptime_24h": 0.99
+  },
+  "reasoning_score": 72,
+  "system_score": 92,
+  "capabilities": {
+    "reasoning":  {
+      "enabled": true,
+      "backends": [
+        { "kind": "local-ollama", "model": "deepseek-r1:32b",
+          "reasoning_score": 72, "available": true }
+      ]
+    },
+    "inference":  { "enabled": true, "models_resident": ["llama3.2:3b","qwen2.5:7b"] },
+    "vision-gen": { "enabled": false },
+    "embeddings": { "enabled": false },
+    "tools":      { "enabled": true,  "packs": ["recon"] },
+    "storage":    { "enabled": true,  "cache_gb_free": 420 }
+  },
+  "load": 0.15,
+  "pinned_orchestrator": false
+}
+```
+
+Receivers retain the most-recent advertisement per `member_id` for the duration of that member's `active` state. An advertisement older than 2× the heartbeat interval (4s, by default) is treated as stale and the member's contribution is excluded from routing decisions.
+
+---
+
+## 5. Leader-Lease Election
+
+### 5.1 Why leader-lease, not pure gossip
+
+Per peer-review (PRD v0.5), gossip-only election creates split-brain on partitions. The leader-lease model is "Raft-lite": real terms, real leases, real failover — without log replication (we have no state to replicate, only routing decisions).
+
+### 5.2 Lease parameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `HEARTBEAT_INTERVAL` | 2s | Orchestrator emits a heartbeat this often. |
+| `LEASE_DURATION` | 8s | Heartbeat carries `lease_until = now + LEASE_DURATION`. |
+| `FAILOVER_GRACE` | 6s | If no heartbeat received for this long, peers begin election. |
+| `ELECTION_TIMEOUT` | 1s | Time to wait for a new heartbeat before declaring election complete. |
+| `MIN_TERM_INCREMENT` | 1 | Term must strictly increase on election. |
+
+### 5.3 Heartbeat message
+
+POST `/clan/heartbeat` to every peer every `HEARTBEAT_INTERVAL`:
+
+```json
+{
+  "member_id": "<orchestrator>",
+  "clan_id": "...",
+  "term": 17,
+  "lease_until": "2026-05-21T18:00:08Z",
+  "reasoning_score": 72,
+  "active_roster": ["uuid1", "uuid2", "uuid3"]
+}
+```
+
+Peers update local state: `current_orchestrator = member_id`, `current_term = term`, `lease_expires = lease_until`.
+
+A peer ignores a heartbeat if `term < current_term`, or if the sender is not the highest-`reasoning_score` member according to its current advertisements (anti-spoofing).
+
+### 5.4 Election flow
+
+When a member observes `lease_expires < now - FAILOVER_GRACE`:
+
+1. **Candidate selection**: scan current advertisements for members where `capabilities.reasoning.enabled == true`. The candidate with the highest `reasoning_score` is the next Orchestrator. Ties broken by oldest `joined_at`. If a member has `pinned_orchestrator: true` and is reasoning-capable, it wins regardless.
+2. **Term increment**: `new_term = current_term + 1`.
+3. **Announce**: the candidate (or, if the candidate is *self*, this member) POSTs an "election announcement" heartbeat with `term = new_term` to all peers.
+4. **Acceptance**: each peer accepts the first heartbeat for `new_term` from a candidate that matches its own scoring conclusion. If a peer's view disagrees (it scored a different member highest), it rejects with `409 Conflict, expected_orchestrator=<id>`.
+5. **Settlement**: after `ELECTION_TIMEOUT`, if the candidate has received ≥ ⌈N/2⌉ accepts (where N = current active roster size), it commits the lease and begins normal heartbeat operation. Otherwise the election times out and is retried after a small random backoff (50–150 ms).
+
+### 5.5 Split-brain handling
+
+If two candidates simultaneously claim the same `new_term`:
+
+- Peers see both heartbeats. Each peer accepts only the first received and rejects the second.
+- The "loser" (whose accept count falls below quorum) yields, increments its `term` counter to match, and listens.
+- If no candidate reaches quorum within `ELECTION_TIMEOUT`, both candidates abort, do a random backoff, and retry from step 1. The protocol terminates because backoffs eventually diverge.
+
+### 5.6 User-pin override
+
+A user may set `pinned_orchestrator: true` on their own member via Console or `cland pin`. While any reasoning-capable member is pinned:
+
+- Pinned member wins all elections regardless of `reasoning_score`.
+- If the pinned member becomes unreachable, the pin is auto-suspended until it returns (then resumed).
+- Multiple simultaneous pins is a misconfiguration; v1 logs a warning and the lowest `member_id` wins.
+
+---
+
+## 6. Routing & Scoring
+
+### 6.1 Reasoning vs worker routing
+
+Two independent dimensions, two scores:
+
+| Workload type | Routed to | Score used | Picked by |
+|---|---|---|---|
+| `reasoning` (chat completion, agent loop step) | Orchestrator (always) | `reasoning_score` | Election (§5) |
+| `inference` (other chat completion) | Any `inference`-capable | `system_score`, `load` | Orchestrator's router (§6.2) |
+| `vision-gen` | Any `vision-gen`-capable | `system_score`, `load` | Orchestrator's router |
+| `embeddings` | Any `embeddings`-capable | `system_score`, `load` | Orchestrator's router |
+| `tools` (MCP call) | Member that owns the tool or closest by network | per-tool policy | Orchestrator's router |
+
+### 6.2 Worker router (v1)
+
+For each request:
+
+1. Filter members to those advertising the relevant capability.
+2. Compute `score = system_score * (1 - load)`.
+3. Pick the highest-scoring eligible member. Break ties by lowest network latency (measured during last advertisement round).
+4. On member failure mid-request, retry once on the next-best candidate.
+
+### 6.3 Reasoning-score rubric (table-driven, v1)
+
+Loaded from `/etc/minti/reasoning-scores.yaml`; ships with this default table. Users edit freely:
+
+| Backend example | reasoning_score |
+|---|---|
+| `remote-api:anthropic:claude-opus-4-7` | 95 |
+| `remote-api:openai:gpt-4-class` | 90 |
+| `remote-api:anthropic:claude-sonnet-4-6` | 88 |
+| `local:llama3.1:70b-q4` | 72 |
+| `local:qwen2.5:32b` | 68 |
+| `local:hermes3:8b` | 58 |
+| `local:llama3.2:8b` | 55 |
+| `local:mistral:7b` | 40 |
+| `local:llama3.2:3b` | 35 |
+| `local:phi-3.5:mini` | 33 |
+
+A member's published `reasoning_score` is the **maximum** across its enabled, *available* backends.
+
+### 6.4 System-score formula (v1)
+
+```
+system_score = clamp_0_100(
+    0.40 * normalize(vram_gb, 0..48)
+  + 0.20 * normalize(ram_gb, 0..128)
+  + 0.20 * normalize(cpu_score, 0..2000)
+  + 0.10 * normalize(nvme_throughput_gbps, 0..10)
+  + 0.10 * uptime_24h
+  - 0.10 * on_battery
+  - 0.10 * recently_failed
+)
+```
+
+Where `normalize(x, lo..hi) = max(0, min(1, (x - lo) / (hi - lo)))`. Tunable; ships in `/etc/minti/system-score.yaml`.
+
+---
+
+## 7. Tool-Call Routing & Permissions
+
+### 7.1 Permission prompts always render on origin
+
+A core peer-review concern: if member A's agent decides to run `nmap` and routing sends the call to member B, where does the permission prompt appear?
+
+**Resolution: permission prompts always render on the agent's *origin* member**, never on the executor.
+
+Flow:
+
+1. Member A's agent decides to invoke `mcp-recon.nmap_scan({target: ...})`.
+2. Member A's local MCP layer (NOT the executor) renders the permission prompt to A's user.
+3. On user approval, A generates a signed **execution token**:
+   ```
+   { request_id, origin_member, target_member, tool, args, approved_at, exp }
+   ```
+   signed with Clan Key HMAC.
+4. A sends `POST /mcp/execute` to member B with the token + args.
+5. B verifies the token, checks its own local policy (some tools may be locally denied even on remote request), and executes if allowed.
+6. B streams output back to A; A relays to the agent.
+
+Member B never prompts its user during cross-Clan execution. If B's policy forbids a tool, B rejects with `403 policy_deny` and A's agent treats it as a tool failure.
+
+### 7.2 Per-tool policy
+
+Two files are consulted, in order:
+
+- `/etc/minti/policy.yaml` — system defaults installed by `install.sh`.
+- `~/.minti/policy.yaml` — per-user overrides for the invoking user.
+
+The user file fully **replaces** corresponding system fields (it does not deep-merge lists). Missing files are treated as empty; the most-restrictive defaults apply when no file is present.
+
+```yaml
+mcp:
+  fs:
+    allow: ["~/Documents", "~/Projects"]
+    deny: ["~/.ssh", "~/.aws"]
+    deny_tools: []                # explicit per-tool kill switch
+  shell:
+    mode: prompt                  # prompt | allowlist | deny
+    allowlist: ["ls", "cat", "grep", "find"]
+    deny_tools: []
+  recon:
+    allow_remote_origin: true     # accept tool calls from other members
+    require_local_user_present: false
+    allow_raw_socket: false       # gate nmap -sS
+    deny_tools: []
+  pkg:
+    require_sudo: true
+    deny_tools: []
+  http:
+    max_body_bytes: 1048576       # cap on fetch_url response body
+    deny_tools: []
+```
+
+`deny_tools` is a per-namespace allow-everything-except list, checked before any other rule for that namespace. `allow_raw_socket` gates nmap's SYN scan (`-sS`), which needs `CAP_NET_RAW`.
+
+A remote tool call (when cland routes it cross-Clan in M4) must pass *both* the origin member's prompt AND the executor's policy.
+
+---
+
+## 8. Key Rotation
+
+### 8.1 Rotation flow (Orchestrator-initiated)
+
+1. Orchestrator generates `clan_key_new` (32 random bytes).
+2. Orchestrator broadcasts `POST /clan/rotate-key` to all active members with `{new_key, effective_at, grace_until}`, signed by the OLD key.
+3. Each member acknowledges with a signed ACK (using the new key) within 30s.
+4. If all active members ACK: the rotation is **committed**. `effective_at` = `now`, `grace_until` = `now + 5 minutes`. Both keys verify HMACs during the grace window; only the new key after.
+5. If any active member fails to ACK: the rotation is **aborted**. Old key remains; no state change. Operator is notified.
+
+In-flight requests during the grace window complete on whichever key they started with.
+
+### 8.2 Rotation triggers
+
+- Manual: user invokes `cland rotate-key`.
+- Automatic: scheduled rotation (default disabled in v1; configurable cadence in v1.1).
+- Forced: after a member revocation, the operator is *strongly* encouraged to rotate (the revoked member still knew the old key).
+
+### 8.3 Cert rotation
+
+The `clan_cert` is rotated independently and less frequently. v1: manual command, members re-pin on receipt of a signed cert-update notice. v2: automatic per per-member-keypair migration.
+
+---
+
+## 9. Audit Log
+
+### 9.1 Local-only, per-member
+
+Each member writes `~/.minti/audit.jsonl` (one JSON record per line). The log is **never** gossiped or aggregated. It is visible only to that member's local user. Other Clan members do not see it.
+
+### 9.2 Record format
+
+```json
+{
+  "ts": "2026-05-21T18:00:00.123Z",
+  "event": "api_key_read | request_received | request_sent | election_observed | membership_change | tool_executed | tool_rejected | key_rotated | policy_change",
+  "actor": "self | <member_id>",
+  "details": { ... event-specific ... }
+}
+```
+
+### 9.3 Required events (v1)
+
+| Event | When | Details (minimum) |
+|---|---|---|
+| `api_key_read` | Any read of a stored remote-API key | `{key_id, by_component, granted: bool}` |
+| `request_received` | Any cross-Clan request handled | `{from_member, kind, model, prompt_tokens, completion_tokens}` (NOT content) |
+| `request_sent` | Any cross-Clan request issued | `{to_member, kind, model, prompt_tokens}` |
+| `election_observed` | Any Orchestrator change observed | `{prior, new, term, reason}` |
+| `membership_change` | Member admit/revoke/purge | `{event, member_id}` |
+| `tool_executed` | MCP tool ran (local OR cross-Clan) | `{tool, args_hash, origin_member, allowed: bool, exit_code}` |
+| `key_rotated` | Clan Key rotated | `{old_fingerprint, new_fingerprint, initiated_by}` |
+| `policy_change` | Local policy.yaml edited | `{path, old_hash, new_hash}` |
+
+### 9.4 Retention
+
+v1: no automatic rotation. v1.1 will add `logrotate` integration with a default of 30 days.
+
+---
+
+## 10. Endpoint Reference (HTTPS, port 7777)
+
+| Path | Method | Caller | Purpose |
+|---|---|---|---|
+| `/v1/chat/completions` | POST | local agent | OpenAI-compatible chat (routed by Orchestrator) |
+| `/api/chat` | POST | local agent | Ollama-compatible chat (same routing) |
+| `/v1/embeddings` | POST | local agent | OpenAI-compatible embeddings |
+| `/clan/advertise` | POST | active member | Push capability advertisement |
+| `/clan/heartbeat` | POST | Orchestrator | Periodic lease renewal |
+| `/clan/invite` | POST | active member | Generate single-use admission token |
+| `/clan/join` | POST | candidate | Redeem token, receive secrets |
+| `/clan/leave` | POST | self | Voluntary self-removal |
+| `/clan/revoke` | POST | active member | Kick another member |
+| `/clan/rotate-key` | POST | Orchestrator | Begin key rotation |
+| `/clan/members` | GET | local UI | Current roster |
+| `/clan/orchestrator` | GET | local UI | Who is the current Orchestrator |
+| `/clan/election/history` | GET | local UI | Recent elections (term, winner, reason) |
+| `/mcp/execute` | POST | origin member | Cross-Clan tool call with execution token |
+
+---
+
+## 11. Versioning
+
+This is **protocol version 1** (`proto=1` in mDNS TXT). Future versions:
+
+- Backwards-incompatible changes bump to `proto=2` and refuse to interoperate with `proto=1` members.
+- Members on different `proto` versions in the same Clan: the lower-version members are treated as `revoked` until upgraded.
+
+---
+
+## 12. Open items (deferred but tracked)
+
+| ID | Item | Target |
+|---|---|---|
+| OQ-1 | Dynamic capability probes (replace static `reasoning_score` table with measured latency/throughput) | v1.1 |
+| OQ-2 | Manual unicast address-paste fallback for mDNS-hostile networks | v1.1 |
+| OQ-3 | Tensor-parallel inference for models bigger than any single member | v2 (exo or llama.cpp RPC) |
+| OQ-4 | Per-member mTLS replacing shared Clan Key (full insider-abuse fix) | v2 |
+| OQ-5 | WireGuard mesh for off-LAN members | v2 |
+| OQ-6 | Raft-strict consensus (if leader-lease proves insufficient) | v2 if needed |
+| OQ-7 | Micro Clan Agent for ESP32/Cardputer-class devices (subset proto) | v2 stretch |
+
+---
+
+*End of Clan Protocol Spec v0.1. Wire-level conformance tests will live in `tests/protocol/`.*
+
+
+==================================================================
+DOCUMENT 2: the M4 implementation plan you are reviewing
+==================================================================
+
+# MINTI M4 — Clan Layer (`cland` daemon)
+
+## Context
+
+The iceberg, per PRD §8. M0–M3 built a single-node MINTI: install path + runtime daemon + 5 MCP servers + bundled agent client. **M4 turns it into the Clan** — the cross-OS trust group that's the heart of MINTI's product (PRD §1, §5.0). After M4 two MINTI nodes auto-discover on a LAN, form a Clan via paste-key or invite token in under a minute, elect an Orchestrator by `reasoning_score`, and route chat completions and MCP tool calls transparently across each other. Killing the Orchestrator triggers re-election in 6–8 s. User-pin overrides election.
+
+This is the **security and distributed-systems critical path**. PRD §13 puts every line of it in Tier 2 (Claude direct). The Clan Protocol Spec at [`docs/clan-protocol.md`](../../Documents/CCode/MINT/MINT_wip/docs/clan-protocol.md) (v0.1, sections 1–12) is already detailed and locked: M4 implements that spec.
+
+PRD allocates ~4 weeks part-time. The plan below is sized so each Phase can run as its own session — the milestone is too big to execute in one shot. Phases A–K commit incrementally on `main` per the precedent set by M2/M3.
+
+---
+
+## Pre-flight (2026-05-27)
+
+| Check | State |
+|---|---|
+| GPU free VRAM | 30.9 GB / 32 GB (5090, 11% util — idle) |
+| Stale daemons | None |
+| Ports 7777 / 7780 / 11434 | All clear |
+| VM `minti-dev` | Powered off |
+| Repo branch | `main`, M3 just committed (`9550fba`, `ab5777d`, `6ed9977`); only outstanding state is the pre-existing `branding/logo.txt` deletion |
+| Go toolchain | 1.26.3 on host |
+
+Clean slate.
+
+---
+
+## Repo state going into M4
+
+- `cland/` is empty — only `.gitkeep`. Greenfield module.
+- The single existing M4 hook: [`mcp-servers/internal/permission/permission.go:57-62`](../../Documents/CCode/MINT/MINT_wip/mcp-servers/internal/permission/permission.go) — `VerifyCrossClanToken` always rejects today; Phase G fills it in.
+- Reusable patterns:
+  - HTTP server bootstrap + graceful shutdown — [`runtime-adapter/cmd/minti-runtime/main.go:74-109`](../../Documents/CCode/MINT/MINT_wip/runtime-adapter/cmd/minti-runtime/main.go).
+  - Route registration via stdlib `http.ServeMux` — [`runtime-adapter/internal/server/server.go:34-56`](../../Documents/CCode/MINT/MINT_wip/runtime-adapter/internal/server/server.go).
+  - YAML config loader — [`runtime-adapter/internal/config/config.go:54-66`](../../Documents/CCode/MINT/MINT_wip/runtime-adapter/internal/config/config.go).
+  - Hardened systemd unit — [`runtime-adapter/systemd/minti-runtime.service:18-34`](../../Documents/CCode/MINT/MINT_wip/runtime-adapter/systemd/minti-runtime.service).
+  - Audit log Event + Logger — [`mcp-servers/internal/audit/audit.go:23-96`](../../Documents/CCode/MINT/MINT_wip/mcp-servers/internal/audit/audit.go). M4 imports this so both daemons write `~/.minti/audit.jsonl` with one schema.
+  - install.sh restart-on-stale-binary pattern (B13 fix in M3) — reuse for `minti-cland.service`.
+- Naming locks: `minti-cland` binary, `minti-cland.service`, `/etc/minti/cland.yaml`, `/var/lib/minti/cland/`, port `7777`, reuse the `minti` system user.
+
+---
+
+## Architectural decisions for M4
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| **D-M4.1** | Module layout | **Single `cland/` Go module** (`github.com/minti/cland`, Go 1.25 to match mcp-servers) with `cmd/minti-cland/main.go` + `internal/{identity,state,config,crypto,transport,membership,discovery,advertise,election,router,toolexec,keyrotate}/` | Mirrors `runtime-adapter` and `mcp-servers` precedent. One cross-compilable binary. |
+| **D-M4.2** | Second testbed node | **VirtualBox VM clone** (`minti-dev-2`) with a second NIC on a shared internal/host-only network so mDNS multicast works between them | Confirmed by user 2026-05-27. Highest fidelity; closest to what real users do. |
+| **D-M4.3** | mDNS library | **`github.com/grandcat/zeroconf`** (MIT, maintained). Fallback: hand-roll with `github.com/miekg/dns`. | Open source — P1 satisfied. Used widely in similar Go daemons. |
+| **D-M4.4** | TLS cert pinning | **stdlib `crypto/tls` + custom `VerifyPeerCertificate`** checking SPKI sha256 against the pin captured at join | No new deps; the pin format already matches `docs/clan-protocol.md` §3.2 (`clan_cert_pin: "sha256:..."`). |
+| **D-M4.5** | HMAC scheme | **stdlib `crypto/hmac` + `crypto/sha256`** over `(method ‖ path ‖ body ‖ timestamp ‖ nonce)` per spec §2.3 | stdlib. Replay protection: 5-minute nonce cache keyed by `(member_id, nonce)`. |
+| **D-M4.6** | Audit log integration | **Import `github.com/minti/mcp-servers/internal/audit`** (need to make it a public package or copy the Event struct + writer) so both daemons write the same `~/.minti/audit.jsonl` schema | Required by PRD §9 G9. Decision sub-point: M2 made `audit` internal; M4 either promotes it to `pkg/audit` or copies the file. Promotion is cleaner — flagged for Phase A. |
+| **D-M4.7** | State persistence | **`/var/lib/minti/cland/{identity.json, clan.json, roster-cache.json, revocations.json}`** owned by the `minti` system user | Matches runtime-adapter's state convention. Survives reboots. |
+| **D-M4.8** | Reasoning-score table | **`/etc/minti/reasoning-scores.yaml`** shipped by `install.sh` from a repo template; user-editable | Per spec §6.3. Default table maps `local:llama3.2:3b → 35`, `local:llama3.1:70b → 72`, `remote-api:anthropic:claude-opus-4-7 → 95`, etc. |
+| **D-M4.9** | Remote-API backend in runtime-adapter (the Cardputer demo) | **DEFERRED to M4.1** (a follow-up sub-milestone). M4 ships local Clan formation + election + routing + cross-Clan tools. The Cardputer-as-Orchestrator scenario from PRD §9 #8 needs `remote-api` in runtime-adapter (~1 week on its own). M4's success criteria per PRD §8 don't require it. | Honest scope discipline. The protocol routes by `reasoning_score` regardless of where that score comes from; M4 just needs local backends to demo. |
+| **D-M4.10** | `cland` listens on `:7777`; minti-runtime stays on `:7780` | They are separate concerns. cland is the Clan-facing transport; minti-runtime is the local AI runtime. cland calls minti-runtime over localhost when serving a chat completion. | Per spec §10 endpoint table + PRD §6.4. |
+
+---
+
+## Phase breakdown — all Tier 2 per PRD §13
+
+Phases are sequenced by dependency. Each is sized for ~1 session. Each closes with green tests + a commit; the next session resumes from `STATUS.md` against `main`.
+
+### Phase 0 — Spec review pass (≤30 min)
+
+Read `docs/clan-protocol.md` end-to-end one more time and flag anything implementation will trip over **before** writing code. Likely candidates: exact `clan_cert_pin` format (`sha256:<hex of SPKI DER>`); lone-member behavior (one-member Clan is allowed and trivially-elected Orchestrator); paste-key BIP39-ish phrase wordlist source; behavior when an `admitted` member never completes its first advertisement (24h timeout per §3.1).
+
+Output: small spec edits + a one-paragraph "ready to implement" note in STATUS.md. No code yet.
+
+### Phase A — Module skeleton + identity + state
+
+- `cland/go.mod` (module `github.com/minti/cland`, Go 1.25).
+- `cland/cmd/minti-cland/main.go` — flags (`--config /etc/minti/cland.yaml`, `--state /var/lib/minti/cland`), graceful shutdown using the M1 pattern.
+- `cland/internal/identity/` — Ed25519 keypair generated on first run, persisted at `/var/lib/minti/cland/identity.json` (member_id + pubkey + privkey).
+- `cland/internal/state/` — Clan-level state (clan_id, clan_key, pinned cert, roster cache, revocations) at `/var/lib/minti/cland/clan.json`. Atomic write via rename.
+- `cland/internal/config/` — YAML loader mirroring `runtime-adapter/internal/config/`.
+- Unit tests for identity/state persistence + atomic rename.
+- Promote `mcp-servers/internal/audit` → `mcp-servers/pkg/audit` (or replicate behind a small interface) so cland can import. **Sub-decision flagged in D-M4.6.**
+
+### Phase B — Crypto + transport
+
+- `cland/internal/crypto/` — generate self-signed `clan_cert` (X.509, 1-year), SPKI hash, Ed25519 leaf signing.
+- `cland/internal/transport/server.go` — HTTPS server presenting `clan_cert`. Auth middleware that verifies `(X-Minti-Member, X-Minti-Timestamp, X-Minti-Nonce, X-Minti-HMAC)` against Clan Key, rejects stale ts (±60 s) and replayed nonces (5-min cache). Returns 401 with empty body on failure.
+- `cland/internal/transport/client.go` — HTTPS client with custom `VerifyPeerCertificate` that checks SPKI sha256 against the stored pin. Auto-attaches HMAC headers to every outbound request.
+- Unit tests: HMAC sign/verify roundtrip; cert-pin reject path; timestamp window; nonce replay rejection; 401-no-body on tamper.
+
+### Phase C — Membership state machine
+
+- `cland/internal/membership/` — state machine per spec §3.1.
+- Endpoints (HTTPS-gated): `/clan/create` (CLI-only, founds a Clan), `/clan/invite` (issue token), `/clan/join` (redeem token), `/clan/leave`, `/clan/revoke`, `/clan/members`.
+- CLI subcommands: `minti-cland create`, `minti-cland invite [--ttl 1h]`, `minti-cland join <token>`, `minti-cland leave`, `minti-cland members`.
+- Paste-key flow with a 6-word BIP39-derived phrase (use stdlib + a vendored wordlist).
+- Tests: state transitions, single-use token consumption, revocation cascade.
+
+### Phase D — Discovery + capability advertisement
+
+- `cland/internal/discovery/` — `zeroconf`-based service registration (`_minti-clan._tcp.local`, port 7777, TXT `clan_id/member_id/proto=1`) + browser that filters by `clan_id`.
+- `cland/internal/advertise/` — periodic POST `/clan/advertise` to each known peer (interval = 30 s; on capability change ≤1 s). Maintain per-peer cache of last advertisement; stale = 4 s.
+- Score sources: `reasoning_score` from `/etc/minti/reasoning-scores.yaml` × resident-models intersection. `system_score` from spec §6.4 formula against local hardware probe (CPU benchmark, RAM, VRAM via `nvidia-smi -q -x` parse, NVMe via `/sys/block`, battery via `/sys/class/power_supply/BAT*`, uptime via `/proc/uptime`).
+- Tests: advertisement shape compliance with §4.2 example, freshness/staleness, score-formula round numbers.
+
+### Phase E — Leader-lease election
+
+- `cland/internal/election/` — heartbeat goroutine when this member holds the lease; election goroutine that watches `lease_expires`.
+- Parameters from spec §5.2: `HEARTBEAT_INTERVAL=2s`, `LEASE_DURATION=8s`, `FAILOVER_GRACE=6s`, `ELECTION_TIMEOUT=1s`.
+- Term tracking, candidate selection (highest `reasoning_score`, tiebreak oldest `joined_at`), quorum-accept (≥ ⌈N/2⌉), random-backoff retry on split-brain.
+- User-pin override (`pinned_orchestrator: true` wins all elections).
+- Tests: lone-member trivial election, two-member tied-score tiebreak, partition-and-heal scenario simulating dropped heartbeats, user-pin override, anti-spoof (refuse heartbeat from member that isn't actually highest-score per receiver's view).
+
+### Phase F — Routing layer
+
+- `cland/internal/router/` — when this member is Orchestrator, accept the Clan-facing `/v1/chat/completions`, `/api/chat`, `/v1/messages`, `/v1/embeddings` and route by capability.
+- For `reasoning` workloads: serve from the local member's minti-runtime (because Orchestrator = best reasoner) OR proxy to another reasoning-capable member if the local backend is missing the requested model.
+- For `inference`/`vision-gen`/`embeddings`: pick worker by `system_score * (1 - load)`; on failure retry once.
+- Workers expose their existing minti-runtime endpoint via cland (cland proxies to `127.0.0.1:7780` after auth).
+- Acceptance: agent on Node B issues chat completion to `https://localhost:7777/v1/chat/completions`; cland routes to Node A's minti-runtime; response streams back.
+
+### Phase G — Cross-Clan tool calls + `VerifyCrossClanToken`
+
+- `cland/internal/toolexec/` — `/mcp/execute` endpoint per spec §7.1. Verifies signed execution token, checks executor-side policy from `/etc/minti/policy.yaml` + `~/.minti/policy.yaml` (reuse the M2 `mcp-servers/internal/policy` package), spawns the named MCP server as a stdio subprocess, streams output back.
+- Fill in `mcp-servers/internal/permission/permission.go:VerifyCrossClanToken` to validate the HMAC-signed token via the Clan Key (passing the key in from the M3 audit-log infrastructure path or reading from `/var/lib/minti/cland/clan.json`).
+- Token format from spec §7.1 step 3 — `{request_id, origin_member, target_member, tool, args, approved_at, exp}` signed with Clan Key HMAC.
+- Tests: token expiry, wrong-clan token reject, executor-side deny preserved, audit log on both nodes.
+
+### Phase H — Key rotation + member revocation enforcement
+
+- `/clan/rotate-key` per spec §8: Orchestrator generates new key, broadcasts signed by old key, gathers ACKs, commits + 5-min grace window. Atomic rollback if any ACK is missed.
+- `/clan/revoke` per spec §3.4: signs revocation, gossips to roster, every member adds pubkey-hash to pin-revocation list, in-flight calls cancelled.
+- Tests: rotation completes under happy path; rotation aborts cleanly if a member is unreachable; revoked member's subsequent calls 403.
+
+### Phase I — install.sh + Makefile + minti-fetch integration
+
+- `install/install.sh`: install `minti-cland` binary, `minti-cland.service`, `/etc/minti/cland.yaml` default + `/etc/minti/reasoning-scores.yaml` template; idempotent restart via the same `/proc/$MainPID/exe` hash check used for runtime (B13 fix).
+- `Makefile`: real `cland` (native) + `cland-linux` (cross-compile) targets; `make all` adds cland to the bundle.
+- `branding/minti-fetch`: surface Clan ID, member ID, current Orchestrator, term, member count, our role.
+
+### Phase J — Two-node testbed + validation script
+
+- `scripts/m4-setup-second-vm.sh`: VBoxManage clones `minti-dev → minti-dev-2`, regenerates a unique MAC, adds a host-only adapter on both VMs in the same network so mDNS multicast traverses, sets up port forwards `127.0.0.1:2223 → 22` and `127.0.0.1:27777 → 7777` for the second VM.
+- `scripts/m4-validate.sh`: runs the 10 verification steps in §Verification below; the same script SSHs into both nodes alternately.
+
+### Phase K — Wrap
+
+- STATUS.md → M4 done; next-session prompt points at M5 (cross-platform Clan Agent) or M4.1 (remote-api backend, the Cardputer demo).
+- DOCUMENTATION.md §3.9 (M4 chronicle) + new bug-log entries.
+- Three to five milestone-tagged commits along the way: `M4: identity + state`, `M4: transport + crypto`, `M4: membership + discovery + election`, `M4: routing + cross-Clan tools`, `M4: key rotation + revocation`, `M4: install + validation`. (We'll bundle smaller phases together if they're tightly coupled.)
+- Cost report at milestone close — Claude tokens, T3 attempts (likely 0 again; the entire surface is Tier 2 — security/distributed-systems critical path per PRD §13). T3 candidate worth flagging: peer review of the leader-lease + election code by `deepseek-r1:32b` as the genuine "thinking is the value" task the M2/M3 cost reports promised.
+
+---
+
+## Verification — the M4 acceptance gate (PRD §8 M4 + the relevant §9 items)
+
+Run in order. All must pass.
+
+| # | Test | Expected |
+|---|---|---|
+| 1 | `minti-cland create` on Node A | Generates clan_id, clan_key, clan_cert; persists `/var/lib/minti/cland/clan.json`; mDNS service registers as `_minti-clan._tcp.local`. |
+| 2 | `minti-cland invite --ttl 1h` on Node A | Returns single-use token + `clan_cert_pin` + LAN address. |
+| 3 | `minti-cland join <token>` on Node B within 60 s of invite | Both members appear in `GET /clan/members` from either node within one heartbeat. |
+| 4 | `GET /clan/orchestrator` on either node | Returns Node A (assuming A's reasoning_score > B). |
+| 5 | `opencode` on Node B asks the model a simple question; opencode points at Node B's local cland at `:7777` | cland on B forwards to Orchestrator A; A's minti-runtime serves the completion; response streams back to B. Audit logs on both nodes show `request_sent` and `request_received`. |
+| 6 | `sudo systemctl stop minti-cland` on Node A | Node B observes lease expiry within 6–8 s, increments term, becomes Orchestrator. `GET /clan/orchestrator` on B returns B. `election_observed` event appears on B's audit log. |
+| 7 | Bring A back; `minti-cland pin --self` on A | A re-wins election regardless of score. B yields. Pin-removal restores natural election. |
+| 8 | `mcptest --yes --arg target=127.0.0.1 mcp-recon nmap_scan` issued FROM Node B against `https://localhost:7777/mcp/execute?target=A` | Consent prompt renders on B's TUI; signed execution token sent to A; A verifies token + checks its own policy; nmap runs on A; output streams back to B; both nodes' audit logs show `tool_executed` with the same `request_id`. |
+| 9 | `minti-cland rotate-key` on Orchestrator | Both members ACK within 30 s; 5-min grace window; after grace, only the new key verifies HMACs; in-flight requests succeed throughout. `key_rotated` event appears on both audit logs. |
+| 10 | `minti-cland revoke <B_member_id>` on Node A | B's cert pubkey-hash added to pin-revocation list; B's subsequent calls to A return 403 with `policy_deny`. |
+
+If all 10 pass: M4 done; STATUS.md flipped from `In flight` to `Done`.
+
+---
+
+## Explicitly out of M4 scope
+
+- **Remote-API backend in `runtime-adapter`** (the Cardputer-as-Orchestrator demo from PRD §9 #8) — deferred to **M4.1**. Independent ~1-week piece. The M4 routing layer is agnostic to where `reasoning_score` comes from; we'll demo Cardputer in M4.1.
+- **Cross-platform Clan Agent for Windows + macOS** — M5.
+- **WireGuard mesh for off-LAN Clan members** — v2.
+- **Per-member mTLS replacing shared Clan Key** — v2 (closes residual R1 in threat model).
+- **Tensor-parallel inference** — v2 (exo / llama.cpp RPC).
+- **Pack Manager GUI** — M6.
+- **`/v1/messages` tool-use content blocks** — M3.5.
+- **Dynamic capability probes** (measured latency/throughput replacing the static reasoning-score table) — v1.1 (open question OQ-1 in spec).
+- **Manual unicast address-paste fallback** for mDNS-hostile networks — v1.1 (open question OQ-2).
+
+---
+
+## Files this plan will touch (representative — not exhaustive)
+
+- New module: `cland/go.mod`, `cland/cmd/minti-cland/main.go`, `cland/internal/{identity,state,config,crypto,transport,membership,discovery,advertise,election,router,toolexec,keyrotate}/`, `cland/systemd/minti-cland.service`, `cland/configs/cland.yaml.example`.
+- `mcp-servers/internal/permission/permission.go` → finish `VerifyCrossClanToken`. Possibly promote `internal/audit` to a public package.
+- `install/install.sh` → cland install block + `reasoning-scores.yaml` deploy.
+- `Makefile` → `cland`, `cland-linux` targets.
+- `branding/minti-fetch` → live Clan/Orchestrator surface.
+- `docs/clan-protocol.md` → small reactive edits if Phase 0 + implementation reveal gaps.
+- `STATUS.md`, `DOCUMENTATION.md`.
+- `scripts/m4-setup-second-vm.sh`, `scripts/m4-validate.sh`.
+
+No edits to `runtime-adapter/cmd/`, `runtime-adapter/internal/server/`, `mcp-servers/cmd/`, or `packs/` (unless Phase G uncovers something).
+
+
+---
+End of documents. Give your review now.
