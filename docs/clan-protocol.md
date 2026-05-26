@@ -1,8 +1,10 @@
-# Clan Protocol Specification — v0.1
+# Clan Protocol Specification — v0.2
 
 > Status: **Draft**, v1 implementation target.
 > Source of truth for the on-wire behavior of `cland` (Linux) and the cross-platform Clan Agent (Windows / macOS).
 > This document defines the protocol; the PRD ([../../../../.claude/plans/hello-can-we-create-abundant-hopper.md](../../../../.claude/plans/hello-can-we-create-abundant-hopper.md)) defines the product. Where they conflict, the PRD wins on intent and this document wins on wire details.
+>
+> **v0.2 (2026-05-27, M4 Phase 0):** Six additive edits surfaced by a local-LLM peer-review pass on the M4 implementation plan — §3.3 paste-key entropy clarified to 12-word BIP39 + HKDF; §6.4 `recently_failed` defined; §7.1 `target_member` location pinned to token claims + v1 honesty note added; §10 endpoint table gains `/v1/messages`; §12 OQ-2 (manual peer-add fallback) moved from v1.1 into v1 scope. Wire format unchanged where it was already concrete.
 
 ---
 
@@ -94,9 +96,13 @@ active --(self-leave)--> unaffiliated
 
 For low-friction joining without out-of-band token exchange:
 
-1. An existing member exposes the Clan Key as a QR code or 6-word BIP39-ish phrase in the Console.
-2. Candidate enters the phrase, plus the LAN address of any active member.
+1. An existing member exposes the Clan Key via one of:
+   - **QR code** encoding the full 256-bit `clan_key` directly, OR
+   - **12-word BIP39 mnemonic** encoding a 128-bit derivation seed.
+2. Candidate enters the phrase (or scans the QR), plus the LAN address of any active member.
 3. Candidate connects, advertises identity, and is admitted on the active member's policy.
+
+**Entropy and key derivation.** When the mnemonic path is used, the candidate's `cland` expands the 128-bit BIP39 seed to the full 256-bit `clan_key` via `HKDF-SHA256(seed, salt="minti-clan-key", info="v1")`. The 128-bit seed is sufficient for v1's trusted-LAN threat model — brute-forcing 128 bits is infeasible with current hardware. The QR path uses the full 256 bits directly. v2 mTLS replaces the shared `clan_key` entirely and closes the 128-bit gap.
 
 **Trust caveat:** any sniffer in the QR/voice channel sees the Clan Key. Use only over trusted channels (sitting at the same desk, secure messenger).
 
@@ -296,7 +302,13 @@ system_score = clamp_0_100(
 )
 ```
 
-Where `normalize(x, lo..hi) = max(0, min(1, (x - lo) / (hi - lo)))`. Tunable; ships in `/etc/minti/system-score.yaml`.
+Where:
+
+- `normalize(x, lo..hi) = max(0, min(1, (x - lo) / (hi - lo)))`.
+- `on_battery` is `1.0` when the member is currently on battery power, `0.0` otherwise.
+- `recently_failed` is the count of cross-Clan requests that failed (timeout, 5xx, or HMAC-reject) in a sliding **5-minute** window, normalised by `/ 20` and clamped to `[0, 1]`. So 20+ failed requests in 5 min saturate the penalty; isolated failures barely register. Counter is in-memory only — process restart clears it.
+
+Tunable; ships in `/etc/minti/system-score.yaml`.
 
 ---
 
@@ -316,12 +328,14 @@ Flow:
    ```
    { request_id, origin_member, target_member, tool, args, approved_at, exp }
    ```
-   signed with Clan Key HMAC.
-4. A sends `POST /mcp/execute` to member B with the token + args.
-5. B verifies the token, checks its own local policy (some tools may be locally denied even on remote request), and executes if allowed.
+   signed with `HMAC-SHA256(clan_key, canonical_serialize(token))`. `target_member` and all other fields are part of the signed claims — they are **not** passed as query-string parameters or top-level body fields, so the wire request can't carry an unauthenticated target hint.
+4. A sends `POST /mcp/execute` to member B with the token (in the body) + the unsigned `args` blob.
+5. B verifies the token (HMAC valid, `target_member == self.member_id`, `exp` not past, `approved_at` not in the future, `request_id` not previously seen). On any failure, B returns `401` and audit-logs the attempt. B then checks its own local policy against `tool` and `args` (some tools may be locally denied even on remote request) and executes if allowed; on policy deny, returns `403 policy_deny`.
 6. B streams output back to A; A relays to the agent.
 
-Member B never prompts its user during cross-Clan execution. If B's policy forbids a tool, B rejects with `403 policy_deny` and A's agent treats it as a tool failure.
+Member B never prompts its user during cross-Clan execution.
+
+**v1 honesty note (clan_key origin binding).** Because v1 uses a single shared `clan_key`, the HMAC over the execution token proves only that the token was issued by *some* current Clan member — not specifically by `origin_member`. A malicious insider could forge a token claiming someone else as origin. The "permission prompt on origin" guarantee is a UI-level control (the user actually clicked yes on their machine), not a cryptographic one. **v2 per-member keypairs close this gap** — tokens will then be signed by the origin's private key and verifiable only against that origin's pubkey.
 
 ### 7.2 Per-tool policy
 
@@ -426,9 +440,11 @@ v1: no automatic rotation. v1.1 will add `logrotate` integration with a default 
 | Path | Method | Caller | Purpose |
 |---|---|---|---|
 | `/v1/chat/completions` | POST | local agent | OpenAI-compatible chat (routed by Orchestrator) |
+| `/v1/messages` | POST | local agent | Anthropic-compatible chat (routed by Orchestrator). cland exposes every shape `runtime-adapter` does. |
 | `/api/chat` | POST | local agent | Ollama-compatible chat (same routing) |
 | `/v1/embeddings` | POST | local agent | OpenAI-compatible embeddings |
 | `/clan/advertise` | POST | active member | Push capability advertisement |
+| `/clan/peer-add` | POST | local user/CLI | Manually register a peer by `ip:port` when mDNS discovery is unavailable (v1; pulled forward from OQ-2) |
 | `/clan/heartbeat` | POST | Orchestrator | Periodic lease renewal |
 | `/clan/invite` | POST | active member | Generate single-use admission token |
 | `/clan/join` | POST | candidate | Redeem token, receive secrets |
@@ -456,7 +472,7 @@ This is **protocol version 1** (`proto=1` in mDNS TXT). Future versions:
 | ID | Item | Target |
 |---|---|---|
 | OQ-1 | Dynamic capability probes (replace static `reasoning_score` table with measured latency/throughput) | v1.1 |
-| OQ-2 | Manual unicast address-paste fallback for mDNS-hostile networks | v1.1 |
+| ~~OQ-2~~ | ~~Manual unicast address-paste fallback for mDNS-hostile networks~~ — **resolved in v0.2; in v1/M4 scope as `/clan/peer-add` (§10) and the `minti-cland peer-add` CLI subcommand.** | v1/M4 |
 | OQ-3 | Tensor-parallel inference for models bigger than any single member | v2 (exo or llama.cpp RPC) |
 | OQ-4 | Per-member mTLS replacing shared Clan Key (full insider-abuse fix) | v2 |
 | OQ-5 | WireGuard mesh for off-LAN members | v2 |
