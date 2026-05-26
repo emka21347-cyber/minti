@@ -1,0 +1,8 @@
+minti-pack-recon (0.1.0-M2) unstable; urgency=medium
+
+  * Initial metapackage (M2): nmap, masscan, whois, dnsutils|bind9-dnsutils
+    as Depends; theharvester + amass as Recommends (universe/contrib in some
+    derivatives); rustscan + go-built tools (dnsx, naabu) as Suggests with
+    manual install documented in skill.md.
+
+ -- MINTI Project <minti@localhost>  Tue, 26 May 2026 18:00:00 +0000

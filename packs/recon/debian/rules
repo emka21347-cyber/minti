@@ -1,0 +1,6 @@
+#!/usr/bin/make -f
+# debhelper sequence for the minti-pack-recon metapackage.
+# Architecture: all, no binaries built — dh handles install of skill.md.
+
+%:
+	dh $@

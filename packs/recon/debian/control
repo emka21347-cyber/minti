@@ -1,0 +1,37 @@
+Source: minti-pack-recon
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-pack-recon
+Architecture: all
+Depends:
+ ${misc:Depends},
+ nmap,
+ masscan,
+ whois,
+ dnsutils | bind9-dnsutils
+Recommends:
+ theharvester,
+ amass
+Suggests:
+ rustscan,
+ golang-go
+Description: MINTI recon tool pack
+ Reconnaissance tools curated for the MINTI agent toolchain. This is a
+ metapackage that installs the core set of recon binaries that the
+ minti-mcp-recon MCP server wraps with safe-flag defaults.
+ .
+ Hard Depends: nmap, masscan, whois, dig (dnsutils / bind9-dnsutils).
+ .
+ Recommended: theHarvester (OSINT recon — available in Debian main, Ubuntu
+ universe; not all derivatives), amass (subdomain enumeration; in Debian
+ contrib/Ubuntu universe).
+ .
+ Suggested: rustscan (faster nmap front-end, not in Debian — install via
+ cargo), and golang-go (required to install dnsx + naabu via `go install`
+ from upstream). See /usr/share/minti/packs/recon/skill.md for the manual
+ install commands.
