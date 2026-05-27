@@ -54,11 +54,20 @@ func Check(p *policy.Policy, server, tool string, args map[string]any) (Decision
 	return Allow, ""
 }
 
-// VerifyCrossClanToken validates a signed permission token from an origin Clan
-// member. In M2 cross-Clan tool calls are not supported; this always rejects.
-// Completed in M4 with cland.
+// VerifyCrossClanToken is preserved as a thin stub for backwards compatibility
+// — no caller in the mcp-servers module invokes it. The real verification now
+// lives in cland/internal/toolexec (Phase G): cland's POST /mcp/execute handler
+// verifies the spec §7.1 token (HMAC under clan_key + target == self.member_id
+// + exp + approved_at + replay) BEFORE spawning the MCP server subprocess. The
+// MCP server itself never sees the token; cland already authorised the call by
+// the time the subprocess is launched.
+//
+// Tool-side policy (the deny_tools per-namespace kill switch) is still
+// enforced inside each MCP server binary via Check() above — so a cross-Clan
+// call that passes token verification can still be refused by the executor's
+// local policy.
 func VerifyCrossClanToken(_ string) error {
-	return errors.New("cross-Clan tool calls not supported until M4")
+	return errors.New("permission.VerifyCrossClanToken: verification lives in cland/internal/toolexec since M4-G; this stub is here for compat only")
 }
 
 func checkFS(p *policy.FSPolicy, tool string, args map[string]any) (Decision, string) {

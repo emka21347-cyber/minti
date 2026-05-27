@@ -1,13 +1,13 @@
 # MINTI — Project Status
 
-> **Last updated:** 2026-05-27
+> **Last updated:** 2026-05-28
 > **Purpose:** Read this *first* when opening a new chat or onboarding to the project. It's the single document that tells you where MINTI is right now and how to pick up work without re-reading history.
 
 ---
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F done — two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, and Orchestrator chat-completion routing all working end-to-end on Windows host. Phase G (cross-Clan tool calls) is next.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G done — two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, and cross-Clan signed-token tool execution all working end-to-end on Windows host. Phase H (key rotation + revocation) is next.
 
 ---
 
@@ -69,7 +69,20 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     - **8 unit tests** in `internal/router/`: no-orchestrator reject, self-orchestrator self-routes, local-runtime-down → 502, not-orchestrator peer-proxies, peer-addr-unknown → 503 + redirect header, SSE pass-through, HMAC-quad stripped on forward, real-HTTP roundtrip against `httptest.NewServer` fake runtime.
     - **Phase E regression smoke** re-run with router wired in: election, failover, term bump, restart-accept all pass — router didn't disturb anything.
     - **Deferred**: a real chat-completion end-to-end smoke needs runtime-adapter + Ollama wired into the daemon test rig. The router proxy logic is fully covered by the unit suite + the Phase E regression; the smoke deferral is about test-harness scope, not correctness gaps. Worker routing (`system_score × (1 - load)`) is plumbed in the package but unused until `/v1/embeddings` / `/v1/vision` endpoints land in runtime-adapter.
-  - **Next:** Phase G — cross-Clan tool calls + `VerifyCrossClanToken`. New `cland/internal/toolexec/` package serves `/mcp/execute`; `mcp-servers/internal/permission/permission.go:VerifyCrossClanToken` shifts from stub to real implementation via a KeyProvider DI seam. Honest v1 caveat: shared-Clan-key HMAC proves "issued by *a* member", not "issued by the origin member" — v2 mTLS closes the gap.
+
+  - **Phase G done** (2026-05-28, see commit log): cross-Clan tool execution. New `cland/internal/toolexec/` package serves spec §7.1's `POST /mcp/execute`:
+    - **Token** (`token.go`) — request_id / origin_member / target_member / tool / args_hash / approved_at / exp / sig. Canonical = LF-joined fields; HMAC-SHA256 over canonical with the shared `clan_key` via `crypto.KeyProvider` (current + grace, so rotation doesn't break in-flight tokens). `args_hash = sha256(raw_args_bytes)` — origin and target see byte-identical args; we never re-marshal, so JSON key-ordering can't break verification.
+    - **Executor** (`executor.go`) — wire spec `"mcp-recon.nmap_scan"` parses to server `minti-mcp-recon` (binary at `cfg.MCP.BinariesDir`) + tool `nmap_scan`. Spawns the subprocess via the official `github.com/modelcontextprotocol/go-sdk` v1.6.1 (same SDK mcptest uses), lists tools to validate the name, calls the tool, normalises `[]Content` blocks into a JSON-safe `ExecResult`. `exec.CommandContext` + `DefaultExecTimeout=5 min` cap runaways.
+    - **Replay** (`replay.go`) — bounded in-memory `request_id` cache (LRU-style sweep when full, per-entry TTL). Default 10 000 entries × 15 min — covers the worst-case `DefaultMaxTokenLifetime=10 min` token window.
+    - **Handler** (`handlers.go`) — strict order: (1) args-hash equality (catches arg tampering after sign), (2) HMAC verify under current OR grace key, (3) target/exp/approved_at claims, (4) replay (only AFTER all prior checks pass — so attackers can't pollute the cache cheaply), (5) spawn. Each failure mode emits a distinct 401/403/502 + a structured `auditlog` entry with a stable reason string.
+    - **mcp-servers stub updated** — `permission.VerifyCrossClanToken` retains its signature but now documents that real verification lives in `cland/internal/toolexec`; nothing in mcp-servers calls the function, the executor's local `policy.deny_tools` is enforced inside each MCP server binary just as it was in M2.
+    - **v1 honesty note** baked into the package doc-comment: the shared `clan_key` HMAC proves the token was issued by *some* current Clan member, not specifically by the claimed `origin_member`. A malicious insider could forge a token claiming a different origin. The "permission prompt on origin" guarantee is UI control, not cryptographic. v2 per-member keypairs close this gap.
+    - **13 unit tests** in `internal/toolexec/`: sign/verify roundtrip, tamper-detection (Tool + RequestID bit-flip), wrong target → 403, expired → 401, future approved_at → 401, replay → 401, foreign clan_key → 401, args-tamper-after-sign → 401, grace-key acceptance during rotation, happy-path with audit, executor failure → 502, namespace parsing, replay cache TTL eviction.
+    - **Phase E smoke regression-clean** with toolexec wired in.
+    - **Deferred**: a real end-to-end smoke (origin daemon mints token → POSTs to target daemon → real MCP server spawns → returns tool output) needs a built minti-mcp-* binary on the smoke rig. The 13 unit tests + the M2 mcptest pattern (which has run real recon scans end-to-end) cover the executor path; the deferral is about smoke-test harness scope, not correctness. Local cland-side policy intercept (the spec's `403 policy_deny` before spawn) is deferred — the MCP server's own `deny_tools` enforcement still applies, but as an `IsError` result rather than a clean 403.
+  - **Next:** Phase H — key rotation 2PC + member revocation. `/clan/rotate-key` walks the IDLE → PROPOSED → ACK_COLLECTING → COMMITTED state machine with a 60 s propose-timeout-revert; the existing `crypto.KeyProvider.Rotate` already handles the grace-window mechanics. `/clan/revoke` writes the revocation list (already persisted) + gossips on every heartbeat for partition tolerance.
+
+  - **Phase E done** (2026-05-27, see commit log): leader-lease election engine.
 
 ### Next after M4
 
@@ -101,19 +114,20 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the super-plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md. M0–M3 done;
-M4 Phases 0 + A + B + C + D + E + F all committed and validated
+M4 Phases 0 + A + B + C + D + E + F + G all committed and validated
 (two-daemon Clan, paste-key join, advertise, leader-lease election,
-failover with term bump, restart-accept, plus Orchestrator chat-
-completion routing — 8 router unit tests + Phase E regression smoke).
-Pre-flight, then execute Phase G per the super-plan — cross-Clan
-tool calls. New cland/internal/toolexec/ serves /mcp/execute: verify
-HMAC over the signed permission token (claim target_member ==
-self.member_id, exp not past, request_id not replayed); on allow,
-spawn the named MCP server stdio subprocess and stream output back
-to origin. Flip mcp-servers/internal/permission/permission.go:
-VerifyCrossClanToken from M2 stub to real impl via a KeyProvider
-DI seam. Honest v1 caveat: shared-Clan-key HMAC proves "issued by
-*a* member", not "issued by origin member" — v2 mTLS closes the gap.
+failover with term bump, restart-accept, Orchestrator chat-completion
+routing, cross-Clan signed-token tool execution — 13 toolexec unit
+tests, full cland test suite green, Phase E regression smoke clean).
+Pre-flight, then execute Phase H per the super-plan — key rotation
+2PC + member revocation. /clan/rotate-key walks IDLE → PROPOSED →
+ACK_COLLECTING → COMMITTED with 60 s propose-timeout-revert; the
+existing crypto.KeyProvider.Rotate() already implements the
+grace-window mechanics, so Phase H mostly adds the orchestration +
+peer-broadcast layer on top. /clan/revoke writes to revocations.json
+(already persisted) + gossips on every heartbeat for partition
+tolerance — extend the existing /clan/heartbeat payload's
+active_roster digest to carry a revocations digest peers can sync from.
 ```
 
 ### Repo location

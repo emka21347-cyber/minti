@@ -17,6 +17,7 @@ type Config struct {
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	Advertise AdvertiseConfig `yaml:"advertise"`
 	Election  ElectionConfig  `yaml:"election"`
+	MCP       MCPConfig       `yaml:"mcp"`
 	Runtime   RuntimeConfig   `yaml:"runtime"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 }
@@ -59,6 +60,23 @@ type RuntimeConfig struct {
 	BaseURL string `yaml:"base_url"`
 }
 
+// MCPConfig controls the cross-Clan toolexec layer (Phase G).
+type MCPConfig struct {
+	// BinariesDir resolves wire tool spec "mcp-recon.nmap_scan" to the
+	// executable path "<dir>/minti-mcp-recon". install.sh stages binaries
+	// to /opt/minti/mcp on Linux; override via this field for dev/test.
+	BinariesDir string `yaml:"binaries_dir"`
+
+	// MaxTokenLifetime caps how long an execution token may be valid (exp -
+	// approved_at). Defends against long-lived tokens being replayable past
+	// the in-memory ReplayCache TTL. Default 10 min.
+	MaxTokenLifetime time.Duration `yaml:"max_token_lifetime"`
+
+	// ExecTimeout caps how long a single MCP CallTool may run before cland
+	// kills the subprocess. Default 5 min.
+	ExecTimeout time.Duration `yaml:"exec_timeout"`
+}
+
 type TelemetryConfig struct {
 	LogLevel string `yaml:"log_level"`
 }
@@ -82,6 +100,11 @@ func Default() Config {
 			ElectionTimeout:    1 * time.Second,
 			HistorySize:        32,
 			RuntimeProbeMaxAge: 60 * time.Second,
+		},
+		MCP: MCPConfig{
+			BinariesDir:      "/opt/minti/mcp",
+			MaxTokenLifetime: 10 * time.Minute,
+			ExecTimeout:      5 * time.Minute,
 		},
 		Runtime:   RuntimeConfig{BaseURL: "http://127.0.0.1:7780"},
 		Telemetry: TelemetryConfig{LogLevel: "info"},

@@ -33,6 +33,17 @@ election:
   # minti-runtime hasn't responded successfully within this window.
   runtime_probe_max_age: 60s
 
+mcp:
+  # Where MCP server binaries live (install.sh stages them here on Linux).
+  # cland's /mcp/execute handler resolves "mcp-recon.nmap_scan" → spawning
+  # "<binaries_dir>/minti-mcp-recon".
+  binaries_dir: "/opt/minti/mcp"
+  # Cap on (exp - approved_at) for a single execution token. Bounds replay
+  # exposure across in-memory ReplayCache TTL gaps.
+  max_token_lifetime: 10m
+  # Cap on a single MCP CallTool invocation before cland kills the subprocess.
+  exec_timeout: 5m
+
 runtime:
   # Where this member's local minti-runtime listens. cland calls it over
   # 127.0.0.1 when serving reasoning/inference requests as Orchestrator.

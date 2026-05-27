@@ -46,6 +46,7 @@ import (
 	"github.com/minti/cland/internal/router"
 	"github.com/minti/cland/internal/scores"
 	"github.com/minti/cland/internal/state"
+	"github.com/minti/cland/internal/toolexec"
 	"github.com/minti/cland/internal/transport"
 )
 
@@ -429,6 +430,29 @@ func runDaemon(args []string) error {
 	log.Info("router enabled",
 		"runtime_base", cfg.Runtime.BaseURL,
 		"endpoints", "/v1/chat/completions /v1/messages /api/chat")
+
+	// ----- Phase G: cross-Clan tool execution -----
+	toolExecutor := &toolexec.Executor{
+		BinariesDir: cfg.MCP.BinariesDir,
+		ExecTimeout: cfg.MCP.ExecTimeout,
+	}
+	toolHandler, err := toolexec.NewHandler(toolexec.HandlerOpts{
+		SelfID:      id.MemberID,
+		KeyProvider: kp,
+		Executor:    toolExecutor,
+		Replay:      toolexec.NewReplayCache(0, 0),
+		Audit:       audit,
+		Log:         log,
+		MaxLifetime: cfg.MCP.MaxTokenLifetime,
+	})
+	if err != nil {
+		return fmt.Errorf("toolexec: %w", err)
+	}
+	toolHandler.Register(srv)
+	log.Info("toolexec enabled",
+		"binaries_dir", cfg.MCP.BinariesDir,
+		"max_token_lifetime", cfg.MCP.MaxTokenLifetime,
+		"endpoints", "/mcp/execute")
 
 	select {
 	case <-ctx.Done():
