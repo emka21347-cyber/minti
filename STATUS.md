@@ -52,8 +52,9 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
   - **Phase 0 done** (`dccd7fb` + `577daed`): `docs/clan-protocol.md` → v0.2 with 6 peer-review-surfaced edits (12-word BIP39 paste-key + HKDF, `recently_failed` definition, `target_member` in signed token claims + v1 honesty note, `/v1/messages` + `/clan/peer-add` rows, OQ-2 pulled into v1). Local-LLM peer-review driver + raw reviews at `scripts/m4-peer-review.py` + `scripts/m4-reviews/`.
   - **Phase A done** (`8b1c2fd`): cland module skeleton — `cmd/minti-cland/main.go` + `internal/{config,identity,state,auditlog}/`. Ed25519 keypair + UUIDv4 persist to `identity.json` (mode 0600); Clan state at `clan.json` (also 0600, holds `clan_key`) with atomic-rename writes; auditlog schema duplicated verbatim from `mcp-servers/internal/audit` (D-M4.6).
   - **Phase B done** (`990fbc2`): crypto + transport. `crypto/` package — self-signed X.509 from Ed25519 with SPKI `sha256:<hex>` pin; HMAC-SHA256 over canonical request `(METHOD\nPATH\nsha256(body)hex\nts\nnonce)` per spec §2.3; `KeyProvider` interface (Current + optional Grace) wired from day one per D-M4.11. `transport/` package — HTTPS server with auth middleware (±60 s window, replay-rejection via LRU-bounded nonce cache, 401 empty body + audit-log on every reject, grace-key acceptance during rotation, `HandleAnonymous` escape hatch for the future `/clan/join`); HTTPS client with `VerifyPeerCertificate` SPKI pin enforcement.
-  - **Phase C-core done** (`0210239`): BIP39 paste-key + membership crypto core + CLI subcommands. `internal/bip39/` vendors the canonical bitcoin/bips english.txt (sha256 verified in test) + 12-word mnemonic encode/decode w/ checksum + case/whitespace normalisation. `internal/membership/Create()` founds a Clan (seed → mnemonic → HKDF clan_key → cert + clan_id, all persisted); `PreJoinViaMnemonic()` does the joiner-side derivation. CLI gains `create`/`members`/`show`; daemon mode unchanged. **Founder + joiner derive byte-identical clan_keys** given the same mnemonic — the central paste-key property is proven.
-  - **Phase C remaining (next session):** HTTP endpoints (`/clan/invite`, `/clan/join`, `/clan/welcome`, `/clan/members`, `/clan/leave`, `/clan/revoke`), invite-token in-memory store (single-use, TTL), zombie sweep (60 s ticker purging stuck `admitted` members past 24 h), CLI `invite`/`join`/`leave`/`revoke`. After that, Phase D — discovery (mDNS via `grandcat/zeroconf`) + manual `/clan/peer-add` fallback + capability advertisement. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
+  - **Phase C-core done** (`0210239`): BIP39 paste-key + membership crypto core + CLI subcommands. `internal/bip39/` vendors the canonical bitcoin/bips english.txt (sha256 verified) + 12-word mnemonic encode/decode w/ checksum + case/whitespace normalisation. `internal/membership/Create()` founds a Clan; `PreJoinViaMnemonic()` does the joiner-side derivation. CLI gains `create`/`members`/`show`. **Founder + joiner derive byte-identical clan_keys** given the same mnemonic.
+  - **Phase C-rest done** (`ef328f2`): HTTP endpoints (`/clan/{invite,join,welcome,members,leave,revoke}`) on top of the Phase B transport; `invite` uses HandleAnonymous (joiner has no key yet), the other 5 are HMAC-gated. `InviteStore` (single-use, TTL 60s..24h), `Service.{Welcome,Leave,Revoke,SweepZombies}` + 60 s zombie sweep ticker per spec §3.1. CLI `invite`/`join` (paste-key + token paths)/`leave`/`revoke` — paste-key CLI derives clan_key from mnemonic, HMAC-signs a `/clan/welcome` call, persists the returned cert; token CLI uses an anon TLS-pinned client against `/clan/join`. Daemon wires `transport.Server` + `membership.Service` + sweep when state is active; idles when unaffiliated. **End-to-end smoke** (two state dirs, 127.0.0.1:17800): founder creates → daemon listens → joiner `join --mnemonic` → both `members` show each other; invite mint via local-daemon HMAC round-trip works.
+  - **Next:** Phase D — discovery via `grandcat/zeroconf` for `_minti-clan._tcp.local` + manual `/clan/peer-add` fallback (OQ-2 pulled forward in spec v0.2) + capability advertisement on 30 s tick + `reasoning_score`/`system_score` computation per spec §6.3/§6.4. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
 
 ### Next after M4
 
@@ -85,15 +86,16 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the M4 plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (approved
-2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C-core
-committed (see In-flight section). Pre-flight, then continue with
-Phase C-rest — the HTTP /clan/{invite,join,welcome,members,leave,revoke}
-endpoints + invite-token storage + 24h zombie sweep — building on the
-existing transport.Server (use Handle + HandleAnonymous as appropriate
-per the auth requirements in spec §3.2/§3.3) and membership.Create /
-PreJoinViaMnemonic. After C, Phase D is discovery + capability
-advertisement via grandcat/zeroconf with the manual /clan/peer-add
-fallback per OQ-2 pulled forward in spec v0.2.
+2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C
+committed (paste-key join works end-to-end on the smoke test). Pre-
+flight, then execute Phase D per the plan — mDNS discovery via
+github.com/grandcat/zeroconf for _minti-clan._tcp.local + manual
+/clan/peer-add fallback (OQ-2 pulled forward in spec v0.2) + 30 s
+capability advertisement loop + reasoning_score/system_score
+computation per spec §6.3/§6.4. Build on the existing
+transport.Server (route POST /clan/peer-add behind the auth
+middleware) and the persisted state.RosterMember LastSeenAt field
+to track freshness.
 ```
 
 ### Repo location
