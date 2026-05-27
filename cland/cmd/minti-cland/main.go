@@ -43,6 +43,7 @@ import (
 	"github.com/minti/cland/internal/membership"
 	"github.com/minti/cland/internal/peers"
 	"github.com/minti/cland/internal/probe"
+	"github.com/minti/cland/internal/router"
 	"github.com/minti/cland/internal/scores"
 	"github.com/minti/cland/internal/state"
 	"github.com/minti/cland/internal/transport"
@@ -409,6 +410,25 @@ func runDaemon(args []string) error {
 		"failover_grace", cfg.Election.FailoverGrace,
 		"history_size", cfg.Election.HistorySize,
 	)
+
+	// ----- Phase F: routing layer -----
+	routerSvc, err := router.NewRouter(router.Opts{
+		SelfID:         id.MemberID,
+		ClanID:         clan.ClanID,
+		ElectionState:  electionState,
+		Registry:       registry,
+		RuntimeBaseURL: cfg.Runtime.BaseURL,
+		PeerClient:     advClient, // reuse the HMAC-stamping transport.Client
+		Audit:          audit,
+		Log:            log,
+	})
+	if err != nil {
+		return fmt.Errorf("router: %w", err)
+	}
+	routerSvc.Register(srv)
+	log.Info("router enabled",
+		"runtime_base", cfg.Runtime.BaseURL,
+		"endpoints", "/v1/chat/completions /v1/messages /api/chat")
 
 	select {
 	case <-ctx.Done():
