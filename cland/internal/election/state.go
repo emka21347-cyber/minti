@@ -35,16 +35,18 @@ var (
 	ErrUnaffiliated    = errors.New("election: daemon is unaffiliated")
 )
 
-// Heartbeat is the spec §5.3 wire payload. Phase E emits all six fields and
-// parses all six; active_roster + reasoning_score are stored on the receiver
-// side for Phase H (revocation gossip) but otherwise informational here.
+// Heartbeat is the spec §5.3 wire payload, extended in Phase H-2 with
+// `revocations_digest` so peers can detect when their local revocations list
+// has drifted from the sender's. On mismatch the receiver fetches the full
+// list via GET /clan/revocations from the sender's address.
 type Heartbeat struct {
-	MemberID       string    `json:"member_id"`
-	ClanID         string    `json:"clan_id"`
-	Term           uint64    `json:"term"`
-	LeaseUntil     time.Time `json:"lease_until"`
-	ReasoningScore int       `json:"reasoning_score"`
-	ActiveRoster   []string  `json:"active_roster"`
+	MemberID           string    `json:"member_id"`
+	ClanID             string    `json:"clan_id"`
+	Term               uint64    `json:"term"`
+	LeaseUntil         time.Time `json:"lease_until"`
+	ReasoningScore     int       `json:"reasoning_score"`
+	ActiveRoster       []string  `json:"active_roster"`
+	RevocationsDigest  string    `json:"revocations_digest,omitempty"` // Phase H-2: sha256 of sorted revoked member_ids
 }
 
 // HistoryEntry is one row in the in-memory ring at /clan/election/history.

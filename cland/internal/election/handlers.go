@@ -1,6 +1,7 @@
 package election
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,9 +11,17 @@ import (
 	"github.com/minti/cland/internal/transport"
 )
 
+// RevocationsSyncer is the Phase H-2 hook called from /clan/heartbeat — on
+// digest mismatch with the sender, fetch + merge the sender's revocations
+// list. Optional dep; nil = sync disabled (e.g. for tests).
+type RevocationsSyncer interface {
+	MaybeSync(ctx context.Context, senderID, theirDigest string) bool
+}
+
 // Handlers bundles the four Phase E endpoints:
 //
-//   POST /clan/heartbeat        — Orchestrator → peers (anti-spoof + term gate)
+//   POST /clan/heartbeat        — Orchestrator → peers (anti-spoof + term gate
+//                                 + Phase H-2 revocations digest sync)
 //   GET  /clan/orchestrator     — diagnostic (current term + winner + lease)
 //   GET  /clan/election/history — diagnostic ring buffer
 //   POST /clan/pin              — local-loop only; flips PinnedOrchestrator
@@ -24,6 +33,7 @@ type Handlers struct {
 	Engine *Engine
 	Store  *state.Store
 	Bump   func() // optional; called after /clan/pin succeeds to propagate the new pin
+	RevocationsSync RevocationsSyncer // optional; Phase H-2
 }
 
 func (h *Handlers) Register(srv *transport.Server) {
@@ -72,6 +82,12 @@ func (h *Handlers) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, body)
 		}
 		return
+	}
+	// Phase H-2: opportunistically sync revocations after the heartbeat
+	// passes lease/term/anti-spoof. Cheap when digests match, non-blocking
+	// when they don't (Syncer dedupes per-peer in-flight).
+	if h.RevocationsSync != nil && hb.RevocationsDigest != "" {
+		_ = h.RevocationsSync.MaybeSync(context.Background(), sender, hb.RevocationsDigest)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted":     res.Accepted,

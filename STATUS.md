@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G + H-1 done — two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, cross-Clan signed-token tool execution, and orchestrator-driven 2PC key rotation all working end-to-end on Windows host. Phase H-2 (revocation gossip) and then I + J wrap M4.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 done — full security + protocol stack: two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, cross-Clan signed-token tool execution, orchestrator-driven 2PC key rotation, and heartbeat-driven revocation gossip all working end-to-end on Windows host. Phase I (install.sh + systemd) and Phase J (two-node testbed) wrap M4.
 
 ---
 
@@ -91,7 +91,16 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     - **10 unit tests** in `internal/keyrotate/`: store put-accepted / put-different-id-409 / put-same-id-idempotent / sweep-expired / take-matches-id; member propose happy / commit-without-propose-409 / commit-after-propose-rotates / abort-clears; coordinator happy-all-ack / one-peer-fails-aborts (no self-rotate) / lone-orch / network-error-treated-as-failure.
     - **Phase E smoke regression-clean** with keyrotate wired.
     - **Deferred to Phase H-2**: revocation gossip. `/clan/revoke` already exists from Phase C (writes `revocations.json`, flips roster entry to "revoked", `peers.Registry.SetRevocations` consults the list on candidate binding). What's missing is *cross-daemon propagation* — Phase H-2 will piggyback revocations digest on heartbeats so a partitioned-then-healed node syncs.
-  - **Next:** Phase H-2 — revocation gossip. Extend heartbeat payload with `revocations_digest` (sha256 of sorted revoked member_ids); on digest mismatch, fetch full list via a new `GET /clan/revocations`. Then **Phase I** — install.sh + Makefile + systemd unit. Then **Phase J** — two-node testbed validation. M4 wraps after J.
+
+  - **Phase H-2 done** (2026-05-28, see commit log): revocation gossip via heartbeat digest. New `cland/internal/revocations/` package:
+    - **state.Revocations.Digest()** — sha256-hex of sorted member_ids, LF-joined. Stable across permutations; empty list yields a fixed value (sha256 of empty input); per-entry timestamps + reasons are not in the digest (only the SET of revoked members matters for membership filtering).
+    - **state.Revocations.Merge(other)** — union, dedup by MemberID, local metadata wins on conflict.
+    - **election.Heartbeat** gains `revocations_digest` (emitted by `Engine.emitHeartbeats` + `runElection` announce; non-blocking, ignored by Phase E receivers that haven't been recompiled).
+    - **revocations.Syncer.MaybeSync(senderID, theirDigest)** — called from `election.Handlers` after the heartbeat passes lease/term/anti-spoof. Compares local digest to theirs; on mismatch + unknown peer addr → log + skip; on mismatch + known addr → GET `https://<addr>/clan/revocations` via the HMAC-stamping `transport.Client`, merge into local store, refresh `peers.Registry.SetRevocations` so the next `BindMember` consults the updated set. Per-peer in-flight dedup prevents concurrent fetches when many heartbeats arrive close together.
+    - **revocations.Handler** registers `GET /clan/revocations` behind the existing HMAC middleware.
+    - **8 unit tests** in `internal/revocations/`: digest permutation-invariant, empty digest has stable value, empty-digest MaybeSync skips, matching digest no-op, mismatched digest fetches + merges + refreshes registry, unknown-peer-addr doesn't panic, fetch error preserves local, idempotent on repeat, GET returns correct shape, GET on empty store returns empty list.
+    - **Phase E smoke regression-clean** with revocations wired.
+  - **Next:** **Phase I** — install.sh + Makefile + systemd unit + minti-fetch surface. Stage minti-cland binary to /usr/local/bin, write /etc/minti/cland.yaml + reasoning-scores.yaml, install hardened systemd unit, extend minti-fetch to show Clan ID + member ID + current Orchestrator + role. Then **Phase J** — clone minti-dev VM, validate two-node end-to-end on a fresh Linux pair. M4 wraps after J.
 
   - **Phase E done** (2026-05-27, see commit log): leader-lease election engine.
 
@@ -125,20 +134,22 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the super-plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md. M0–M3 done;
-M4 Phases 0 + A + B + C + D + E + F + G + H-1 all committed and
-validated (two-daemon Clan, paste-key join, advertise, leader-lease
-election with failover + restart-accept, Orchestrator chat-completion
-routing, cross-Clan signed-token tool execution, orchestrator-driven
-2PC key rotation — 10 keyrotate unit tests, full cland test suite
-green across all 15 packages, Phase E regression smoke clean).
-Pre-flight, then execute Phase H-2 per the super-plan — revocation
-gossip. /clan/revoke already writes revocations.json + flips roster
-entry locally; H-2 adds cross-daemon propagation by piggybacking
-revocations_digest (sha256 of sorted revoked member_ids) on every
-heartbeat. On digest mismatch, fetch full list via new GET
-/clan/revocations. After H-2 wraps the security work, Phase I adds
-install.sh / Makefile / systemd unit, Phase J validates two-node on
-a fresh VM clone. M4 done after J.
+M4 Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 all committed
+and validated (two-daemon Clan + paste-key join + advertise + leader-
+lease election with failover + restart-accept + Orchestrator chat-
+completion routing + cross-Clan signed-token tool execution + 2PC key
+rotation + heartbeat-driven revocation gossip — 16-package cland
+test suite green, Phase E regression smoke clean). Pre-flight, then
+execute Phase I per the super-plan — install.sh + Makefile + systemd
+unit for minti-cland. Stage binary to /usr/local/bin, write
+/etc/minti/cland.yaml + reasoning-scores.yaml, install
+minti-cland.service (hardened — NoNewPrivileges, ProtectSystem=strict,
+ReadWritePaths=/var/lib/minti/cland + /var/log/minti, User=minti).
+Extend branding/minti-fetch with Clan ID + member ID + current
+Orchestrator + role. Then Phase J — clone minti-dev VM via
+scripts/m4-setup-second-vm.sh (host-only network for mDNS), run the
+M4 acceptance gate (16 verification tests in velvet-drifting-codd.md).
+M4 done after J.
 ```
 
 ### Repo location

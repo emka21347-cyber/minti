@@ -44,6 +44,7 @@ import (
 	"github.com/minti/cland/internal/membership"
 	"github.com/minti/cland/internal/peers"
 	"github.com/minti/cland/internal/probe"
+	"github.com/minti/cland/internal/revocations"
 	"github.com/minti/cland/internal/router"
 	"github.com/minti/cland/internal/scores"
 	"github.com/minti/cland/internal/state"
@@ -405,7 +406,35 @@ func runDaemon(args []string) error {
 	if err != nil {
 		return fmt.Errorf("election: %w", err)
 	}
-	(&election.Handlers{Engine: electionEng, Store: store, Bump: advSvc.Bump}).Register(srv)
+	// Phase H-2: revocations sync (heartbeat-driven gossip + GET endpoint).
+	revSyncer, err := revocations.NewSyncer(revocations.SyncerOpts{
+		SelfID:   id.MemberID,
+		Store:    store,
+		Registry: registry,
+		Fetcher:  advClient, // HMAC-stamping transport.Client
+		LookupAddr: func(memberID string) string {
+			_, members := registry.Snapshot()
+			for _, m := range members {
+				if m.MemberID == memberID {
+					return m.Address
+				}
+			}
+			return ""
+		},
+		Audit: audit,
+		Log:   log,
+	})
+	if err != nil {
+		return fmt.Errorf("revocations syncer: %w", err)
+	}
+	(&revocations.Handler{Store: store, Log: log}).Register(srv)
+
+	(&election.Handlers{
+		Engine:          electionEng,
+		Store:           store,
+		Bump:            advSvc.Bump,
+		RevocationsSync: revSyncer,
+	}).Register(srv)
 	electionCtx, electionCancel := context.WithCancel(context.Background())
 	defer electionCancel()
 	go electionEng.Run(electionCtx)

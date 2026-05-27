@@ -216,13 +216,21 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 		e.opts.Log.Error("election: load clan for heartbeat", "err", err)
 		return
 	}
+	// Phase H-2: include local revocations digest so receivers can detect
+	// drift and sync. Cheap (small read + sha256 over a few member_ids).
+	revs, _ := e.opts.Store.LoadRevocations()
+	revDigest := ""
+	if revs != nil {
+		revDigest = revs.Digest()
+	}
 	hb := Heartbeat{
-		MemberID:       e.opts.SelfID,
-		ClanID:         e.opts.ClanID,
-		Term:           term,
-		LeaseUntil:     now.Add(e.opts.LeaseDuration),
-		ReasoningScore: self.ReasoningScore,
-		ActiveRoster:   activeRoster(clan),
+		MemberID:          e.opts.SelfID,
+		ClanID:            e.opts.ClanID,
+		Term:              term,
+		LeaseUntil:        now.Add(e.opts.LeaseDuration),
+		ReasoningScore:    self.ReasoningScore,
+		ActiveRoster:      activeRoster(clan),
+		RevocationsDigest: revDigest,
 	}
 	body, err := json.Marshal(hb)
 	if err != nil {
@@ -287,13 +295,19 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 	quorum := e.quorum(clan)
 	accepts := 1 // self vote
 
+	revs, _ := e.opts.Store.LoadRevocations()
+	revDigest := ""
+	if revs != nil {
+		revDigest = revs.Digest()
+	}
 	hb := Heartbeat{
-		MemberID:       e.opts.SelfID,
-		ClanID:         e.opts.ClanID,
-		Term:           newTerm,
-		LeaseUntil:     now.Add(e.opts.LeaseDuration),
-		ReasoningScore: candidate.ReasoningScore,
-		ActiveRoster:   activeRoster(clan),
+		MemberID:          e.opts.SelfID,
+		ClanID:            e.opts.ClanID,
+		Term:              newTerm,
+		LeaseUntil:        now.Add(e.opts.LeaseDuration),
+		ReasoningScore:    candidate.ReasoningScore,
+		ActiveRoster:      activeRoster(clan),
+		RevocationsDigest: revDigest,
 	}
 	body, _ := json.Marshal(hb)
 	_, members := e.opts.Registry.Snapshot()

@@ -16,12 +16,16 @@
 package state
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -87,6 +91,54 @@ type Revocation struct {
 	RevokedAt   time.Time `json:"revoked_at"`
 	RevokedBy   string    `json:"revoked_by"`
 	Reason      string    `json:"reason,omitempty"`
+}
+
+// Digest returns the sha256-hex over the sorted, LF-joined member_ids in this
+// revocation list. Used by Phase H-2 heartbeat-driven gossip: two daemons
+// compare digests, and on mismatch the receiver fetches the full list to
+// reconcile. Stable across goroutine call order; ignores per-entry timestamps
+// + reasons (only the SET of revoked members matters for membership filtering).
+func (r *Revocations) Digest() string {
+	if r == nil || len(r.Entries) == 0 {
+		// Empty list has a well-defined digest (sha256 of empty input).
+		// Both sides compute the same one — no special "absent" case.
+		s := sha256.Sum256(nil)
+		return hex.EncodeToString(s[:])
+	}
+	ids := make([]string, 0, len(r.Entries))
+	for _, e := range r.Entries {
+		ids = append(ids, e.MemberID)
+	}
+	sort.Strings(ids)
+	joined := strings.Join(ids, "\n")
+	s := sha256.Sum256([]byte(joined))
+	return hex.EncodeToString(s[:])
+}
+
+// Merge takes the union of in + other Revocations, deduping by MemberID.
+// Returns the merged result. Per-entry metadata (timestamps, reason) from
+// the existing entry wins on conflict — the local view of "when did we
+// learn about this" is more authoritative than what a peer tells us.
+func (r *Revocations) Merge(other *Revocations) *Revocations {
+	out := &Revocations{}
+	seen := map[string]bool{}
+	if r != nil {
+		for _, e := range r.Entries {
+			if !seen[e.MemberID] {
+				out.Entries = append(out.Entries, e)
+				seen[e.MemberID] = true
+			}
+		}
+	}
+	if other != nil {
+		for _, e := range other.Entries {
+			if !seen[e.MemberID] {
+				out.Entries = append(out.Entries, e)
+				seen[e.MemberID] = true
+			}
+		}
+	}
+	return out
 }
 
 // IsActive reports whether this member is currently part of a Clan.
