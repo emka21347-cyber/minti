@@ -151,6 +151,55 @@ func TestSaveClan_ConcurrentWritesSerialise(t *testing.T) {
 	}
 }
 
+// TestElectionFields_RoundTrip covers the Phase E additions: CurrentTerm,
+// CurrentOrchestrator, PinnedOrchestrator must round-trip via SaveClan /
+// LoadClan. LeaseExpires is INTENTIONALLY NOT in the struct (R2 — volatile
+// state, reconstructed from the next heartbeat after restart).
+func TestElectionFields_RoundTrip(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	original := &Clan{
+		ClanID:              "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+		Role:                "founder",
+		CurrentOrchestrator: "orch-uuid",
+		CurrentTerm:         42,
+		PinnedOrchestrator:  true,
+	}
+	if err := s.SaveClan(original); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadClan()
+	if err != nil || loaded == nil {
+		t.Fatalf("load: %v %v", loaded, err)
+	}
+	if loaded.CurrentTerm != 42 {
+		t.Errorf("CurrentTerm: got %d want 42", loaded.CurrentTerm)
+	}
+	if loaded.CurrentOrchestrator != "orch-uuid" {
+		t.Errorf("CurrentOrchestrator: got %q want %q", loaded.CurrentOrchestrator, "orch-uuid")
+	}
+	if !loaded.PinnedOrchestrator {
+		t.Errorf("PinnedOrchestrator: got false want true")
+	}
+}
+
+// TestElectionFields_DefaultZero verifies the omitempty tags keep older
+// state files (Phases A-D) loadable: a Clan with no election fields set
+// must load with all three at the zero value.
+func TestElectionFields_DefaultZero(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	if err := s.SaveClan(&Clan{ClanID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadClan()
+	if err != nil || loaded == nil {
+		t.Fatalf("load: %v %v", loaded, err)
+	}
+	if loaded.CurrentTerm != 0 || loaded.CurrentOrchestrator != "" || loaded.PinnedOrchestrator {
+		t.Errorf("expected zero-value election fields, got term=%d orch=%q pinned=%v",
+			loaded.CurrentTerm, loaded.CurrentOrchestrator, loaded.PinnedOrchestrator)
+	}
+}
+
 func TestSaveClan_RejectsNil(t *testing.T) {
 	s, _ := NewStore(t.TempDir())
 	if err := s.SaveClan(nil); err == nil {

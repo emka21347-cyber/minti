@@ -1,6 +1,6 @@
 # MINTI — Project Status
 
-> **Last updated:** 2026-05-26
+> **Last updated:** 2026-05-27
 > **Purpose:** Read this *first* when opening a new chat or onboarding to the project. It's the single document that tells you where MINTI is right now and how to pick up work without re-reading history.
 
 ---
@@ -57,7 +57,13 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
   - **Phase D done** (`73ecb2a` foundations + `d3f26a3` wiring + 2 prereq fixes): three foundation packages — `peers/` (Registry with candidate vs member-keyed stores, AdFresh/Live predicates, peer-add DoS guardrails 100-cap + 10/60s per-origin + TCP pre-dial), `scores/` (rubric loader + ReasoningScore + SystemScore + sliding-5-min RecentFailures), `probe/` (Linux + Windows hardware probe with EMA-smoothed SHA-256 CPU benchmark, nvidia-smi VRAM, runtime-adapter capabilities client). Then `discovery/` (grandcat/zeroconf with 1s debounce + clan_id filter + foreign-clan WARN + IsActive gating + Candidate-only emission per qwen3.6 1A) and `advertise/` (30s tick + 5s initial-delay + Bump rate-limited + per-peer failure record). Three new HTTP endpoints — `/clan/{advertise,peer-add,peers}` — registered behind the existing HMAC middleware. Two new CLI subcommands (`peer-add`, `peers`).
     - **2 prereq fixes** surfaced + landed in this commit: (1) the daemon's TLS server now uses the **shared** `clan_cert` priv key (founder's Ed25519) — Phase C latently used each member's identity priv, which only worked one-way; (2) **Advertisement.LANAddress** added so receivers register the sender's listen port, not the incoming TCP socket's ephemeral source port.
     - **End-to-end smoke** (Windows, two state dirs on 127.0.0.1:17980 + :17981): founder creates → daemons run on both sides → `peer-add` from founder → within 6s both `peers` commands show each other as `ad_fresh=true` with `system_score=66`.
-  - **Next:** Phase E — leader-lease election. Heartbeat 2s, lease 8s, failover grace 6s. `peers.Registry.Live(now)` already exists from Phase D and finally has meaning once Phase E plumbs `/clan/heartbeat` receipts into `LastSeenAt`. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
+
+  - **Phase E done** (2026-05-27, see commit log): leader-lease election engine. New `cland/internal/election/` package — `state.go` (in-memory term/orch/lease + history ring), `engine.go` (single-goroutine ticker driving heartbeat emit + election trigger + candidate selection + quorum + ⌈N/2⌉ accept counting), `handlers.go` (`POST /clan/heartbeat`, `GET /clan/orchestrator`, `GET /clan/election/history`, `POST /clan/pin`). Spec §5.2 cadence (HEARTBEAT_INTERVAL=2s / LEASE_DURATION=8s / FAILOVER_GRACE=6s / ELECTION_TIMEOUT=1s) configurable via `cfg.Election`. State extensions: `Clan.CurrentTerm` + `Clan.CurrentOrchestrator` + `Clan.PinnedOrchestrator` persisted via the existing atomic-rename path. New CLI: `pin --self|--clear`, `orchestrator`, `election-history`.
+    - **7 peer-review-driven design fixes** baked in: R1 zombie-leader gate (heartbeat skipped if runtime probe unhealthy), R2 persist-on-change only (LeaseExpires in-memory — eliminates 1-write-per-2s I/O storm), R3 full spec §5.3 payload schema (`active_roster` + `reasoning_score`), R4 local lease tracking (ignore wire `lease_until`), R5 active-only quorum (drop `admitted`), R6 startup grace (no election in first FAILOVER_GRACE — handles post-restart heartbeat-catch-up), R7 50-150 ms random backoff. Plus a step-down behavior (Orchestrator vacates when `selectCandidate` now prefers another, enabling pin propagation), a higher-term-bypasses-anti-spoof rule (Raft convention; without it a restarted daemon split-brains against a survivor that ran a successful failover), and a `HeartbeatSeen` flag in `peers.Member` (so a once-heartbeating-now-dead peer drops out of candidate selection instead of being preserved by the AdFresh fallback).
+    - **3 peer-review artifacts** at `scripts/m4-reviews/phaseE-{qwen3.6_latest,deepseek-r1_32b,gemma4_31b}.md`. gemma4 returned the only blocker (E1 zombie leader → R1), qwen3.6 caught the active-only quorum point (R5), deepseek corroborated. Driver at `scripts/m4-phaseE-review.py`; raw input snapshot at `scripts/m4-reviews/phaseE-input.txt`.
+    - **16 unit tests green** in `internal/election/` covering lone-member election, AdmittedAt tiebreaker, pin override, multi-pin tiebreaker, anti-spoof (same-term reject) + higher-term bypass, term replay, lease expiry trigger, active-only quorum, R7 backoff bounds, persistence-omits-LeaseExpires, zombie-leader gate, startup grace, foreign clan_id reject, and step-down on preferred-elsewhere.
+    - **End-to-end smoke** (`scripts/m4-phaseE-smoke.ps1`): two daemons on `127.0.0.1:17980` + `:17981`, paste-key join, advertise exchange, election commits with both sides agreeing on Orchestrator at term=1, kill the Orchestrator, survivor takes over at term=2 within 14 s, restart the killed daemon → it loads persisted term=1 + then accepts the survivor's higher-term heartbeat (term=2). Election-history surfaces the failover reason. `MINTI_CLAND_FORCE_HEALTHY=1` env-var hatch documented in main.go + advertise.go lets the smoke run without minti-runtime alongside; production deployments leave it unset and the R1 gate enforces.
+  - **Next:** Phase F — routing layer. Orchestrator routes `/v1/chat/completions`, `/api/chat`, `/v1/messages`, `/v1/embeddings` (latter three per spec v0.2 §10 row). Reasoning workloads strict-served by Orchestrator's own runtime-adapter per spec §6.1. Worker routing picks by `system_score × (1 - load)` with retry-once. Self-routing fast path (D-M4.10) bypasses TLS round-trip when target == self.
 
 ### Next after M4
 
@@ -87,19 +93,18 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 ```
 Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
-then read STATUS.md and the M4 plan at
-C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (approved
-2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C + D
-committed and validated end-to-end (two daemons on 127.0.0.1 with
-paste-key join + peer-add + advertise loop both ways). Pre-flight,
-then execute Phase E per the plan — leader-lease election with the
-spec §5.2 cadence (HEARTBEAT_INTERVAL=2s, LEASE_DURATION=8s,
-FAILOVER_GRACE=6s, ELECTION_TIMEOUT=1s). `peers.Registry.Live()` +
-`TouchLive()` are already in place from Phase D; Phase E adds the
-heartbeat goroutine + election state machine + multi-pin tiebreaker
-+ split-brain handling. Build on the existing transport.Server +
-peers.Registry; persist current_term + lease state to a new file
-under /var/lib/minti/cland/.
+then read STATUS.md and the super-plan at
+C:\Users\aouad\.claude\plans\velvet-drifting-codd.md. M0–M3 done;
+M4 Phases 0 + A + B + C + D + E all committed and smoke-validated
+(two daemons on 127.0.0.1 with paste-key join + advertise + leader-
+lease election + failover at term=2 + restart-and-accept). Pre-flight,
+then execute Phase F per the super-plan — routing layer. Orchestrator
+proxies /v1/chat/completions + /api/chat + /v1/messages + /v1/embeddings.
+Reasoning workloads strict-served by Orchestrator's own runtime per
+spec §6.1. Worker pick = system_score × (1 - load) with retry-once.
+Self-routing fast path (D-M4.10) bypasses TLS when target == self.
+Build on the existing election.Engine (provides Orchestrator identity)
++ peers.Registry (provides worker scores) + transport.Client.
 ```
 
 ### Repo location

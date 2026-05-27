@@ -38,6 +38,7 @@ import (
 	"github.com/minti/cland/internal/config"
 	"github.com/minti/cland/internal/crypto"
 	"github.com/minti/cland/internal/discovery"
+	"github.com/minti/cland/internal/election"
 	"github.com/minti/cland/internal/identity"
 	"github.com/minti/cland/internal/membership"
 	"github.com/minti/cland/internal/peers"
@@ -70,6 +71,12 @@ func main() {
 			err = cmdPeerAdd(os.Args[2:])
 		case "peers":
 			err = cmdPeers(os.Args[2:])
+		case "pin":
+			err = cmdPin(os.Args[2:])
+		case "orchestrator":
+			err = cmdOrchestrator(os.Args[2:])
+		case "election-history":
+			err = cmdElectionHistory(os.Args[2:])
 		case "show":
 			err = cmdShow(os.Args[2:])
 		case "help", "-h", "--help":
@@ -113,6 +120,9 @@ Usage:
   minti-cland members                  print persisted roster
   minti-cland peer-add <ip:port>       manually register a peer (mDNS fallback)
   minti-cland peers                    print live peer registry
+  minti-cland pin [--self|--clear]     set or clear the self-pin (spec §5.6)
+  minti-cland orchestrator             print current Orchestrator + term + lease
+  minti-cland election-history         print recent elections (ring buffer)
   minti-cland show                     print clan_id, pin, LAN address
   minti-cland help                     this message
 
@@ -320,6 +330,85 @@ func runDaemon(args []string) error {
 	go advSvc.Start(advCtx)
 	log.Info("advertise + discovery loops running",
 		"interval", cfg.Advertise.Interval, "rubric_path", cfg.Discovery.RubricPath)
+
+	// ----- Phase E: leader-lease election -----
+	electionState := election.NewState(id.MemberID, clan.CurrentTerm, clan.CurrentOrchestrator, cfg.Election.HistorySize)
+	localSelfFn := func() election.LocalCandidate {
+		curClan, err := store.LoadClan()
+		if err != nil || curClan == nil {
+			return election.LocalCandidate{MemberID: id.MemberID}
+		}
+		caps, _ := runtimeClient.Get(context.Background())
+		resident := caps.ResidentModels()
+		remote := caps.RemoteAPIs()
+		score := scores.ReasoningScore(rubric, resident, remote)
+		enabled := caps != nil && caps.Healthy && len(resident)+len(remote) > 0
+		// Smoke-test escape hatch: same env var as healthFn (R1 bypass).
+		// Forces reasoning-capable so the daemon can be elected even without
+		// a live runtime-adapter alongside. Production leaves this unset.
+		if !enabled && os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1" {
+			enabled = true
+			if score == 0 {
+				score = 50
+			}
+		}
+		var admittedAt time.Time
+		for _, m := range curClan.Roster {
+			if m.MemberID == id.MemberID {
+				admittedAt = m.AdmittedAt
+				break
+			}
+		}
+		return election.LocalCandidate{
+			MemberID:         id.MemberID,
+			ReasoningScore:   score,
+			ReasoningEnabled: enabled,
+			Pinned:           curClan.PinnedOrchestrator,
+			AdmittedAt:       admittedAt,
+		}
+	}
+	healthFn := func(now time.Time) bool {
+		// Smoke-test escape hatch: lets the Phase E smoke script run cland
+		// pairs on 127.0.0.1 without requiring a live minti-runtime alongside.
+		// Production deployments leave this unset; R1 gate is then enforced.
+		if os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1" {
+			return true
+		}
+		caps, err := runtimeClient.Get(context.Background())
+		// R1: heartbeat only if the local runtime answered successfully + reports healthy.
+		// On err the runtime client may return a stale cache; we still treat as unhealthy
+		// to avoid the zombie-leader scenario (gemma E1).
+		return err == nil && caps != nil && caps.Healthy
+	}
+	electionEng, err := election.NewEngine(election.EngineOpts{
+		SelfID:            id.MemberID,
+		ClanID:            clan.ClanID,
+		State:             electionState,
+		Store:             store,
+		Registry:          registry,
+		Client:            advClient, // reuse the same HMAC-stamping transport.Client
+		Health:            healthFn,
+		LocalSelf:         localSelfFn,
+		Audit:             audit,
+		Log:               log,
+		HeartbeatInterval: cfg.Election.HeartbeatInterval,
+		LeaseDuration:     cfg.Election.LeaseDuration,
+		FailoverGrace:     cfg.Election.FailoverGrace,
+		ElectionTimeout:   cfg.Election.ElectionTimeout,
+	})
+	if err != nil {
+		return fmt.Errorf("election: %w", err)
+	}
+	(&election.Handlers{Engine: electionEng, Store: store, Bump: advSvc.Bump}).Register(srv)
+	electionCtx, electionCancel := context.WithCancel(context.Background())
+	defer electionCancel()
+	go electionEng.Run(electionCtx)
+	log.Info("election engine running",
+		"heartbeat", cfg.Election.HeartbeatInterval,
+		"lease", cfg.Election.LeaseDuration,
+		"failover_grace", cfg.Election.FailoverGrace,
+		"history_size", cfg.Election.HistorySize,
+	)
 
 	select {
 	case <-ctx.Done():
@@ -773,6 +862,169 @@ func cmdPeers(args []string) error {
 		fmt.Printf("  %s @ %-22s  via=%-8s  reason=%3d  sys=%3d  ad_fresh=%t  last_ad=%s\n",
 			m.MemberID, m.Address, m.DiscoveredVia, rs, ss, m.AdFresh(now),
 			m.LastAd.Format("2006-01-02T15:04:05Z"))
+	}
+	return nil
+}
+
+// ---------- pin ----------
+
+func cmdPin(args []string) error {
+	fs := flag.NewFlagSet("pin", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	self := fs.Bool("self", false, "pin self as Orchestrator (overrides election score)")
+	clear := fs.Bool("clear", false, "clear the self-pin")
+	_ = fs.Parse(args)
+	if *self == *clear {
+		return errors.New("pass exactly one of --self or --clear")
+	}
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(election.PinRequest{Value: *self})
+	resp, err := cli.Post(base+"/clan/pin", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pin failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var pr election.PinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return err
+	}
+	if pr.PinnedOrchestrator {
+		fmt.Println("self-pinned (will win the next election regardless of score).")
+	} else {
+		fmt.Println("self-pin cleared (election reverts to score-based selection).")
+	}
+	return nil
+}
+
+// ---------- orchestrator ----------
+
+func cmdOrchestrator(args []string) error {
+	fs := flag.NewFlagSet("orchestrator", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/clan/orchestrator", nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("orchestrator failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		_, _ = io.Copy(os.Stdout, resp.Body)
+		return nil
+	}
+	var or election.OrchestratorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&or); err != nil {
+		return err
+	}
+	fmt.Printf("Self:        %s\n", or.Self)
+	if or.CurrentOrchestrator == "" {
+		fmt.Println("Orchestrator: (none — election not yet committed)")
+		return nil
+	}
+	tag := ""
+	if or.IsSelf {
+		tag = " (self)"
+	}
+	fmt.Printf("Orchestrator: %s%s\n", or.CurrentOrchestrator, tag)
+	fmt.Printf("Term:         %d\n", or.CurrentTerm)
+	if !or.LeaseExpires.IsZero() {
+		fmt.Printf("Lease until:  %s\n", or.LeaseExpires.Format(time.RFC3339))
+	}
+	return nil
+}
+
+// ---------- election-history ----------
+
+func cmdElectionHistory(args []string) error {
+	fs := flag.NewFlagSet("election-history", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/clan/election/history", nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("election-history failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		_, _ = io.Copy(os.Stdout, resp.Body)
+		return nil
+	}
+	var hr election.HistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
+		return err
+	}
+	if len(hr.Entries) == 0 {
+		fmt.Println("No elections recorded yet.")
+		return nil
+	}
+	fmt.Printf("Recent elections (%d):\n", len(hr.Entries))
+	for _, e := range hr.Entries {
+		fmt.Printf("  term=%-4d winner=%-36s reason=%-20s at=%s\n",
+			e.Term, e.Winner, e.Reason, e.At.Format(time.RFC3339))
 	}
 	return nil
 }

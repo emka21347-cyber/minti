@@ -81,6 +81,14 @@ type Member struct {
 	LastSeenAt    time.Time      `json:"last_seen_at"`
 	LatestAd      *Advertisement `json:"latest_ad,omitempty"`
 	AdGeneration  uint64         `json:"ad_generation"`
+
+	// HeartbeatSeen flips true on the first /clan/heartbeat receipt from this
+	// member (via Registry.TouchLive). Once true, election candidate selection
+	// requires Live(now) for this peer — preventing a stale-but-recently-active
+	// peer from being picked after they've died. False until the first
+	// heartbeat lands; selection falls back to AdFresh() in that bootstrap
+	// window.
+	HeartbeatSeen bool `json:"heartbeat_seen"`
 }
 
 // Advertisement is the parsed §4.2 payload. Loose typing on `Hardware` /
@@ -319,13 +327,16 @@ func (r *Registry) BindMember(ad *Advertisement, remoteAddr string) error {
 	return nil
 }
 
-// TouchLive bumps LastSeenAt for a member — used by Phase E to record
-// heartbeat receipts (calling site lands when Phase E ships).
+// TouchLive bumps LastSeenAt for a member — Phase E heartbeat receipt path.
+// Also latches HeartbeatSeen=true on the first call so election candidate
+// selection can distinguish "never-heartbeat (bootstrap)" from "was-heartbeat-
+// now-silent (dead)".
 func (r *Registry) TouchLive(memberID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if m := r.members[memberID]; m != nil {
 		m.LastSeenAt = time.Now().UTC()
+		m.HeartbeatSeen = true
 	}
 }
 

@@ -20,6 +20,19 @@ discovery:
   # Interface to bind mDNS to. Empty = all up + multicast-capable.
   interface: ""
 
+election:
+  # Leader-lease election cadence (spec §5.2). Defaults shown are the spec
+  # values; override only with strong reason — peers MUST agree on these or
+  # failover/quorum will misbehave.
+  heartbeat_interval: 2s   # Orchestrator emits heartbeats this often.
+  lease_duration:    8s    # Receiver-side lease window (lease_until = now + this).
+  failover_grace:    6s    # Tolerated silence before peers begin election.
+  election_timeout:  1s    # Wait window for accept-count to reach quorum.
+  history_size:      32    # Ring buffer size for /clan/election/history.
+  # R1 zombie-leader gate: Orchestrator stops heartbeating if its local
+  # minti-runtime hasn't responded successfully within this window.
+  runtime_probe_max_age: 60s
+
 runtime:
   # Where this member's local minti-runtime listens. cland calls it over
   # 127.0.0.1 when serving reasoning/inference requests as Orchestrator.

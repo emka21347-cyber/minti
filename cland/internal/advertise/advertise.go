@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -213,13 +214,24 @@ func (s *Service) buildPayload(ctx context.Context, generation uint64) (*peers.A
 	reasoningScore := scores.ReasoningScore(s.Rubric, residentModels, remoteAPIs)
 	systemScore := scores.SystemScore(toScoresHardware(hw), s.RecentFailures.Normalized(time.Now()))
 
+	// Phase E smoke-test escape hatch (matches main.go's healthFn / localSelfFn).
+	// Forces reasoning_enabled=true so the daemon advertises as a valid
+	// election candidate even without a live minti-runtime alongside.
+	// Production deployments leave this unset.
+	forceHealthy := os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1"
+	if forceHealthy && reasoningScore == 0 {
+		reasoningScore = 50
+	}
+	reasoningEnabled := reasoningScore > 0 || forceHealthy
+	inferenceEnabled := (caps != nil && caps.Healthy) || forceHealthy
+
 	cap := map[string]any{
 		"reasoning": map[string]any{
-			"enabled":  reasoningScore > 0,
+			"enabled":  reasoningEnabled,
 			"backends": backendsFromScores(s.Rubric, residentModels, remoteAPIs),
 		},
 		"inference": map[string]any{
-			"enabled":         caps != nil && caps.Healthy,
+			"enabled":         inferenceEnabled,
 			"models_resident": residentModels,
 		},
 		"vision-gen": map[string]any{"enabled": false},

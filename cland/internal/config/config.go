@@ -16,6 +16,7 @@ type Config struct {
 	State     StateConfig     `yaml:"state"`
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	Advertise AdvertiseConfig `yaml:"advertise"`
+	Election  ElectionConfig  `yaml:"election"`
 	Runtime   RuntimeConfig   `yaml:"runtime"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 }
@@ -42,6 +43,18 @@ type AdvertiseConfig struct {
 	InitialDelay time.Duration `yaml:"initial_delay"`  // 5s default
 }
 
+// ElectionConfig controls the §5.2 leader-lease election cadence (Phase E).
+// Defaults match the spec verbatim; overrides exist so tests can dial the
+// cadence down to ~50 ms for fast iteration.
+type ElectionConfig struct {
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"` // 2s — Orchestrator emit cadence
+	LeaseDuration     time.Duration `yaml:"lease_duration"`     // 8s — receiver lease window
+	FailoverGrace     time.Duration `yaml:"failover_grace"`     // 6s — silence tolerated before election
+	ElectionTimeout   time.Duration `yaml:"election_timeout"`   // 1s — accept-count window
+	HistorySize       int           `yaml:"history_size"`       // 32 — ring buffer for /clan/election/history
+	RuntimeProbeMaxAge time.Duration `yaml:"runtime_probe_max_age"` // 60s (2× ad interval) — R1 zombie-leader gate
+}
+
 type RuntimeConfig struct {
 	BaseURL string `yaml:"base_url"`
 }
@@ -61,6 +74,14 @@ func Default() Config {
 			Interval:     30 * time.Second,
 			BumpRate:     1 * time.Second,
 			InitialDelay: 5 * time.Second,
+		},
+		Election: ElectionConfig{
+			HeartbeatInterval:  2 * time.Second,
+			LeaseDuration:      8 * time.Second,
+			FailoverGrace:      6 * time.Second,
+			ElectionTimeout:    1 * time.Second,
+			HistorySize:        32,
+			RuntimeProbeMaxAge: 60 * time.Second,
 		},
 		Runtime:   RuntimeConfig{BaseURL: "http://127.0.0.1:7780"},
 		Telemetry: TelemetryConfig{LogLevel: "info"},

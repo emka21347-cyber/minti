@@ -49,6 +49,21 @@ type Clan struct {
 	// every capability advertisement; serialised here so the daemon survives
 	// a restart without having to wait for the next round of advertisements.
 	Roster []RosterMember `json:"roster,omitempty"`
+
+	// Phase E (leader-lease election) state.
+	//
+	// CurrentTerm + CurrentOrchestrator are persisted on change only, so a
+	// restarted daemon doesn't re-issue an old term against peers that have
+	// moved on. LeaseExpires is INTENTIONALLY NOT persisted (Phase E peer-
+	// review R2): it's volatile per-tick state that's reconstructed from
+	// the next received heartbeat, and persisting it would mean one
+	// SaveClan write per node every HEARTBEAT_INTERVAL.
+	//
+	// PinnedOrchestrator is the local self-pin per spec §5.6 — propagated
+	// to peers via the next /clan/advertise (Advertisement.PinnedOrchestrator).
+	CurrentOrchestrator string `json:"current_orchestrator,omitempty"`
+	CurrentTerm         uint64 `json:"current_term,omitempty"`
+	PinnedOrchestrator  bool   `json:"pinned_orchestrator,omitempty"`
 }
 
 // RosterMember is one entry in the persisted roster cache.
