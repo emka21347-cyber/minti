@@ -49,10 +49,11 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 ### In flight 🟡
 
 - **M4 — Clan Layer v1** (PRD §8, ~4 weeks part-time — "the iceberg"). Started 2026-05-27.
-  - **Phase 0 done** (commits `dccd7fb` + `577daed`): `docs/clan-protocol.md` bumped to v0.2 with 6 small additive edits surfaced by a local-LLM peer-review pass (qwen3.6 + deepseek-r1:32b + gemma4:31b). Edits: §3.3 12-word BIP39 mnemonic (128-bit, HKDF-expanded to clan_key); §6.4 `recently_failed` definition; §7.1 `target_member` in signed token claims + v1 honesty note; §10 `/v1/messages` + `/clan/peer-add` rows; §12 OQ-2 pulled into v1. Peer-review driver + raw reviews at `scripts/m4-peer-review.py` + `scripts/m4-reviews/`.
-  - **Phase A done** (commit `8b1c2fd`): `cland/` module bootstrap — `cmd/minti-cland/main.go` + `internal/{config,identity,state,auditlog}/`. Ed25519 keypair + UUIDv4 member_id persist to `<state_dir>/identity.json` mode 0600; Clan state at `clan.json` (also 0600 — holds `clan_key`) with atomic-rename writes; auditlog schema duplicated verbatim from `mcp-servers/internal/audit` (D-M4.6). All unit tests pass. Binary smoke-tested: first run generates identity, second run loads the same one.
-  - **Next:** Phase B — crypto + transport (HTTPS w/ self-signed cert + SPKI pinning; HMAC over `method|path|body|ts|nonce`; LRU-bounded nonce cache `10_000 × N_active_members`; `KeyProvider` interface from day one so Phase H's two-key grace window doesn't force a transport rewrite).
-  - Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
+  - **Phase 0 done** (`dccd7fb` + `577daed`): `docs/clan-protocol.md` → v0.2 with 6 peer-review-surfaced edits (12-word BIP39 paste-key + HKDF, `recently_failed` definition, `target_member` in signed token claims + v1 honesty note, `/v1/messages` + `/clan/peer-add` rows, OQ-2 pulled into v1). Local-LLM peer-review driver + raw reviews at `scripts/m4-peer-review.py` + `scripts/m4-reviews/`.
+  - **Phase A done** (`8b1c2fd`): cland module skeleton — `cmd/minti-cland/main.go` + `internal/{config,identity,state,auditlog}/`. Ed25519 keypair + UUIDv4 persist to `identity.json` (mode 0600); Clan state at `clan.json` (also 0600, holds `clan_key`) with atomic-rename writes; auditlog schema duplicated verbatim from `mcp-servers/internal/audit` (D-M4.6).
+  - **Phase B done** (`990fbc2`): crypto + transport. `crypto/` package — self-signed X.509 from Ed25519 with SPKI `sha256:<hex>` pin; HMAC-SHA256 over canonical request `(METHOD\nPATH\nsha256(body)hex\nts\nnonce)` per spec §2.3; `KeyProvider` interface (Current + optional Grace) wired from day one per D-M4.11. `transport/` package — HTTPS server with auth middleware (±60 s window, replay-rejection via LRU-bounded nonce cache, 401 empty body + audit-log on every reject, grace-key acceptance during rotation, `HandleAnonymous` escape hatch for the future `/clan/join`); HTTPS client with `VerifyPeerCertificate` SPKI pin enforcement.
+  - **Phase C-core done** (`0210239`): BIP39 paste-key + membership crypto core + CLI subcommands. `internal/bip39/` vendors the canonical bitcoin/bips english.txt (sha256 verified in test) + 12-word mnemonic encode/decode w/ checksum + case/whitespace normalisation. `internal/membership/Create()` founds a Clan (seed → mnemonic → HKDF clan_key → cert + clan_id, all persisted); `PreJoinViaMnemonic()` does the joiner-side derivation. CLI gains `create`/`members`/`show`; daemon mode unchanged. **Founder + joiner derive byte-identical clan_keys** given the same mnemonic — the central paste-key property is proven.
+  - **Phase C remaining (next session):** HTTP endpoints (`/clan/invite`, `/clan/join`, `/clan/welcome`, `/clan/members`, `/clan/leave`, `/clan/revoke`), invite-token in-memory store (single-use, TTL), zombie sweep (60 s ticker purging stuck `admitted` members past 24 h), CLI `invite`/`join`/`leave`/`revoke`. After that, Phase D — discovery (mDNS via `grandcat/zeroconf`) + manual `/clan/peer-add` fallback + capability advertisement. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
 
 ### Next after M4
 
@@ -83,13 +84,16 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the M4 plan at
-C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (already approved
-2026-05-27 after a local-LLM peer-review pass). M0–M3 are done; M4 is in
-flight: Phase 0 (spec edits → clan-protocol v0.2, commits dccd7fb +
-577daed) and Phase A (cland module skeleton + identity + state, commit
-8b1c2fd) are committed and tested. Pre-flight check the system, then
-execute Phase B per the plan — crypto + transport (self-signed clan_cert
-+ SPKI pinning + HMAC + LRU-bounded nonce cache + KeyProvider interface).
+C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (approved
+2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C-core
+committed (see In-flight section). Pre-flight, then continue with
+Phase C-rest — the HTTP /clan/{invite,join,welcome,members,leave,revoke}
+endpoints + invite-token storage + 24h zombie sweep — building on the
+existing transport.Server (use Handle + HandleAnonymous as appropriate
+per the auth requirements in spec §3.2/§3.3) and membership.Create /
+PreJoinViaMnemonic. After C, Phase D is discovery + capability
+advertisement via grandcat/zeroconf with the manual /clan/peer-add
+fallback per OQ-2 pulled forward in spec v0.2.
 ```
 
 ### Repo location
