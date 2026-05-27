@@ -4,54 +4,65 @@
 //
 //	minti-cland                          — daemon mode (current default)
 //	minti-cland create [--address X:7777] — found a new Clan, print paste-key
+//	minti-cland invite [--ttl 1h]         — mint a single-use join token
+//	minti-cland join   [paste-key | --token ...]
+//	                                     — join an existing Clan
+//	minti-cland leave                    — wipe local Clan state (CAREFUL)
+//	minti-cland revoke <member_id> [--reason "..."]
+//	                                     — kick a member from the Clan
 //	minti-cland members                  — print persisted roster
-//	minti-cland show                     — print clan_id + pin + address
+//	minti-cland show                     — print clan_id + pin + LAN address
 //
-// More subcommands (invite/join/leave/revoke/pin) land in Phase C
-// continuation + Phase E. The plan is at
-// C:\Users\aouad\.claude\plans\velvet-drifting-codd.md.
+// More subcommands (pin, peer-add) land in later M4 phases.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/minti/cland/internal/auditlog"
 	"github.com/minti/cland/internal/config"
+	"github.com/minti/cland/internal/crypto"
 	"github.com/minti/cland/internal/identity"
 	"github.com/minti/cland/internal/membership"
 	"github.com/minti/cland/internal/state"
+	"github.com/minti/cland/internal/transport"
 )
 
 // version is overridden via -ldflags at build time.
-var version = "0.1.0-M4-C"
+var version = "0.1.0-M4-C2"
 
 func main() {
 	if len(os.Args) > 1 && !looksLikeFlag(os.Args[1]) {
+		var err error
 		switch os.Args[1] {
 		case "create":
-			if err := cmdCreate(os.Args[2:]); err != nil {
-				exitErr("create", err)
-			}
-			return
+			err = cmdCreate(os.Args[2:])
+		case "invite":
+			err = cmdInvite(os.Args[2:])
+		case "join":
+			err = cmdJoin(os.Args[2:])
+		case "leave":
+			err = cmdLeave(os.Args[2:])
+		case "revoke":
+			err = cmdRevoke(os.Args[2:])
 		case "members":
-			if err := cmdMembers(os.Args[2:]); err != nil {
-				exitErr("members", err)
-			}
-			return
+			err = cmdMembers(os.Args[2:])
 		case "show":
-			if err := cmdShow(os.Args[2:]); err != nil {
-				exitErr("show", err)
-			}
-			return
+			err = cmdShow(os.Args[2:])
 		case "help", "-h", "--help":
 			printUsage()
 			return
@@ -60,6 +71,10 @@ func main() {
 			printUsage()
 			os.Exit(2)
 		}
+		if err != nil {
+			exitErr(os.Args[1], err)
+		}
+		return
 	}
 	if err := runDaemon(os.Args[1:]); err != nil {
 		exitErr("daemon", err)
@@ -77,11 +92,18 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `minti-cland %s
 
 Usage:
-  minti-cland                    daemon mode (default)
-  minti-cland create [flags]     found a new Clan; prints paste-key
-  minti-cland members            print persisted Clan roster
-  minti-cland show               print clan_id, cert pin, LAN address
-  minti-cland help               this message
+  minti-cland                          daemon mode (default)
+  minti-cland create [flags]           found a new Clan; prints paste-key
+  minti-cland invite [--ttl 1h]        mint a single-use join token
+  minti-cland join [flags]             join an existing Clan
+       --mnemonic "..." --address ip:port --pin sha256:...
+       OR  --token <base64> --address ip:port --pin sha256:...
+  minti-cland leave                    wipe local Clan state
+  minti-cland revoke <member_id> [--reason "..."]
+                                       kick a member
+  minti-cland members                  print persisted roster
+  minti-cland show                     print clan_id, pin, LAN address
+  minti-cland help                     this message
 
 Daemon flags:
   --config PATH    config file (default /etc/minti/cland.yaml)
@@ -126,27 +148,95 @@ func runDaemon(args []string) error {
 	if err != nil {
 		return err
 	}
-	if clan.IsActive() {
-		log.Info("clan loaded", "clan_id", clan.ClanID, "role", clan.Role, "roster_size", len(clan.Roster))
-	} else {
-		log.Info("clan state: unaffiliated", "hint", "run `minti-cland create` or join an existing Clan")
-	}
 
 	apath, err := auditlog.DefaultPath()
 	if err != nil {
 		return err
 	}
-	if _, err := auditlog.NewFileLogger(apath); err != nil {
+	audit, err := auditlog.NewFileLogger(apath)
+	if err != nil {
 		return err
 	}
 	log.Info("audit log ready", "path", apath)
-	log.Info("minti-cland started — Phase A+B+C skeleton", "version", version)
-	log.Warn("Phase D–F (discovery, election, routing) not yet wired — daemon idles")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
-	log.Info("shutdown signal received")
+
+	if !clan.IsActive() {
+		log.Info("clan state: unaffiliated — daemon idle", "hint", "run `minti-cland create` or `minti-cland join`")
+		log.Info("minti-cland started", "version", version)
+		<-ctx.Done()
+		log.Info("shutdown signal received")
+		return nil
+	}
+
+	// Clan is active → bring up the transport server + membership service.
+	log.Info("clan loaded", "clan_id", clan.ClanID, "role", clan.Role, "roster_size", len(clan.Roster))
+
+	cc, err := crypto.ParseClanCertPEM([]byte(clan.ClanCertPEM))
+	if err != nil {
+		return fmt.Errorf("parse persisted clan_cert: %w", err)
+	}
+	kp, err := crypto.NewSimpleKeyProvider(clan.ClanKey())
+	if err != nil {
+		return fmt.Errorf("keyprovider: %w", err)
+	}
+
+	srv, err := transport.NewServer(transport.ServerOpts{
+		ListenAddr:  fmt.Sprintf("%s:%d", cfg.Listen.Address, cfg.Listen.Port),
+		Cert:        cc,
+		PrivateKey:  id.PrivateKey(),
+		KeyProvider: kp,
+		NonceCache:  transport.NewNonceCache(0, 0),
+		Audit:       audit,
+		Log:         log,
+	})
+	if err != nil {
+		return fmt.Errorf("transport: %w", err)
+	}
+
+	lanAddr, err := resolveLANAddr(cfg)
+	if err != nil {
+		// Not fatal — just means the LAN address advertised to invitees
+		// will be the configured one (possibly 0.0.0.0).
+		log.Warn("could not resolve LAN address; falling back", "err", err)
+		lanAddr = fmt.Sprintf("%s:%d", cfg.Listen.Address, cfg.Listen.Port)
+	}
+
+	membSvc := membership.NewService(store, id, lanAddr, audit, log)
+	membSvc.Register(srv)
+
+	// Zombie sweep + invite sweep ticker.
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	defer sweepCancel()
+	go membSvc.StartZombieSweep(sweepCtx, 60*time.Second)
+
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Start() }()
+
+	log.Info("minti-cland transport up",
+		"version", version,
+		"addr", fmt.Sprintf("%s:%d", cfg.Listen.Address, cfg.Listen.Port),
+		"lan_addr", lanAddr,
+		"pin", cc.Pin,
+	)
+	log.Warn("Phases D-H not yet wired — no mDNS, election, routing, key rotation")
+
+	select {
+	case <-ctx.Done():
+		log.Info("shutdown signal received")
+	case err := <-srvErr:
+		if err != nil {
+			log.Error("transport error", "err", err)
+			return err
+		}
+	}
+
+	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shCancel()
+	if err := srv.Shutdown(shCtx); err != nil {
+		log.Warn("graceful shutdown failed", "err", err)
+	}
 	return nil
 }
 
@@ -156,22 +246,11 @@ func cmdCreate(args []string) error {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
-	addressFlag := fs.String("address", "", "LAN address joiners should reach us at (default: auto-detected from listen + first non-loopback IPv4)")
+	addressFlag := fs.String("address", "", "LAN address joiners should reach us at (default: auto-detected)")
 	jsonOut := fs.Bool("json", false, "output the paste-key as a single JSON line")
 	_ = fs.Parse(args)
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
-	}
-	if *stateDirFlag != "" {
-		cfg.State.Dir = *stateDirFlag
-	}
-	id, err := identity.LoadOrCreate(cfg.State.Dir)
-	if err != nil {
-		return err
-	}
-	store, err := state.NewStore(cfg.State.Dir)
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
 	if err != nil {
 		return err
 	}
@@ -180,8 +259,7 @@ func cmdCreate(args []string) error {
 		return err
 	}
 	if existing.IsActive() {
-		return fmt.Errorf("this member is already in Clan %s (role=%s) — use `leave` first if you want to start over",
-			existing.ClanID, existing.Role)
+		return fmt.Errorf("this member is already in Clan %s (role=%s) — use `leave` first", existing.ClanID, existing.Role)
 	}
 
 	addr := *addressFlag
@@ -199,10 +277,8 @@ func cmdCreate(args []string) error {
 	}
 
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(pk)
+		return json.NewEncoder(os.Stdout).Encode(pk)
 	}
-
 	fmt.Println("Clan founded.")
 	fmt.Println()
 	fmt.Println("Share this paste-key with new members over a trusted channel")
@@ -216,7 +292,284 @@ func cmdCreate(args []string) error {
 	fmt.Printf("    %s\n", pk.Mnemonic)
 	fmt.Println()
 	fmt.Println("Joiners run:")
-	fmt.Printf("  minti-cland join --mnemonic %q --address %s --pin %s\n", pk.Mnemonic, pk.Address, pk.Pin)
+	fmt.Printf("  minti-cland join --mnemonic %q --address %s --pin %s\n",
+		pk.Mnemonic, pk.Address, pk.Pin)
+	return nil
+}
+
+// ---------- invite ----------
+
+func cmdInvite(args []string) error {
+	fs := flag.NewFlagSet("invite", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	ttl := fs.Duration("ttl", time.Hour, "token validity (60s..24h)")
+	jsonOut := fs.Bool("json", false, "output the invite response as JSON")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated — found a Clan first with `create`")
+	}
+
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(membership.InviteRequest{TTLSeconds: int(ttl.Seconds())})
+	resp, err := cli.Post(base+"/clan/invite", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is `minti-cland` running and listening on %s?)", err, base)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("invite failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var ir membership.InviteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ir); err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(ir)
+	}
+	fmt.Println("Invite token minted (single-use; share over a trusted channel).")
+	fmt.Println()
+	fmt.Printf("  Clan ID:    %s\n", ir.ClanID)
+	fmt.Printf("  Address:    %s\n", ir.LANAddress)
+	fmt.Printf("  Pin:        %s\n", ir.ClanCertPin)
+	fmt.Printf("  Token:      %s\n", ir.Token)
+	fmt.Printf("  Expires at: %s\n", ir.ExpiresAt)
+	fmt.Println()
+	fmt.Println("Joiner runs:")
+	fmt.Printf("  minti-cland join --token %s --address %s --pin %s\n", ir.Token, ir.LANAddress, ir.ClanCertPin)
+	return nil
+}
+
+// ---------- join ----------
+
+func cmdJoin(args []string) error {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	mnemonic := fs.String("mnemonic", "", "12-word BIP39 paste-key (omit if using --token)")
+	token := fs.String("token", "", "invite token (omit if using --mnemonic)")
+	address := fs.String("address", "", "LAN address of an existing member: ip:port (required)")
+	pin := fs.String("pin", "", "sha256:<hex> cert pin (required)")
+	_ = fs.Parse(args)
+
+	if *address == "" || *pin == "" {
+		return errors.New("--address and --pin are required")
+	}
+	if (*mnemonic == "" && *token == "") || (*mnemonic != "" && *token != "") {
+		return errors.New("provide exactly one of --mnemonic or --token")
+	}
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	existing, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if existing.IsActive() {
+		return fmt.Errorf("already in Clan %s — `leave` first", existing.ClanID)
+	}
+	_ = cfg // not directly used; could expose --listen override here
+
+	if *mnemonic != "" {
+		return joinPasteKey(*mnemonic, *address, *pin, id, store)
+	}
+	return joinToken(*token, *address, *pin, id, store)
+}
+
+func joinPasteKey(mnemonic, address, pin string, id *identity.Identity, store *state.Store) error {
+	clanKey, _, err := membership.PreJoinViaMnemonic(mnemonic)
+	if err != nil {
+		return fmt.Errorf("derive clan_key from mnemonic: %w", err)
+	}
+	kp, err := crypto.NewSimpleKeyProvider(clanKey)
+	if err != nil {
+		return err
+	}
+	cli, err := transport.NewClient(transport.ClientOpts{
+		MemberID:    id.MemberID,
+		KeyProvider: kp,
+		Pin:         pin,
+		Timeout:     30 * time.Second,
+	})
+	if err != nil {
+		return err
+	}
+	reqBody, _ := json.Marshal(membership.WelcomeRequest{
+		MemberID:     id.MemberID,
+		MemberPubKey: id.PubKey,
+	})
+	resp, err := cli.Post("https://"+address+"/clan/welcome", "application/json", reqBody)
+	if err != nil {
+		return fmt.Errorf("call %s: %w", address, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("welcome rejected (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var wr membership.WelcomeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wr); err != nil {
+		return err
+	}
+
+	clan := &state.Clan{
+		ClanID:      wr.ClanID,
+		ClanCertPEM: wr.ClanCertPEM,
+		Role:        "joined",
+		JoinedAt:    time.Now().UTC(),
+		Roster:      wr.Roster,
+	}
+	clan.SetClanKey(clanKey)
+	// Recompute pin from the cert PEM we just received and double-check it
+	// matches what the user gave us — catches the (rare) case where the
+	// founder's cert PEM-encoding round-trips slightly differently.
+	cc, err := crypto.ParseClanCertPEM([]byte(wr.ClanCertPEM))
+	if err != nil {
+		return fmt.Errorf("parse returned clan_cert: %w", err)
+	}
+	if cc.Pin != pin {
+		return fmt.Errorf("pin mismatch: server cert hashes to %s, you gave %s", cc.Pin, pin)
+	}
+	clan.ClanCertPin = cc.Pin
+	if err := store.SaveClan(clan); err != nil {
+		return err
+	}
+	fmt.Printf("Joined Clan %s as %s (via paste-key). %d members in roster.\n", clan.ClanID, id.MemberID, len(clan.Roster))
+	return nil
+}
+
+func joinToken(token, address, pin string, id *identity.Identity, store *state.Store) error {
+	httpCli := transport.NewPinnedHTTPClient(pin, 30*time.Second)
+	reqBody, _ := json.Marshal(membership.JoinRequest{
+		Token:        token,
+		MemberID:     id.MemberID,
+		MemberPubKey: id.PubKey,
+	})
+	resp, err := httpCli.Post("https://"+address+"/clan/join", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("call %s: %w", address, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("join rejected (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var jr membership.JoinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&jr); err != nil {
+		return err
+	}
+	cc, err := crypto.ParseClanCertPEM([]byte(jr.ClanCertPEM))
+	if err != nil {
+		return fmt.Errorf("parse returned clan_cert: %w", err)
+	}
+	if cc.Pin != pin {
+		return fmt.Errorf("pin mismatch: server cert hashes to %s, you gave %s", cc.Pin, pin)
+	}
+	clan := &state.Clan{
+		ClanID:      jr.ClanID,
+		ClanKeyB64:  jr.ClanKeyB64,
+		ClanCertPEM: jr.ClanCertPEM,
+		ClanCertPin: cc.Pin,
+		Role:        "joined",
+		JoinedAt:    time.Now().UTC(),
+		Roster:      jr.Roster,
+	}
+	if err := store.SaveClan(clan); err != nil {
+		return err
+	}
+	fmt.Printf("Joined Clan %s as %s (via invite token). %d members in roster.\n", clan.ClanID, id.MemberID, len(clan.Roster))
+	return nil
+}
+
+// ---------- leave ----------
+
+func cmdLeave(args []string) error {
+	fs := flag.NewFlagSet("leave", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	confirm := fs.Bool("yes", false, "skip the destructive-op confirmation")
+	_ = fs.Parse(args)
+
+	_, _, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("already unaffiliated")
+	}
+	if !*confirm {
+		return fmt.Errorf("this will wipe local Clan state (clan_id %s, role %s) — pass --yes to confirm",
+			clan.ClanID, clan.Role)
+	}
+	// Local wipe — daemon may still be running but will pick up the change on its next state read.
+	if err := store.SaveClan(&state.Clan{}); err != nil {
+		return err
+	}
+	fmt.Printf("Left Clan %s. State wiped.\n", clan.ClanID)
+	return nil
+}
+
+// ---------- revoke ----------
+
+func cmdRevoke(args []string) error {
+	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	reason := fs.String("reason", "", "human-readable reason recorded in the revocation entry")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return errors.New("usage: minti-cland revoke <member_id> [--reason \"...\"]")
+	}
+	targetID := fs.Arg(0)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(membership.RevokeRequest{MemberID: targetID, Reason: *reason})
+	resp, err := cli.Post(base+"/clan/revoke", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is `minti-cland` running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("revoke failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("Revoked %s from Clan %s.\n", targetID, clan.ClanID)
 	return nil
 }
 
@@ -228,14 +581,7 @@ func cmdMembers(args []string) error {
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
-	}
-	if *stateDirFlag != "" {
-		cfg.State.Dir = *stateDirFlag
-	}
-	store, err := state.NewStore(cfg.State.Dir)
+	_, _, store, err := loadCommon(*cfgPath, *stateDirFlag)
 	if err != nil {
 		return err
 	}
@@ -244,12 +590,14 @@ func cmdMembers(args []string) error {
 		return err
 	}
 	if !clan.IsActive() {
-		return errors.New("unaffiliated — no Clan to show. Run `create` or join an existing one")
+		return errors.New("unaffiliated — no Clan to show")
 	}
 	fmt.Printf("Clan %s (%d members)\n", clan.ClanID, len(clan.Roster))
 	for _, m := range clan.Roster {
 		fmt.Printf("  %s  %-9s  admitted=%s  last_seen=%s\n",
-			m.MemberID, m.State, m.AdmittedAt.Format("2006-01-02T15:04:05Z"), m.LastSeenAt.Format("2006-01-02T15:04:05Z"))
+			m.MemberID, m.State,
+			m.AdmittedAt.Format("2006-01-02T15:04:05Z"),
+			m.LastSeenAt.Format("2006-01-02T15:04:05Z"))
 	}
 	return nil
 }
@@ -262,18 +610,7 @@ func cmdShow(args []string) error {
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
-	}
-	if *stateDirFlag != "" {
-		cfg.State.Dir = *stateDirFlag
-	}
-	id, err := identity.LoadOrCreate(cfg.State.Dir)
-	if err != nil {
-		return err
-	}
-	store, err := state.NewStore(cfg.State.Dir)
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
 	if err != nil {
 		return err
 	}
@@ -289,11 +626,59 @@ func cmdShow(args []string) error {
 	fmt.Printf("Clan ID:    %s\n", clan.ClanID)
 	fmt.Printf("Role:       %s\n", clan.Role)
 	fmt.Printf("Cert pin:   %s\n", clan.ClanCertPin)
-	addr, err := resolveLANAddr(cfg)
-	if err == nil {
+	if addr, err := resolveLANAddr(cfg); err == nil {
 		fmt.Printf("LAN addr:   %s\n", addr)
 	}
 	return nil
+}
+
+// ---------- helpers ----------
+
+// loadCommon parses config, identity, and state — used by every subcommand
+// that needs all three.
+func loadCommon(cfgPath, stateDirOverride string) (config.Config, *identity.Identity, *state.Store, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return cfg, nil, nil, err
+	}
+	if stateDirOverride != "" {
+		cfg.State.Dir = stateDirOverride
+	}
+	id, err := identity.LoadOrCreate(cfg.State.Dir)
+	if err != nil {
+		return cfg, nil, nil, err
+	}
+	store, err := state.NewStore(cfg.State.Dir)
+	if err != nil {
+		return cfg, id, nil, err
+	}
+	return cfg, id, store, nil
+}
+
+// localDaemonClient builds a transport.Client pointed at the running local
+// daemon. Uses 127.0.0.1 when the daemon binds 0.0.0.0/empty/::, so the
+// CLI loop never accidentally goes off-host.
+func localDaemonClient(cfg config.Config, clan *state.Clan, id *identity.Identity) (*transport.Client, string, error) {
+	host := cfg.Listen.Address
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	base := fmt.Sprintf("https://%s:%d", host, cfg.Listen.Port)
+
+	kp, err := crypto.NewSimpleKeyProvider(clan.ClanKey())
+	if err != nil {
+		return nil, "", err
+	}
+	cli, err := transport.NewClient(transport.ClientOpts{
+		MemberID:    id.MemberID,
+		KeyProvider: kp,
+		Pin:         clan.ClanCertPin,
+		Timeout:     15 * time.Second,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return cli, base, nil
 }
 
 // resolveLANAddr returns "ip:port" — if cfg.Listen.Address is the wildcard
