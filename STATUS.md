@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 done — full security + protocol stack: two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, cross-Clan signed-token tool execution, orchestrator-driven 2PC key rotation, and heartbeat-driven revocation gossip all working end-to-end on Windows host. Phase I (install.sh + systemd) and Phase J (two-node testbed) wrap M4.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 + I done — full security + protocol stack PLUS Debian-family install path. **End-to-end-validated on the real Linux Mint 22.3 `minti-dev` VM**: install.sh stages everything, hardened systemd unit + cland service comes up active, lone-member Clan forms + self-elects (term=1), minti-fetch surfaces full Clan-aware status, idempotent re-install preserves configs. Phase J (two-node testbed validation) wraps M4.
 
 ---
 
@@ -100,7 +100,14 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     - **revocations.Handler** registers `GET /clan/revocations` behind the existing HMAC middleware.
     - **8 unit tests** in `internal/revocations/`: digest permutation-invariant, empty digest has stable value, empty-digest MaybeSync skips, matching digest no-op, mismatched digest fetches + merges + refreshes registry, unknown-peer-addr doesn't panic, fetch error preserves local, idempotent on repeat, GET returns correct shape, GET on empty store returns empty list.
     - **Phase E smoke regression-clean** with revocations wired.
-  - **Next:** **Phase I** — install.sh + Makefile + systemd unit + minti-fetch surface. Stage minti-cland binary to /usr/local/bin, write /etc/minti/cland.yaml + reasoning-scores.yaml, install hardened systemd unit, extend minti-fetch to show Clan ID + member ID + current Orchestrator + role. Then **Phase J** — clone minti-dev VM, validate two-node end-to-end on a fresh Linux pair. M4 wraps after J.
+  - **Phase I done** (2026-05-28, see commit log): install + systemd + Makefile + minti-fetch. End-to-end smoke-validated on the real `minti-dev` Linux Mint 22.3 VM:
+    - **Makefile**: VERSION bumped to `0.1.0-M4`; new `cland` (native) + `cland-linux` (cross-compile) targets parallel to runtime; `cland` joined `all:`; `clean` extended.
+    - **`cland/systemd/minti-cland.service`**: hardened from the runtime unit — `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`, `LockPersonality=true`, `MemoryDenyWriteExecute=true`, `RestrictRealtime=true`, `User=minti`, `Group=minti`. `ReadWritePaths=/var/lib/minti/cland /var/lib/minti`. **`IPAddressDeny=any` deliberately omitted** (cland needs LAN peer traffic on :7777; documented). `Restart=on-failure` + `RestartSec=3`.
+    - **`install/install.sh`**: cland deployment block inserted between MCP and opencode sections. Reuses M3 B13 binary-hash-vs-`/proc/PID/exe` restart pattern verbatim. Reuses config-without-clobbering pattern for both `cland.yaml` and `reasoning-scores.yaml`. State dir mode 0700 owner minti:minti (holds clan_key). Final summary line adds `Cland:`; next-steps surfaces `minti-cland create`.
+    - **`branding/minti-fetch`**: legacy static-file Clan section (which nothing ever wrote) replaced with live `minti-cland show` + `minti-cland orchestrator --json` calls. Surfaces clan_id + role + member count + Orchestrator + `(self)` tag + term. Falls back to `(sudo for details)` on permission error (system daemon's clan_key is unreadable by regular users) and `(not affiliated)` pre-Clan. 1 s timeouts on all daemon calls so a hung daemon never blocks fetch.
+    - **1 operational fix surfaced + landed**: the daemon under `ProtectHome=true` couldn't reach `/home/minti/.minti/audit.jsonl` (the default auditlog path) — process crash-looped on startup. Fix: `Environment=HOME=/var/lib/minti/cland` in the systemd unit redirects the per-user audit log into the already-writable state dir. Zero code change; works because the `minti` system user is `--no-create-home` (the real /home/minti was never going to exist anyway).
+    - **Verified end-to-end** in the VM: install completes cleanly (5/5 MCP + runtime + cland + opencode), service goes `active`, `minti-fetch` correctly shows `(not affiliated)` pre-Clan and `Clan: <id> role=founder members=1 Orch: <self> (self) term=1` post-`create`. HTTPS listener on :7777 binds, returns 401 to unauthed curls (HMAC auth wired). Re-running install.sh is idempotent: configs preserved, binary hash matches → no restart. Journald shows clean election cycle ("election engine started" → "election won term=1 accepts=1 quorum=1").
+  - **Next:** **Phase J** — clone `minti-dev → minti-dev-2` (host-only NIC 2 for mDNS), run the 16-test acceptance gate. M4 done after J.
 
   - **Phase E done** (2026-05-27, see commit log): leader-lease election engine.
 
@@ -134,21 +141,19 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the super-plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md. M0–M3 done;
-M4 Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 all committed
-and validated (two-daemon Clan + paste-key join + advertise + leader-
-lease election with failover + restart-accept + Orchestrator chat-
-completion routing + cross-Clan signed-token tool execution + 2PC key
-rotation + heartbeat-driven revocation gossip — 16-package cland
-test suite green, Phase E regression smoke clean). Pre-flight, then
-execute Phase I per the super-plan — install.sh + Makefile + systemd
-unit for minti-cland. Stage binary to /usr/local/bin, write
-/etc/minti/cland.yaml + reasoning-scores.yaml, install
-minti-cland.service (hardened — NoNewPrivileges, ProtectSystem=strict,
-ReadWritePaths=/var/lib/minti/cland + /var/log/minti, User=minti).
-Extend branding/minti-fetch with Clan ID + member ID + current
-Orchestrator + role. Then Phase J — clone minti-dev VM via
-scripts/m4-setup-second-vm.sh (host-only network for mDNS), run the
-M4 acceptance gate (16 verification tests in velvet-drifting-codd.md).
+M4 Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 + I all committed
++ end-to-end-validated on the real minti-dev Linux Mint VM (install
+clean, systemd active, lone-member Clan self-elects, minti-fetch
+shows Clan surface, idempotent re-install). Pre-flight, then execute
+Phase J per the super-plan — write scripts/m4-setup-second-vm.ps1
+(VBoxManage clone minti-dev → minti-dev-2 with host-only NIC 2 for
+mDNS multicast + ssh + cland port-forwards) and scripts/m4-validate.sh
+(bash, runs in Node A's VM — the 16-test acceptance gate from the
+super-plan). User powers both VMs on, runs install on -dev-2 (cland
+should be idempotent there too), then runs validate. Expected
+fail-mode hot spots flagged in the plan file: test 14 (mDNS goodbye
+on hard-kill — we don't send one yet), test 10's third-node
+fast-forward (JOIN handshake doesn't re-fetch revocations yet).
 M4 done after J.
 ```
 

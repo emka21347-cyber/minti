@@ -1,0 +1,45 @@
+[Unit]
+Description=MINTI Clan daemon (Orchestrator election + peer routing + tool exec)
+Documentation=https://github.com/minti
+After=network-online.target
+Wants=network-online.target
+# cland is INDEPENDENT of minti-runtime — it'll happily come up first and
+# discover the local runtime later via the R1 health-gate. Don't order
+# After=minti-runtime.service; that creates a needless startup dep chain.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/minti-cland --config /etc/minti/cland.yaml
+Restart=on-failure
+RestartSec=3
+User=minti
+Group=minti
+
+# Override HOME so the per-user audit log (~/.minti/audit.jsonl) lands inside
+# the daemon's already-writable state dir instead of /home/minti — which is
+# blocked by ProtectHome=true below. The minti system user is --no-create-home
+# (no real $HOME to write to), so this redirect is also operationally correct.
+Environment=HOME=/var/lib/minti/cland
+
+# Filesystem hardening — cland writes Clan state + revocations + per-user
+# audit log; everything else is read-only.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/minti/cland /var/lib/minti
+ReadOnlyPaths=/etc/minti
+
+# Network — UNLIKE minti-runtime (localhost-only), cland MUST accept Clan
+# peer traffic on the LAN (port 7777). We do NOT IPAddressDeny here.
+# Operators concerned about exposure should use a host firewall to restrict
+# /clan/* ingress to the Clan's LAN segment.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# Misc
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

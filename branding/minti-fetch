@@ -65,10 +65,55 @@ if curl -s --max-time 1 http://127.0.0.1:7780/minti/health >/dev/null 2>&1; then
     [[ -z "$runtime_models" ]] && runtime_models='(none pulled)'
 fi
 
-# Clan status (best-effort, since cland doesn't exist yet — placeholder for M4+)
-clan_id="$(cat /etc/minti/clan-id 2>/dev/null || echo 'not joined')"
-clan_role="$(cat /etc/minti/clan-role 2>/dev/null || echo 'standalone')"
-clan_orch="$(cat /etc/minti/clan-orchestrator 2>/dev/null || echo '-')"
+# Clan status (M4+): live query against minti-cland.
+#
+# Permissions note: minti-cland's CLI loads clan_key from /var/lib/minti/cland/
+# (mode 0700 minti:minti) to sign HMAC requests against its own daemon. As a
+# result, an unprivileged user running `minti-fetch` cannot query the Clan;
+# we fall back to "(sudo for details)" in that case rather than showing a
+# misleading "(not affiliated)" — the Clan may very well be active, just
+# invisible at this privilege level.
+clan_id="(not installed)"
+clan_role="-"
+clan_orch="-"
+clan_term="-"
+clan_members="-"
+clan_pin=""
+if command -v minti-cland >/dev/null 2>&1; then
+    clan_id="(not affiliated)"
+    show_out="$(timeout 1 minti-cland show 2>&1 || true)"
+    case "$show_out" in
+        *"permission denied"*|*"open "*"identity.json"*)
+            clan_id="(sudo for details)"
+            ;;
+        *"Clan:"*"(unaffiliated)"*)
+            ;; # leave as "(not affiliated)"
+        *"Clan ID:"*)
+            clan_id="$(printf '%s\n' "$show_out" | awk '/^Clan ID:/ {print $3; exit}')"
+            clan_role="$(printf '%s\n' "$show_out" | awk '/^Role:/ {print $2; exit}')"
+            # Orchestrator + term via JSON endpoint (small, parseable without jq).
+            orch_json="$(timeout 1 minti-cland orchestrator --json 2>/dev/null || true)"
+            if [[ -n "$orch_json" ]]; then
+                clan_orch="$(printf '%s' "$orch_json" | sed -n 's/.*"current_orchestrator":"\([^"]*\)".*/\1/p')"
+                clan_term="$(printf '%s' "$orch_json" | sed -n 's/.*"current_term":\([0-9]*\).*/\1/p')"
+                is_self="$(printf '%s' "$orch_json" | sed -n 's/.*"is_self":\(true\|false\).*/\1/p')"
+                [[ "$is_self" == "true" ]] && clan_orch="${clan_orch} ${dim}(self)${reset}"
+                [[ -z "$clan_orch" ]] && clan_orch="(election pending)"
+                [[ -z "$clan_term" ]] && clan_term="-"
+            fi
+            members_out="$(timeout 1 minti-cland members 2>/dev/null || true)"
+            clan_members="$(printf '%s\n' "$members_out" | sed -n 's/.*(\([0-9]*\) members).*/\1/p')"
+            [[ -z "$clan_members" ]] && clan_members="-"
+            # Pin status from the clan struct (peek via show — no separate endpoint yet)
+            if printf '%s' "$show_out" | grep -q "Role:" ; then
+                # Pin is on state.Clan.PinnedOrchestrator; not surfaced by `show` today.
+                # Quietly omit until a dedicated endpoint lands; the Orch="(self)" tag
+                # is the more useful signal anyway.
+                clan_pin=""
+            fi
+            ;;
+    esac
+fi
 
 # ---------- logo lines (12 rows) ----------
 logo=(
@@ -100,8 +145,8 @@ info=(
 "${label}RAM:${reset}       ${val}${ram_used} / ${ram_total}${reset}"
 "${label}Runtime:${reset}   ${val}${runtime_status}${reset}${runtime_kind:+ ${dim}(${runtime_kind})${reset}}"
 "${label}Models:${reset}    ${val}${runtime_models:-not running}${reset}"
-"${label}Clan:${reset}      ${val}${clan_id}${reset} ${dim}role=${clan_role}${reset}"
-"${label}Orch:${reset}      ${val}${clan_orch}${reset}"
+"${label}Clan:${reset}      ${val}${clan_id}${reset} ${dim}role=${clan_role} members=${clan_members}${reset}"
+"${label}Orch:${reset}      ${val}${clan_orch}${reset} ${dim}term=${clan_term}${reset}"
 )
 
 # ---------- render side-by-side ----------

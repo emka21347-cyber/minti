@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# MINTI installer (M0–M3) — prepares a Debian-family host to run MINTI.
-# Idempotent: safe to re-run. Does NOT install cland (M4) or webapp/wireless/
-# forensics packs (M6).
+# MINTI installer (M0–M4) — prepares a Debian-family host to run MINTI.
+# Idempotent: safe to re-run. Installs runtime + 5 MCP servers + cland.
+# Does NOT install webapp/wireless/forensics packs (M6).
 
 set -euo pipefail
 
-minti_version="0.1.0-M3"
+minti_version="0.1.0-M4"
 
 # Resolve repo root: install.sh lives at <repo>/install/install.sh, so
 # the staged artifacts (runtime-adapter binary, systemd unit, configs)
@@ -269,6 +269,76 @@ if [[ -n "${real_user}" && "${real_user}" != "root" ]]; then
     fi
 fi
 
+# ---------- minti-cland (M4 — Clan daemon) ----------
+# Mirrors minti-runtime install: stage the binary, write the systemd unit,
+# preserve any existing config, restart-on-stale-binary check (M3 B13 pattern).
+# cland's state dir holds clan_key + cert priv, so mode 0700 is mandatory.
+cland_bin=""
+for candidate in \
+    "${repo_root}/cland/minti-cland" \
+    "${repo_root}/cland/dist/minti-cland-linux-amd64" \
+    "${repo_root}/cland/dist/minti-cland"; do
+    if [[ -x "${candidate}" ]]; then
+        cland_bin="${candidate}"
+        break
+    fi
+done
+cland_unit="${repo_root}/cland/systemd/minti-cland.service"
+cland_cfg_example="${repo_root}/cland/configs/cland.yaml.example"
+cland_rubric_example="${repo_root}/cland/configs/reasoning-scores.yaml.example"
+
+cland_status="skipped (binary not built)"
+if [[ -n "${cland_bin}" ]]; then
+    info "Installing minti-cland (source: ${cland_bin#${repo_root}/})..."
+
+    install -m 0755 "${cland_bin}" /usr/local/bin/minti-cland
+    cland_new_hash="$(sha256sum /usr/local/bin/minti-cland | awk '{print $1}')"
+
+    # State dir owns clan_key + cert priv — strict 0700, owner minti.
+    install -d -m 0700 -o minti -g minti /var/lib/minti/cland
+
+    install -m 0644 "${cland_unit}" /etc/systemd/system/minti-cland.service
+    if [[ ! -f /etc/minti/cland.yaml ]]; then
+        install -m 0644 "${cland_cfg_example}" /etc/minti/cland.yaml
+        ok "Wrote default /etc/minti/cland.yaml from example."
+    else
+        ok "Preserving existing /etc/minti/cland.yaml."
+    fi
+    if [[ ! -f /etc/minti/reasoning-scores.yaml ]]; then
+        install -m 0644 "${cland_rubric_example}" /etc/minti/reasoning-scores.yaml
+        ok "Wrote default /etc/minti/reasoning-scores.yaml from example."
+    else
+        ok "Preserving existing /etc/minti/reasoning-scores.yaml."
+    fi
+    systemctl daemon-reload
+
+    # Same restart-on-stale-binary pattern as minti-runtime above.
+    cland_should_restart=false
+    if systemctl is-active --quiet minti-cland.service; then
+        cland_pid="$(systemctl show -p MainPID --value minti-cland.service)"
+        if [[ -n "${cland_pid}" && "${cland_pid}" != "0" ]]; then
+            cland_running_hash="$(sha256sum "/proc/${cland_pid}/exe" 2>/dev/null | awk '{print $1}')"
+            if [[ -z "${cland_running_hash}" || "${cland_running_hash}" != "${cland_new_hash}" ]]; then
+                cland_should_restart=true
+            fi
+        fi
+    fi
+    if [[ "${cland_should_restart}" == "true" ]]; then
+        info "minti-cland running stale binary — restarting service..."
+        systemctl restart minti-cland.service
+        cland_status="restarted with new binary"
+    else
+        systemctl enable --now minti-cland.service
+        cland_status="installed and started"
+    fi
+    ok "minti-cland running on 0.0.0.0:7777 (Clan-facing HTTPS)"
+else
+    warn "minti-cland binary not found at any of:"
+    warn "  ${repo_root}/cland/minti-cland (native build)"
+    warn "  ${repo_root}/cland/dist/minti-cland-linux-amd64 (cross-compile)"
+    warn "Build with: make cland (native) or make cland-linux (for this host)"
+fi
+
 # ---------- opencode (M3 — bundled agent client) ----------
 # Per PRD §6.3 + P1, opencode (sst, MIT) is the bundled default terminal agent.
 # We use upstream's official install script (a single shell-piped command) and
@@ -368,6 +438,7 @@ printf "  %s\n" "${gpu_summary}"
 printf "  Ollama:  %s\n" "$(ollama --version 2>&1 | head -1 || echo 'present')"
 printf "  Runtime: %s\n" "${runtime_status}"
 printf "  MCP:     %s\n" "${mcp_status}"
+printf "  Cland:   %s\n" "${cland_status}"
 printf "  opencode: %s\n" "${opencode_status}"
 printf "  Pack:    %s\n" "${pack_status}"
 printf "\n"
@@ -391,7 +462,13 @@ printf "  4. Launch the bundled agent (configure with /connect on first run):\n"
 printf "       opencode\n"
 printf "  5. Build & install the recon tool pack (Debian/Ubuntu only):\n"
 printf "       make pack-recon && sudo dpkg -i dist/minti-pack-recon_*.deb\n"
-printf "  6. The MINTI Clan daemon (cland) lands in M4; see docs/clan-protocol.md.\n"
+if [[ "${cland_status}" == *"installed"* || "${cland_status}" == *"restarted"* ]]; then
+    printf "  6. Form a Clan (founder):\n"
+    printf "       sudo minti-cland create --address <this-host-LAN-ip>:7777\n"
+    printf "     Then have a peer run:  sudo minti-cland join --mnemonic '...' --address ...\n"
+else
+    printf "  6. Build minti-cland: make cland-linux  (then re-run this installer)\n"
+fi
 printf "  7. This script is idempotent — safe to re-run after MINTI updates.\n"
 printf "  8. Run %sminti-fetch%s anytime to see your system + Clan status.\n" "${bold}" "${reset}"
 printf "\n"

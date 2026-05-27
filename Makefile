@@ -15,15 +15,20 @@ MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http
 MCP_BINS      := $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix $(EXE),$(MCP_SERVERS)))
 MCP_BINS_LINUX:= $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix -linux-amd64,$(MCP_SERVERS)))
 
+CLAND_DIR        := cland
+CLAND_PKG        := ./cmd/minti-cland
+CLAND_BIN        := $(CLAND_DIR)/minti-cland
+CLAND_BIN_LINUX  := $(CLAND_DIR)/dist/minti-cland-linux-amd64
+
 DIST          := dist
 PACKS_DIR     := packs
 PACK_NAMES    := recon
-# Pinned to M2 — bump per-milestone.
-VERSION       := 0.1.0-M2
+# Pinned to M4 — bump per-milestone.
+VERSION       := 0.1.0-M4
 LDFLAGS       := -X main.version=$(VERSION)
 
 # ---------- Phony targets ----------
-.PHONY: help all runtime runtime-linux cland mcp mcp-linux mcptest mcptest-linux \
+.PHONY: help all runtime runtime-linux cland cland-linux mcp mcp-linux mcptest mcptest-linux \
         packs pack-recon sign-recon \
         install-test test fmt vet tidy clean dist-dir
 
@@ -37,14 +42,15 @@ help:
 	@echo "  make packs        — build all debian tool packs"
 	@echo "  make pack-recon   — build minti-pack-recon.deb (lands in dist/)"
 	@echo "  make sign-recon   — sign the built .deb (requires MINTI_GPG_KEY env)"
-	@echo "  make cland        — (M4) build the Clan daemon"
+	@echo "  make cland        — build minti-cland (native)"
+	@echo "  make cland-linux  — cross-compile minti-cland for Linux amd64"
 	@echo "  make install-test — run install.sh against a fresh Debian VM (TODO)"
 	@echo "  make fmt vet      — gofmt + go vet on all Go modules"
 	@echo "  make tidy         — go mod tidy on all Go modules"
 	@echo "  make test         — go test ./... in all Go modules"
 	@echo "  make clean        — remove build artifacts"
 
-all: runtime mcp
+all: runtime mcp cland
 
 dist-dir:
 	@mkdir -p $(DIST)
@@ -100,15 +106,21 @@ sign-recon:
 	  echo ">> sign $$deb with $(MINTI_GPG_KEY)"; \
 	  dpkg-sig --sign builder -k $(MINTI_GPG_KEY) "$$deb"
 
-# ---------- Future milestones ----------
-cland:
-	@echo "TODO M4: build cland Go binary"
+# ---------- cland (M4) ----------
+cland: $(CLAND_BIN)
+
+$(CLAND_BIN):
+	cd $(CLAND_DIR) && $(GO) build -ldflags "$(LDFLAGS)" -o minti-cland $(CLAND_PKG)
+
+cland-linux:
+	mkdir -p $(CLAND_DIR)/dist
+	cd $(CLAND_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build -ldflags "$(LDFLAGS)" -o dist/minti-cland-linux-amd64 $(CLAND_PKG)
 
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
 
 # ---------- Go hygiene ----------
-GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR)
+GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR)
 
 fmt:
 	@for m in $(GO_MODULES); do echo ">> gofmt $$m"; cd $$m && $(GO) fmt ./... && cd - >/dev/null; done
@@ -125,9 +137,10 @@ test:
 clean:
 	rm -rf $(RUNTIME_DIR)/minti-runtime $(RUNTIME_DIR)/dist
 	rm -rf $(MCP_DIR)/dist
+	rm -rf $(CLAND_DIR)/minti-cland $(CLAND_DIR)/minti-cland.exe $(CLAND_DIR)/dist
 	rm -rf $(DIST)
 	find . -type f -name 'minti-runtime' -delete
-	find . -type f -name 'cland' -delete
+	find . -type f -name 'minti-cland' -delete
 	find . -type f -name 'minti-mcp-*' -delete
 	find . -type f -name 'mcptest' -delete
 	find . -type f -name '*.deb' -delete
