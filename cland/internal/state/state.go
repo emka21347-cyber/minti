@@ -35,10 +35,11 @@ const (
 // (zero) Clan means the member is `unaffiliated`.
 type Clan struct {
 	// Identity of the Clan itself.
-	ClanID      string `json:"clan_id"`                  // UUIDv4
-	ClanKeyB64  string `json:"clan_key_b64"`             // 32 bytes base64-std (HMAC key)
-	ClanCertPEM string `json:"clan_cert_pem"`            // X.509 server cert, PEM
-	ClanCertPin string `json:"clan_cert_pin"`            // "sha256:<hex>" of SPKI
+	ClanID             string `json:"clan_id"`                    // UUIDv4
+	ClanKeyB64         string `json:"clan_key_b64"`               // 32 bytes base64-std (HMAC key)
+	ClanCertPEM        string `json:"clan_cert_pem"`              // X.509 server cert, PEM
+	ClanCertPin        string `json:"clan_cert_pin"`              // "sha256:<hex>" of SPKI
+	ClanCertPrivKeyB64 string `json:"clan_cert_priv_key_b64,omitempty"` // Ed25519 priv key matching the cert. Shared across all members of the Clan (v1 unitary-trust model per spec §10a residual R1). Required for any member's daemon to serve TLS with the Clan cert — without it the joiner's TLS handshake would fail (priv/pub mismatch).
 
 	// Per-this-member metadata.
 	Role     string    `json:"role"`                          // "founder" | "joined"
@@ -88,6 +89,22 @@ func (c *Clan) ClanKey() []byte {
 // SetClanKey base64-encodes and stores the key.
 func (c *Clan) SetClanKey(key []byte) {
 	c.ClanKeyB64 = base64.StdEncoding.EncodeToString(key)
+}
+
+// ClanCertPrivKey returns the Ed25519 private key (raw 64-byte form) that
+// pairs with the persisted ClanCertPEM. Returns nil if not set (which means
+// this member can't serve TLS — only the founder pre-v0.2-fix had it).
+func (c *Clan) ClanCertPrivKey() []byte {
+	if c == nil || c.ClanCertPrivKeyB64 == "" {
+		return nil
+	}
+	b, _ := base64.StdEncoding.DecodeString(c.ClanCertPrivKeyB64)
+	return b
+}
+
+// SetClanCertPrivKey stores the raw Ed25519 priv key (64 bytes) base64-encoded.
+func (c *Clan) SetClanCertPrivKey(priv []byte) {
+	c.ClanCertPrivKeyB64 = base64.StdEncoding.EncodeToString(priv)
 }
 
 // Store is the on-disk Clan + Revocations store. Concurrent callers are

@@ -1,0 +1,50 @@
+# MINTI reasoning-score rubric (spec §6.3 v0.2).
+#
+# Each entry maps a `backend` identifier to the reasoning_score that backend
+# contributes when it's actually available on this member.
+#
+# Backend identifiers:
+#   local:<model>                  — local Ollama / llama.cpp model name
+#                                    (e.g. local:llama3.1:70b-q4)
+#   remote-api:<vendor>:<model>    — configured remote API backend
+#                                    (e.g. remote-api:anthropic:claude-opus-4-7)
+#
+# A member's published `reasoning_score` is the MAX score over the entries
+# whose backend is actually available (model resident OR remote-api vendor
+# configured). Edit freely; restart minti-cland after changes.
+#
+# Default table — Hermes 3 / Llama / Qwen / DeepSeek / open-weight first.
+
+entries:
+  # Open-weight local models (primary v1 targets per PRD P1)
+  - backend: "local:hermes3:405b"
+    score: 88
+  - backend: "local:llama3.1:70b-q4"
+    score: 72
+  - backend: "local:hermes3:70b"
+    score: 70
+  - backend: "local:deepseek-r1:32b"
+    score: 68
+  - backend: "local:qwen2.5:32b"
+    score: 68
+  - backend: "local:hermes3:8b"
+    score: 58
+  - backend: "local:llama3.2:8b"
+    score: 55
+  - backend: "local:mistral:7b"
+    score: 40
+  - backend: "local:llama3.2:3b"
+    score: 35
+  - backend: "local:phi-3.5:mini"
+    score: 33
+  - backend: "local:gemma2:2b"
+    score: 32
+
+  # Remote / proprietary APIs (optional opt-in, supported but never bundled).
+  # Drives the Cardputer-as-Orchestrator scenario (PRD §9 #8).
+  - backend: "remote-api:anthropic:claude-opus-4-7"
+    score: 95
+  - backend: "remote-api:openai:gpt-4-class"
+    score: 90
+  - backend: "remote-api:anthropic:claude-sonnet-4-6"
+    score: 88

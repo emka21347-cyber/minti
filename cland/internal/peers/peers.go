@@ -92,6 +92,7 @@ type Advertisement struct {
 	Term               uint64         `json:"term"`
 	Generation         uint64         `json:"generation"`
 	OS                 string         `json:"os"`
+	LANAddress         string         `json:"lan_address"` // sender's listen address (ip:port). Required so the receiver registers the listen port, not the incoming TCP socket's ephemeral port (Phase D bug fix surfaced 2026-05-27 in smoke test)
 	Hardware           map[string]any `json:"hardware"`
 	ReasoningScore     int            `json:"reasoning_score"`
 	SystemScore        int            `json:"system_score"`
@@ -259,8 +260,10 @@ func (r *Registry) checkRateLimitLocked(originID string) bool {
 // payload's HMAC. Promotes / updates the member-keyed entry. Returns
 // ErrRevoked if the asserted member_id is on the revocation list.
 //
-// The `remoteAddr` (HTTP request's RemoteAddr) is used as the binding
-// address; if the same member arrives from a new IP, the address is updated.
+// `ad.LANAddress` is the source of truth for the peer's reach-address —
+// `remoteAddr` (HTTP request's RemoteAddr) is the incoming TCP socket's
+// ephemeral source port, which is NOT where the peer listens. We use
+// LANAddress when present; remoteAddr is the fallback only.
 // Server-side dedup on `generation` per spec §4.2 v0.3.
 func (r *Registry) BindMember(ad *Advertisement, remoteAddr string) error {
 	if ad == nil || ad.MemberID == "" {
@@ -273,6 +276,10 @@ func (r *Registry) BindMember(ad *Advertisement, remoteAddr string) error {
 	}
 
 	now := time.Now().UTC()
+	addr := ad.LANAddress
+	if addr == "" {
+		addr = remoteAddr
+	}
 	existing := r.members[ad.MemberID]
 	if existing != nil {
 		// Dedup older generation (sender may resend on bump).
@@ -284,8 +291,8 @@ func (r *Registry) BindMember(ad *Advertisement, remoteAddr string) error {
 		existing.LastSeenAt = now
 		existing.LatestAd = ad
 		existing.AdGeneration = ad.Generation
-		if remoteAddr != "" {
-			existing.Address = remoteAddr
+		if addr != "" {
+			existing.Address = addr
 		}
 		return nil
 	}
@@ -295,12 +302,14 @@ func (r *Registry) BindMember(ad *Advertisement, remoteAddr string) error {
 	}
 
 	via := SourceMDNS // discovery callback path is the common case
-	if cand := r.candidates[remoteAddr]; cand != nil {
+	if cand := r.candidates[addr]; cand != nil {
+		via = cand.DiscoveredVia
+	} else if cand := r.candidates[remoteAddr]; cand != nil {
 		via = cand.DiscoveredVia
 	}
 	r.members[ad.MemberID] = &Member{
 		MemberID:      ad.MemberID,
-		Address:       remoteAddr,
+		Address:       addr,
 		DiscoveredVia: via,
 		LastAd:        now,
 		LastSeenAt:    now,

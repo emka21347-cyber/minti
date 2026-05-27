@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +15,7 @@ type Config struct {
 	Listen    ListenConfig    `yaml:"listen"`
 	State     StateConfig     `yaml:"state"`
 	Discovery DiscoveryConfig `yaml:"discovery"`
+	Advertise AdvertiseConfig `yaml:"advertise"`
 	Runtime   RuntimeConfig   `yaml:"runtime"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 }
@@ -30,6 +32,14 @@ type StateConfig struct {
 type DiscoveryConfig struct {
 	MDNSEnabled bool   `yaml:"mdns_enabled"`
 	Interface   string `yaml:"interface"`
+	RubricPath  string `yaml:"rubric_path"`
+}
+
+// AdvertiseConfig controls the §4.2 capability advertisement loop (Phase D).
+type AdvertiseConfig struct {
+	Interval     time.Duration `yaml:"interval"`       // 30s default
+	BumpRate     time.Duration `yaml:"bump_rate"`      // 1s default
+	InitialDelay time.Duration `yaml:"initial_delay"`  // 5s default
 }
 
 type RuntimeConfig struct {
@@ -46,7 +56,12 @@ func Default() Config {
 	return Config{
 		Listen:    ListenConfig{Address: "0.0.0.0", Port: 7777},
 		State:     StateConfig{Dir: "/var/lib/minti/cland"},
-		Discovery: DiscoveryConfig{MDNSEnabled: true},
+		Discovery: DiscoveryConfig{MDNSEnabled: true, RubricPath: "/etc/minti/reasoning-scores.yaml"},
+		Advertise: AdvertiseConfig{
+			Interval:     30 * time.Second,
+			BumpRate:     1 * time.Second,
+			InitialDelay: 5 * time.Second,
+		},
 		Runtime:   RuntimeConfig{BaseURL: "http://127.0.0.1:7780"},
 		Telemetry: TelemetryConfig{LogLevel: "info"},
 	}

@@ -98,6 +98,11 @@ func Create(store *state.Store, id *identity.Identity, listenAddr string) (*Past
 		}},
 	}
 	clan.SetClanKey(clanKey)
+	// Persist the cert's matching Ed25519 priv so subsequent joiners can
+	// also serve TLS with this same cert. v1 unitary-trust model per
+	// spec §10a residual R1 — every Clan member who has clan_key already
+	// has the priv key's effective trust level.
+	clan.SetClanCertPrivKey(id.PrivateKey())
 	if err := store.SaveClan(clan); err != nil {
 		return nil, err
 	}

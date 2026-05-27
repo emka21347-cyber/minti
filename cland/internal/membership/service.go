@@ -23,10 +23,14 @@ type WelcomeRequest struct {
 
 // WelcomeResponse — server tells the joiner about the Clan + roster.
 // clan_key is NOT included — the joiner already derived it from the mnemonic.
+// ClanCertPrivKeyB64 IS included so the joiner can serve TLS with the same
+// cert. Per spec §10a residual R1 — sharing the priv key fits v1's unitary
+// trust model (any active member has clan_key, which is the same trust level).
 type WelcomeResponse struct {
-	ClanID      string               `json:"clan_id"`
-	ClanCertPEM string               `json:"clan_cert_pem"`
-	Roster      []state.RosterMember `json:"roster"`
+	ClanID             string               `json:"clan_id"`
+	ClanCertPEM        string               `json:"clan_cert_pem"`
+	ClanCertPrivKeyB64 string               `json:"clan_cert_priv_key_b64"`
+	Roster             []state.RosterMember `json:"roster"`
 }
 
 // JoinRequest — sent by an invite-token joiner who does NOT yet have clan_key.
@@ -36,12 +40,14 @@ type JoinRequest struct {
 	MemberPubKey string `json:"member_pubkey_b64"`
 }
 
-// JoinResponse — invite-token path also delivers the clan_key.
+// JoinResponse — invite-token path also delivers the clan_key + cert priv key
+// (see WelcomeResponse for the priv-key rationale).
 type JoinResponse struct {
-	ClanID      string               `json:"clan_id"`
-	ClanKeyB64  string               `json:"clan_key_b64"`
-	ClanCertPEM string               `json:"clan_cert_pem"`
-	Roster      []state.RosterMember `json:"roster"`
+	ClanID             string               `json:"clan_id"`
+	ClanKeyB64         string               `json:"clan_key_b64"`
+	ClanCertPEM        string               `json:"clan_cert_pem"`
+	ClanCertPrivKeyB64 string               `json:"clan_cert_priv_key_b64"`
+	Roster             []state.RosterMember `json:"roster"`
 }
 
 // RevokeRequest — body of POST /clan/revoke.
@@ -170,10 +176,11 @@ func (s *Service) RedeemInvite(req JoinRequest) (*JoinResponse, error) {
 		Args: map[string]any{"member_id": req.MemberID, "issued_by": tok.IssuedBy},
 	})
 	return &JoinResponse{
-		ClanID:      clan.ClanID,
-		ClanKeyB64:  clan.ClanKeyB64,
-		ClanCertPEM: clan.ClanCertPEM,
-		Roster:      updated,
+		ClanID:             clan.ClanID,
+		ClanKeyB64:         clan.ClanKeyB64,
+		ClanCertPEM:        clan.ClanCertPEM,
+		ClanCertPrivKeyB64: clan.ClanCertPrivKeyB64,
+		Roster:             updated,
 	}, nil
 }
 
@@ -210,9 +217,10 @@ func (s *Service) Welcome(req WelcomeRequest) (*WelcomeResponse, error) {
 		Args: map[string]any{"member_id": req.MemberID},
 	})
 	return &WelcomeResponse{
-		ClanID:      clan.ClanID,
-		ClanCertPEM: clan.ClanCertPEM,
-		Roster:      updated,
+		ClanID:             clan.ClanID,
+		ClanCertPEM:        clan.ClanCertPEM,
+		ClanCertPrivKeyB64: clan.ClanCertPrivKeyB64,
+		Roster:             updated,
 	}, nil
 }
 

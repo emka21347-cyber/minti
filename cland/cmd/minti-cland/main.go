@@ -33,11 +33,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/minti/cland/internal/advertise"
 	"github.com/minti/cland/internal/auditlog"
 	"github.com/minti/cland/internal/config"
 	"github.com/minti/cland/internal/crypto"
+	"github.com/minti/cland/internal/discovery"
 	"github.com/minti/cland/internal/identity"
 	"github.com/minti/cland/internal/membership"
+	"github.com/minti/cland/internal/peers"
+	"github.com/minti/cland/internal/probe"
+	"github.com/minti/cland/internal/scores"
 	"github.com/minti/cland/internal/state"
 	"github.com/minti/cland/internal/transport"
 )
@@ -61,6 +66,10 @@ func main() {
 			err = cmdRevoke(os.Args[2:])
 		case "members":
 			err = cmdMembers(os.Args[2:])
+		case "peer-add":
+			err = cmdPeerAdd(os.Args[2:])
+		case "peers":
+			err = cmdPeers(os.Args[2:])
 		case "show":
 			err = cmdShow(os.Args[2:])
 		case "help", "-h", "--help":
@@ -102,6 +111,8 @@ Usage:
   minti-cland revoke <member_id> [--reason "..."]
                                        kick a member
   minti-cland members                  print persisted roster
+  minti-cland peer-add <ip:port>       manually register a peer (mDNS fallback)
+  minti-cland peers                    print live peer registry
   minti-cland show                     print clan_id, pin, LAN address
   minti-cland help                     this message
 
@@ -182,10 +193,18 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("keyprovider: %w", err)
 	}
 
+	// Use the Clan-shared priv (founder's cert priv, distributed via
+	// /clan/welcome + /clan/join). Falls back to local identity priv for
+	// founders whose state predates the v0.2 wire fix.
+	tlsPriv := clan.ClanCertPrivKey()
+	if len(tlsPriv) == 0 {
+		log.Warn("clan state has no shared cert priv — using local identity priv. This works for founders but joiners need the shared priv from welcome/join (re-join required if you see this on a non-founder).")
+		tlsPriv = id.PrivateKey()
+	}
 	srv, err := transport.NewServer(transport.ServerOpts{
 		ListenAddr:  fmt.Sprintf("%s:%d", cfg.Listen.Address, cfg.Listen.Port),
 		Cert:        cc,
-		PrivateKey:  id.PrivateKey(),
+		PrivateKey:  tlsPriv,
 		KeyProvider: kp,
 		NonceCache:  transport.NewNonceCache(0, 0),
 		Audit:       audit,
@@ -220,7 +239,87 @@ func runDaemon(args []string) error {
 		"lan_addr", lanAddr,
 		"pin", cc.Pin,
 	)
-	log.Warn("Phases D-H not yet wired — no mDNS, election, routing, key rotation")
+
+	// ----- Phase D: discovery + advertise + peer registry -----
+	rubric, err := scores.LoadRubric(cfg.Discovery.RubricPath)
+	if err != nil {
+		log.Warn("reasoning-scores rubric load failed; reasoning_score will be 0",
+			"path", cfg.Discovery.RubricPath, "err", err)
+		rubric = &scores.Rubric{}
+	}
+	registry := peers.NewRegistry()
+	if revs, _ := store.LoadRevocations(); revs != nil {
+		registry.SetRevocations(revs)
+	}
+	prober := probe.New()
+	runtimeClient := probe.NewRuntimeClient(cfg.Runtime.BaseURL, 30*time.Second)
+	recentFailures := scores.NewRecentFailures()
+
+	advClient, err := transport.NewClient(transport.ClientOpts{
+		MemberID:    id.MemberID,
+		KeyProvider: kp,
+		Pin:         cc.Pin,
+		Timeout:     15 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("advertise transport client: %w", err)
+	}
+	advSvc := &advertise.Service{
+		ClanID:         clan.ClanID,
+		MemberID:       id.MemberID,
+		LANAddress:     lanAddr,
+		Registry:       registry,
+		Prober:         prober,
+		RuntimeClient:  runtimeClient,
+		Rubric:         rubric,
+		RecentFailures: recentFailures,
+		Client:         advClient,
+		Log:            log,
+		Interval:       cfg.Advertise.Interval,
+		InitialWait:    cfg.Advertise.InitialDelay,
+		BumpRate:       cfg.Advertise.BumpRate,
+	}
+	(&peers.Handlers{Registry: registry, Bump: advSvc.Bump}).Register(srv)
+
+	discSvc := &discovery.Service{
+		ClanID:    clan.ClanID,
+		MemberID:  id.MemberID,
+		Port:      cfg.Listen.Port,
+		Interface: cfg.Discovery.Interface,
+		Log:       log,
+	}
+	if cfg.Discovery.MDNSEnabled {
+		if err := discSvc.Register(); err != nil {
+			log.Warn("discovery.Register failed; mDNS disabled", "err", err)
+		}
+	} else {
+		log.Info("discovery: mdns_enabled=false; use `minti-cland peer-add` for peer registration")
+	}
+	defer discSvc.Shutdown()
+
+	discoCtx, discoCancel := context.WithCancel(context.Background())
+	defer discoCancel()
+	if cfg.Discovery.MDNSEnabled {
+		go func() {
+			err := discSvc.Browse(discoCtx, func(c discovery.Candidate) {
+				log.Info("discovery: peer seen via mDNS", "address", c.Address)
+				if err := registry.UpsertCandidate(c.Address, peers.SourceMDNS); err != nil {
+					log.Warn("registry: upsert candidate", "address", c.Address, "err", err)
+					return
+				}
+				advSvc.Bump()
+			})
+			if err != nil && discoCtx.Err() == nil {
+				log.Warn("discovery browse exited", "err", err)
+			}
+		}()
+	}
+
+	advCtx, advCancel := context.WithCancel(context.Background())
+	defer advCancel()
+	go advSvc.Start(advCtx)
+	log.Info("advertise + discovery loops running",
+		"interval", cfg.Advertise.Interval, "rubric_path", cfg.Discovery.RubricPath)
 
 	select {
 	case <-ctx.Done():
@@ -429,11 +528,12 @@ func joinPasteKey(mnemonic, address, pin string, id *identity.Identity, store *s
 	}
 
 	clan := &state.Clan{
-		ClanID:      wr.ClanID,
-		ClanCertPEM: wr.ClanCertPEM,
-		Role:        "joined",
-		JoinedAt:    time.Now().UTC(),
-		Roster:      wr.Roster,
+		ClanID:             wr.ClanID,
+		ClanCertPEM:        wr.ClanCertPEM,
+		ClanCertPrivKeyB64: wr.ClanCertPrivKeyB64,
+		Role:               "joined",
+		JoinedAt:           time.Now().UTC(),
+		Roster:             wr.Roster,
 	}
 	clan.SetClanKey(clanKey)
 	// Recompute pin from the cert PEM we just received and double-check it
@@ -482,13 +582,14 @@ func joinToken(token, address, pin string, id *identity.Identity, store *state.S
 		return fmt.Errorf("pin mismatch: server cert hashes to %s, you gave %s", cc.Pin, pin)
 	}
 	clan := &state.Clan{
-		ClanID:      jr.ClanID,
-		ClanKeyB64:  jr.ClanKeyB64,
-		ClanCertPEM: jr.ClanCertPEM,
-		ClanCertPin: cc.Pin,
-		Role:        "joined",
-		JoinedAt:    time.Now().UTC(),
-		Roster:      jr.Roster,
+		ClanID:             jr.ClanID,
+		ClanKeyB64:         jr.ClanKeyB64,
+		ClanCertPEM:        jr.ClanCertPEM,
+		ClanCertPrivKeyB64: jr.ClanCertPrivKeyB64,
+		ClanCertPin:        cc.Pin,
+		Role:               "joined",
+		JoinedAt:           time.Now().UTC(),
+		Roster:             jr.Roster,
 	}
 	if err := store.SaveClan(clan); err != nil {
 		return err
@@ -570,6 +671,109 @@ func cmdRevoke(args []string) error {
 		return fmt.Errorf("revoke failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	fmt.Printf("Revoked %s from Clan %s.\n", targetID, clan.ClanID)
+	return nil
+}
+
+// ---------- peer-add ----------
+
+func cmdPeerAdd(args []string) error {
+	fs := flag.NewFlagSet("peer-add", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		return errors.New("usage: minti-cland peer-add <ip:port>")
+	}
+	target := fs.Arg(0)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(peers.PeerAddRequest{Address: target})
+	resp, err := cli.Post(base+"/clan/peer-add", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peer-add failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("Registered peer %s in Clan %s.\n", target, clan.ClanID)
+	return nil
+}
+
+// ---------- peers ----------
+
+func cmdPeers(args []string) error {
+	fs := flag.NewFlagSet("peers", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/clan/peers", nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("peers failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		_, _ = io.Copy(os.Stdout, resp.Body)
+		return nil
+	}
+	var pl peers.PeersListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pl); err != nil {
+		return err
+	}
+	fmt.Printf("Clan %s\n", clan.ClanID)
+	fmt.Printf("Candidates (%d):\n", len(pl.Candidates))
+	for _, c := range pl.Candidates {
+		fmt.Printf("  %s  via=%s  first_seen=%s\n",
+			c.Address, c.DiscoveredVia, c.FirstSeen.Format("2006-01-02T15:04:05Z"))
+	}
+	now := time.Now()
+	fmt.Printf("Members (%d):\n", len(pl.Members))
+	for _, m := range pl.Members {
+		rs, ss := 0, 0
+		if m.LatestAd != nil {
+			rs, ss = m.LatestAd.ReasoningScore, m.LatestAd.SystemScore
+		}
+		fmt.Printf("  %s @ %-22s  via=%-8s  reason=%3d  sys=%3d  ad_fresh=%t  last_ad=%s\n",
+			m.MemberID, m.Address, m.DiscoveredVia, rs, ss, m.AdFresh(now),
+			m.LastAd.Format("2006-01-02T15:04:05Z"))
+	}
 	return nil
 }
 
