@@ -53,8 +53,11 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
   - **Phase A done** (`8b1c2fd`): cland module skeleton — `cmd/minti-cland/main.go` + `internal/{config,identity,state,auditlog}/`. Ed25519 keypair + UUIDv4 persist to `identity.json` (mode 0600); Clan state at `clan.json` (also 0600, holds `clan_key`) with atomic-rename writes; auditlog schema duplicated verbatim from `mcp-servers/internal/audit` (D-M4.6).
   - **Phase B done** (`990fbc2`): crypto + transport. `crypto/` package — self-signed X.509 from Ed25519 with SPKI `sha256:<hex>` pin; HMAC-SHA256 over canonical request `(METHOD\nPATH\nsha256(body)hex\nts\nnonce)` per spec §2.3; `KeyProvider` interface (Current + optional Grace) wired from day one per D-M4.11. `transport/` package — HTTPS server with auth middleware (±60 s window, replay-rejection via LRU-bounded nonce cache, 401 empty body + audit-log on every reject, grace-key acceptance during rotation, `HandleAnonymous` escape hatch for the future `/clan/join`); HTTPS client with `VerifyPeerCertificate` SPKI pin enforcement.
   - **Phase C-core done** (`0210239`): BIP39 paste-key + membership crypto core + CLI subcommands. `internal/bip39/` vendors the canonical bitcoin/bips english.txt (sha256 verified) + 12-word mnemonic encode/decode w/ checksum + case/whitespace normalisation. `internal/membership/Create()` founds a Clan; `PreJoinViaMnemonic()` does the joiner-side derivation. CLI gains `create`/`members`/`show`. **Founder + joiner derive byte-identical clan_keys** given the same mnemonic.
-  - **Phase C-rest done** (`ef328f2`): HTTP endpoints (`/clan/{invite,join,welcome,members,leave,revoke}`) on top of the Phase B transport; `invite` uses HandleAnonymous (joiner has no key yet), the other 5 are HMAC-gated. `InviteStore` (single-use, TTL 60s..24h), `Service.{Welcome,Leave,Revoke,SweepZombies}` + 60 s zombie sweep ticker per spec §3.1. CLI `invite`/`join` (paste-key + token paths)/`leave`/`revoke` — paste-key CLI derives clan_key from mnemonic, HMAC-signs a `/clan/welcome` call, persists the returned cert; token CLI uses an anon TLS-pinned client against `/clan/join`. Daemon wires `transport.Server` + `membership.Service` + sweep when state is active; idles when unaffiliated. **End-to-end smoke** (two state dirs, 127.0.0.1:17800): founder creates → daemon listens → joiner `join --mnemonic` → both `members` show each other; invite mint via local-daemon HMAC round-trip works.
-  - **Next:** Phase D — discovery via `grandcat/zeroconf` for `_minti-clan._tcp.local` + manual `/clan/peer-add` fallback (OQ-2 pulled forward in spec v0.2) + capability advertisement on 30 s tick + `reasoning_score`/`system_score` computation per spec §6.3/§6.4. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
+  - **Phase C-rest done** (`ef328f2`): HTTP endpoints (`/clan/{invite,join,welcome,members,leave,revoke}`) on top of the Phase B transport; `invite` uses HandleAnonymous (joiner has no key yet), the other 5 are HMAC-gated. `InviteStore` (single-use, TTL 60s..24h), `Service.{Welcome,Leave,Revoke,SweepZombies}` + 60 s zombie sweep ticker per spec §3.1. CLI `invite`/`join` (paste-key + token paths)/`leave`/`revoke`. End-to-end smoke proved founder + joiner pair formation.
+  - **Phase D done** (`73ecb2a` foundations + `d3f26a3` wiring + 2 prereq fixes): three foundation packages — `peers/` (Registry with candidate vs member-keyed stores, AdFresh/Live predicates, peer-add DoS guardrails 100-cap + 10/60s per-origin + TCP pre-dial), `scores/` (rubric loader + ReasoningScore + SystemScore + sliding-5-min RecentFailures), `probe/` (Linux + Windows hardware probe with EMA-smoothed SHA-256 CPU benchmark, nvidia-smi VRAM, runtime-adapter capabilities client). Then `discovery/` (grandcat/zeroconf with 1s debounce + clan_id filter + foreign-clan WARN + IsActive gating + Candidate-only emission per qwen3.6 1A) and `advertise/` (30s tick + 5s initial-delay + Bump rate-limited + per-peer failure record). Three new HTTP endpoints — `/clan/{advertise,peer-add,peers}` — registered behind the existing HMAC middleware. Two new CLI subcommands (`peer-add`, `peers`).
+    - **2 prereq fixes** surfaced + landed in this commit: (1) the daemon's TLS server now uses the **shared** `clan_cert` priv key (founder's Ed25519) — Phase C latently used each member's identity priv, which only worked one-way; (2) **Advertisement.LANAddress** added so receivers register the sender's listen port, not the incoming TCP socket's ephemeral source port.
+    - **End-to-end smoke** (Windows, two state dirs on 127.0.0.1:17980 + :17981): founder creates → daemons run on both sides → `peer-add` from founder → within 6s both `peers` commands show each other as `ad_fresh=true` with `system_score=66`.
+  - **Next:** Phase E — leader-lease election. Heartbeat 2s, lease 8s, failover grace 6s. `peers.Registry.Live(now)` already exists from Phase D and finally has meaning once Phase E plumbs `/clan/heartbeat` receipts into `LastSeenAt`. Plan: `C:\Users\aouad\.claude\plans\velvet-drifting-codd.md`.
 
 ### Next after M4
 
@@ -86,16 +89,17 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the M4 plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md (approved
-2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C
-committed (paste-key join works end-to-end on the smoke test). Pre-
-flight, then execute Phase D per the plan — mDNS discovery via
-github.com/grandcat/zeroconf for _minti-clan._tcp.local + manual
-/clan/peer-add fallback (OQ-2 pulled forward in spec v0.2) + 30 s
-capability advertisement loop + reasoning_score/system_score
-computation per spec §6.3/§6.4. Build on the existing
-transport.Server (route POST /clan/peer-add behind the auth
-middleware) and the persisted state.RosterMember LastSeenAt field
-to track freshness.
+2026-05-27). M0–M3 done; M4 in flight: Phase 0 + A + B + C + D
+committed and validated end-to-end (two daemons on 127.0.0.1 with
+paste-key join + peer-add + advertise loop both ways). Pre-flight,
+then execute Phase E per the plan — leader-lease election with the
+spec §5.2 cadence (HEARTBEAT_INTERVAL=2s, LEASE_DURATION=8s,
+FAILOVER_GRACE=6s, ELECTION_TIMEOUT=1s). `peers.Registry.Live()` +
+`TouchLive()` are already in place from Phase D; Phase E adds the
+heartbeat goroutine + election state machine + multi-pin tiebreaker
++ split-brain handling. Build on the existing transport.Server +
+peers.Registry; persist current_term + lease state to a new file
+under /var/lib/minti/cland/.
 ```
 
 ### Repo location
