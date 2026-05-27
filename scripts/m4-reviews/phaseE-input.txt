@@ -1,0 +1,384 @@
+You are reviewing the implementation plan for MINTI M4 Phase E — leader-lease
+election in the `cland` daemon. The Clan protocol's election engine is the
+critical-path distributed-systems component. M0-M3 are done; Phase D (capability
+advertisement + peer registry) just landed and was end-to-end-smoked between
+two daemons on 127.0.0.1.
+
+Your job is to find concrete problems, not to be polite. Be willing to say
+"looks good" rather than padding criticism. Be willing to disagree with the
+plan author. Cite spec sections (e.g. "spec §5.4") or plan sections (e.g.
+"State persistence") by their identifier so the author can find them.
+
+Look for, in this priority order:
+
+1. **Distributed-systems correctness.** Split-brain at partition boundaries,
+   term-monotonicity violations, race conditions between heartbeat tick and
+   election tick, lease-expiry off-by-one, quorum computation from the wrong
+   roster (live vs persisted), heartbeat anti-spoof bypass, election-history
+   ring corruption under concurrent writes.
+
+2. **Spec drift.** Places where the plan diverges from clan-protocol.md §5
+   without flagging the divergence. The cadence constants are locked
+   (HEARTBEAT=2s / LEASE=8s / FAILOVER=6s / TIMEOUT=1s / MIN_TERM_INCREMENT=1)
+   — does the plan honor them? Is the multi-pin tiebreaker exactly per §5.6?
+   Is the anti-spoof check exactly per §5.3?
+
+3. **Sequencing / reuse drift.** The plan reuses Phase D helpers
+   (peers.Registry.TouchLive, peers.Member.Live, transport.Client,
+   state.Store.SaveClan, crypto.KeyProvider). Is the reuse correct? Are there
+   helpers the plan re-introduces unnecessarily? Are there Phase D guarantees
+   the plan relies on but the Phase D code doesn't actually provide?
+
+4. **State persistence races.** The plan persists currentTerm + leaseExpires
+   on every heartbeat-applied + election commit. The existing SaveClan is
+   atomic-rename but serialised on a single mutex. Is there a path where a
+   crashed write could leave the daemon thinking it's still Orchestrator when
+   it isn't (or vice versa)?
+
+5. **Pin / advertisement propagation.** The plan flips state.Clan.
+   PinnedOrchestrator via a CLI and relies on the next advertise tick to
+   propagate. Is the latency acceptable? Is there a race where election can
+   run between pin-flip and ad-propagation, producing a wrong-winner outcome?
+
+6. **Edge cases not in the 11-test unit matrix + 10-step smoke.** Failure
+   modes that should be tested but aren't. Examples to consider: clock skew
+   between Orchestrator and peer, Orchestrator's runtime-adapter going down
+   (does it still emit heartbeats?), heartbeat broadcast partial-success
+   (3/5 succeed, 2/5 timeout), restart during election commit.
+
+7. **Overconfidence.** "Random backoff converges" is a probabilistic claim;
+   does the test plan validate it? "Persisted roster never disagrees with
+   peers.Registry" — is that actually true under any sequence of joins +
+   revocations?
+
+Be specific. Quote the line of the plan you're objecting to. If a finding is
+out of Phase E scope (e.g. belongs to Phase F routing), say so and move on.
+
+End your review with one short verdict line:
+  VERDICT: ship the plan as-is | ship after addressing items N..M | block on item K
+
+Below are FOUR documents.
+==================================================================
+DOCUMENT 1: Spec §5 (Leader-Lease Election) verbatim
+==================================================================
+
+## 5. Leader-Lease Election
+
+### 5.1 Why leader-lease, not pure gossip
+
+Per peer-review (PRD v0.5), gossip-only election creates split-brain on partitions. The leader-lease model is "Raft-lite": real terms, real leases, real failover — without log replication (we have no state to replicate, only routing decisions).
+
+### 5.2 Lease parameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `HEARTBEAT_INTERVAL` | 2s | Orchestrator emits a heartbeat this often. |
+| `LEASE_DURATION` | 8s | Heartbeat carries `lease_until = now + LEASE_DURATION`. |
+| `FAILOVER_GRACE` | 6s | If no heartbeat received for this long, peers begin election. |
+| `ELECTION_TIMEOUT` | 1s | Time to wait for a new heartbeat before declaring election complete. |
+| `MIN_TERM_INCREMENT` | 1 | Term must strictly increase on election. |
+
+### 5.3 Heartbeat message
+
+POST `/clan/heartbeat` to every peer every `HEARTBEAT_INTERVAL`:
+
+```json
+{
+  "member_id": "<orchestrator>",
+  "clan_id": "...",
+  "term": 17,
+  "lease_until": "2026-05-21T18:00:08Z",
+  "reasoning_score": 72,
+  "active_roster": ["uuid1", "uuid2", "uuid3"]
+}
+```
+
+Peers update local state: `current_orchestrator = member_id`, `current_term = term`, `lease_expires = lease_until`.
+
+A peer ignores a heartbeat if `term < current_term`, or if the sender is not the highest-`reasoning_score` member according to its current advertisements (anti-spoofing).
+
+### 5.4 Election flow
+
+When a member observes `lease_expires < now - FAILOVER_GRACE`:
+
+1. **Candidate selection**: scan current advertisements for members where `capabilities.reasoning.enabled == true`. The candidate with the highest `reasoning_score` is the next Orchestrator. Ties broken by oldest `joined_at`. If a member has `pinned_orchestrator: true` and is reasoning-capable, it wins regardless.
+2. **Term increment**: `new_term = current_term + 1`.
+3. **Announce**: the candidate (or, if the candidate is *self*, this member) POSTs an "election announcement" heartbeat with `term = new_term` to all peers.
+4. **Acceptance**: each peer accepts the first heartbeat for `new_term` from a candidate that matches its own scoring conclusion. If a peer's view disagrees (it scored a different member highest), it rejects with `409 Conflict, expected_orchestrator=<id>`.
+5. **Settlement**: after `ELECTION_TIMEOUT`, if the candidate has received ≥ ⌈N/2⌉ accepts (where N = current active roster size), it commits the lease and begins normal heartbeat operation. Otherwise the election times out and is retried after a small random backoff (50–150 ms).
+
+### 5.5 Split-brain handling
+
+If two candidates simultaneously claim the same `new_term`:
+
+- Peers see both heartbeats. Each peer accepts only the first received and rejects the second.
+- The "loser" (whose accept count falls below quorum) yields, increments its `term` counter to match, and listens.
+- If no candidate reaches quorum within `ELECTION_TIMEOUT`, both candidates abort, do a random backoff, and retry from step 1. The protocol terminates because backoffs eventually diverge.
+
+### 5.6 User-pin override
+
+A user may set `pinned_orchestrator: true` on their own member via Console or `cland pin`. While any reasoning-capable member is pinned:
+
+- Pinned member wins all elections regardless of `reasoning_score`.
+- If the pinned member becomes unreachable, the pin is auto-suspended until it returns (then resumed).
+- Multiple simultaneous pins is a misconfiguration; v1 logs a warning and the lowest `member_id` wins.
+
+---
+
+
+
+==================================================================
+DOCUMENT 2: Approved super-plan, Phase E section (velvet-drifting-codd.md)
+==================================================================
+
+### Phase E — Leader-lease election
+
+- `cland/internal/election/` — heartbeat goroutine when lease-holder; election goroutine watching `lease_expires`.
+- Parameters from spec §5.2 (HEARTBEAT_INTERVAL=2s, LEASE_DURATION=8s, FAILOVER_GRACE=6s, ELECTION_TIMEOUT=1s).
+- **Quorum semantics under partition (spec §5.4 + §5.5 explicit):** `N` is computed from the **persisted active roster** (`clan.json`), not the live advertisement cache, so a partitioned 2/5 minority can't reach quorum (⌈5/2⌉=3). Both sides may still elect during partition; on heal the lower-`term` Orchestrator yields. This implements §5.5 verbatim.
+- Candidate selection, anti-spoof, term tracking, **multi-pin tiebreaker (spec §5.6: lowest member_id wins, log warning)**.
+- Tests: lone-member trivial election; two-member tied-score → oldest-`joined_at` wins; user-pin override; **multi-pin tiebreaker**; partition simulation (two locally-elected sub-Clans heal correctly); anti-spoof (refuse heartbeat from sender that isn't actually highest-score in receiver's view); random-backoff retry on split-brain.
+
+
+
+==================================================================
+DOCUMENT 3: Phase D code shapes the plan builds on
+==================================================================
+
+Phase D code shapes the plan builds on (verbatim from the codebase):
+
+cland/internal/state/state.go — `Clan` struct currently has:
+  ClanID, ClanKeyB64, ClanCertPEM, ClanCertPin, ClanCertPrivKeyB64,
+  Role ("founder" | "joined"), JoinedAt time.Time,
+  Roster []RosterMember.
+`RosterMember` has: MemberID, PubKeyB64, State ("admitted" | "active" | "revoked"),
+  AdmittedAt time.Time, LastSeenAt time.Time.
+Note: there is NO JoinedAt on RosterMember — only AdmittedAt. The plan reuses
+AdmittedAt as the spec's "oldest joined_at" tiebreaker.
+
+cland/internal/peers/peers.go — `Registry` exposes:
+  UpsertCandidate(addr, via), AddPeer(originMemberID, addr) (with TCP pre-dial
+  + per-origin rate-limit + 100-entry cap), BindMember(ad, remoteAddr),
+  TouchLive(memberID), Snapshot() (Candidate[], Member[]),
+  SetRevocations(rev).
+`Member` has: MemberID, Address, DiscoveredVia, LastAd, LastSeenAt,
+  LatestAd *Advertisement, AdGeneration.
+Two predicates: AdFresh(now) = LastAd < 90s; Live(now) = LastSeenAt < 4s.
+Currently NOTHING calls TouchLive — Phase E's heartbeat handler is the first
+caller, which is the explicit Phase D -> Phase E handoff.
+
+cland/internal/peers/peers.go — `Advertisement` has:
+  MemberID, ClanID, Term uint64, Generation uint64, OS, LANAddress,
+  Hardware, ReasoningScore int, SystemScore int, Capabilities, Load,
+  PinnedOrchestrator bool.
+
+cland/internal/transport — `Server` exposes Handle(pattern, handler) registered
+behind HMAC middleware. `Client` is constructed with MemberID + KeyProvider +
+Pin + Timeout, auto-attaches the HMAC headers on every request.
+
+cland/internal/crypto — `KeyProvider` interface returns Current() and Grace()
+keys, wired through transport from Phase B (D-M4.11).
+
+cland/internal/membership — already registered routes via Service.Register(srv);
+`peers.Handlers` follows the same pattern.
+
+cland/cmd/minti-cland/main.go — daemon mode wires the transport server,
+membership, advertise loop, and discovery on the listed ports. The Phase E
+plan inserts the election engine right after the advertise loop starts.
+
+config: cland/internal/config/config.go currently has Listen/State/Discovery/
+Advertise/Runtime/Telemetry blocks (NO Election block yet — Phase E adds it).
+
+
+==================================================================
+DOCUMENT 4: The Phase E plan being reviewed (hello-what-do-you-valiant-ullman.md)
+==================================================================
+
+# MINTI M4 Phase E — Leader-lease election
+
+## Context
+
+Phases 0/A/B/C/D of M4 are committed and validated. Two daemons can form a Clan, discover each other, and exchange capability advertisements; `peers.Registry` already tracks `LastSeenAt` + exposes `Live(now)` (4 s window) and `TouchLive(memberID)` waiting for a caller. **Phase E is what makes the Clan act like a Clan**: it elects an Orchestrator from the advertised candidates, keeps the lease alive with 2 s heartbeats, and re-elects within 6–8 s when the holder dies. Once Phase E lands, `peers.Registry.Live()` finally has the call site that gives it meaning (heartbeat receipt), and Phase F (routing) gains a real Orchestrator to route through.
+
+This phase follows the **approved Phase E sub-plan in `velvet-drifting-codd.md`** (lines 242–248), refined for the Phase D code that actually shipped. Two scope choices confirmed by the user 2026-05-27:
+
+- **Pin support is in scope** — `state.Clan.PinnedOrchestrator` + `minti-cland pin --self|--clear` CLI, so the multi-pin tiebreaker (M4 verification gate #16) is end-to-end testable now.
+- **Both diagnostic endpoints ship** — `/clan/orchestrator` + `/clan/election/history`. Tiny, and the two-VM Phase J debug story needs them.
+
+Spec authority: `docs/clan-protocol.md` §5 (v0.3). All cadence constants verified against the spec (HEARTBEAT=2s / LEASE=8s / FAILOVER=6s / TIMEOUT=1s / MIN_TERM_INCREMENT=1).
+
+---
+
+## Approach
+
+### New package: `cland/internal/election/`
+
+One package, three concerns split into files:
+
+| File | Purpose |
+|---|---|
+| `state.go` | `State` struct holding `currentTerm`, `currentOrchestrator`, `leaseExpires`, `myLeaseExpires`. Mutex-guarded. Loads from + persists to `state.Clan` via `state.Store.SaveClan()`. Has `Apply(hb Heartbeat) error` for incoming heartbeats (returns reason on reject) and `Commit(term, winner, lease time.Time)` for own-election results. |
+| `engine.go` | `Engine.Run(ctx)` — single goroutine driving both responsibilities: (a) if `state.Self == currentOrchestrator`, fan-out heartbeats every 2 s; (b) if `now > leaseExpires + FAILOVER_GRACE`, trigger an election cycle. Owns the ticker, the candidate-selection logic, the announce broadcast, and the ⌈N/2⌉ accept-counting. Uses `transport.Client` to POST heartbeats; uses `peers.Registry.Snapshot()` + `state.Clan.Roster` to compute candidates and quorum. |
+| `handlers.go` | `/clan/heartbeat` (POST, HMAC), `/clan/orchestrator` (GET, HMAC), `/clan/election/history` (GET, HMAC). `historyRing` is a small in-memory ring of last 32 elections `{Term, Winner, Reason, At}` — not persisted; survives crash via re-election. |
+| `engine_test.go` + `state_test.go` + `handlers_test.go` | Per the test matrix below. |
+
+### Candidate selection — reuse, don't reimplement
+
+Per spec §5.4:
+1. Filter `peers.Registry.Snapshot().Members` to those with `LatestAd.Capabilities["reasoning"]["enabled"] == true` AND `Live(now)` (heartbeat-fresh) OR `AdFresh(now)` if no prior heartbeat exists (bootstrap).
+2. Include `self` if local advertisement (synthesized in `engine.go` from the same `probe`/`scores` packages the advertise loop uses) is reasoning-capable.
+3. **Pin path:** if any candidate has `pinned_orchestrator: true`, restrict the candidate set to pinned-only. If >1 pinned, lowest `member_id` (lexicographic) wins — log warning + audit entry per spec §5.6.
+4. **Score path:** highest `reasoning_score` from `LatestAd.ReasoningScore`. Ties broken by oldest `AdmittedAt` — **the code calls `AdmittedAt` what the spec calls `joined_at`** (same semantic moment: admission into the current Clan). Add a one-line code comment at the tiebreaker site noting the spec alias.
+
+### Quorum — persisted roster, not live ads
+
+Per spec §5.5: `N = len(state.Clan.Roster where state == "active" || "admitted")`. Computed from `state.Clan`, not `peers.Registry`. Closes the partition gap (2/5 minority can't reach ⌈5/2⌉=3). Single helper `engine.quorum() int` returning `(N+1)/2`.
+
+### State persistence
+
+Extend `state.Clan` in `cland/internal/state/state.go`:
+
+```go
+CurrentOrchestrator string    `json:"current_orchestrator,omitempty"`
+CurrentTerm         uint64    `json:"current_term,omitempty"`
+LeaseExpires        time.Time `json:"lease_expires,omitempty"`
+PinnedOrchestrator  bool      `json:"pinned_orchestrator,omitempty"` // self-pin
+```
+
+Persisted via the existing `Store.SaveClan()` atomic-rename path. Written on every heartbeat-applied + every election commit. Read at startup so a daemon restart preserves term continuity (avoids a same-term election clash with peers that didn't restart).
+
+### Config
+
+Extend `cland/internal/config/config.go` with a new block + Default(); update `cland/configs/cland.yaml.example` (created in Phase D — verify path during execution; if absent, create it):
+
+```yaml
+election:
+  heartbeat_interval: 2s
+  lease_duration: 8s
+  failover_grace: 6s
+  election_timeout: 1s
+  history_size: 32
+```
+
+Defaults match spec §5.2 verbatim. Configurable for operator flexibility (and so tests can dial the cadence down to 50 ms for fast iteration).
+
+### Daemon wiring (`cmd/minti-cland/main.go`)
+
+Right after the Phase D `advSvc.Start(advCtx)` line (~321), construct `election.Engine` with:
+
+- `state.Store`, `id.MemberID`, `clan` snapshot, `peers.Registry`, `transport.Client` (reuse `advClient`), `crypto.KeyProvider`, `audit`, `log`, `config.Election`.
+- A `localAdvertiser` adapter that yields the same advertisement payload `advSvc` builds (extract `advSvc.buildAdvertisement()` into a small reusable method on `advertise.Service` — currently inlined; rename only if needed).
+
+Register the three handlers via `(&election.Handlers{Engine: eng}).Register(srv)`. Start one goroutine: `go eng.Run(electionCtx)`. Add `electionCtx, electionCancel` + a deferred cancel + a `<-srvErr` arm so shutdown is clean.
+
+### Heartbeat receiver → `peers.Registry.TouchLive`
+
+The `/clan/heartbeat` handler calls `registry.TouchLive(hb.MemberID)` on every accepted heartbeat. That single line is the missing link Phase D left for Phase E and the thing that finally makes `peers.Member.Live(now)` true under normal operation.
+
+### CLI: `minti-cland pin [--self|--clear]`
+
+Add a `pin` subcommand under the existing dispatch in `main.go:54-87`. Posts to a new local-loop endpoint `POST /clan/pin {value: bool}` (HMAC-authenticated; same `localDaemonClient` pattern the other CLI subcommands use). The handler flips `state.Clan.PinnedOrchestrator`, `SaveClan`s, then bumps the advertise loop (`advSvc.Bump()`) so peers see the new pin on the next ad — pin propagates via the `Advertisement.PinnedOrchestrator` field that's already in `peers.Advertisement`.
+
+---
+
+## Critical files to be modified
+
+- **New:** `cland/internal/election/{state.go, engine.go, handlers.go, *_test.go}`
+- **Modified:** `cland/internal/state/state.go` — add 4 fields to `Clan` (see above). Existing `SaveClan` atomic-rename path is reused.
+- **Modified:** `cland/internal/config/config.go` — add `ElectionConfig` + `Default()` block + YAML tags.
+- **Modified:** `cland/cmd/minti-cland/main.go` — daemon wiring (~lines 321–325 area) + `pin` CLI subcommand alongside `peer-add`/`peers` (~lines 67–77).
+- **Modified:** `cland/internal/advertise/advertise.go` (or `service.go`, verify) — extract the inline `buildAdvertisement()` into an exported method **only if** election needs to call it directly; otherwise election builds its own from the same probe/scores helpers (preferred — no refactor of working code).
+- **Modified:** `cland/configs/cland.yaml.example` — add the `election:` block.
+- **Modified:** `docs/clan-protocol.md` — version bump to v0.4 only if Phase E surfaces spec clarifications during build (none anticipated; cadence + tiebreaker + quorum are already locked in v0.3).
+- **Modified:** `STATUS.md` — flip Phase E from "Next" to "Done" with smoke results at the end of the phase.
+
+No edits to `runtime-adapter/`, `mcp-servers/`, `packs/`, `discovery/`, `probe/`, or `scores/`.
+
+---
+
+## Existing functions/types to reuse
+
+| Use | Path |
+|---|---|
+| Atomic state persistence | `state.Store.SaveClan()` — `cland/internal/state/state.go:132` |
+| Live-peer predicate | `peers.Member.Live(now)` — `cland/internal/peers/peers.go:113` |
+| Heartbeat-receipt sink | `peers.Registry.TouchLive(memberID)` — `cland/internal/peers/peers.go:324` |
+| HMAC-authenticated HTTP client | `transport.Client` constructed exactly like `advClient` in `main.go:258-266` |
+| HMAC-authenticated route registration | Server's `Handle()` pattern used by `membership.Service.Register` and `peers.Handlers.Register` |
+| Key rotation seam | `crypto.KeyProvider` (`Current`/`Grace`) — already wired through `transport` |
+| Audit log | `auditlog.NewFileLogger` + `audit.Log()` — same instance the rest of the daemon uses |
+| Snapshot for candidate iteration | `peers.Registry.Snapshot()` — `cland/internal/peers/peers.go:334` |
+| Local-loopback CLI client | `localDaemonClient(cfg, clan, id)` — `main.go:865` (for the new `pin` CLI) |
+
+---
+
+## Verification
+
+### Unit tests (`go test ./cland/internal/election/...`)
+
+| # | Test | Asserts |
+|---|---|---|
+| 1 | Lone-member election | Single-member roster: self elects on startup; term=1; lease commits; subsequent ticks emit heartbeats. |
+| 2 | Two-member tied score | Both score 80; the one with the older `AdmittedAt` wins; loser accepts. |
+| 3 | User-pin override | Lower-scored member with `PinnedOrchestrator=true` wins over higher-scored unpinned member. |
+| 4 | Multi-pin tiebreaker | Both pinned; lower `member_id` (lex) wins; warning audit-logged on every member. |
+| 5 | Heartbeat anti-spoof | Heartbeat from a member who is NOT highest-scoring in the receiver's view → rejected with reason; `TouchLive` NOT called. |
+| 6 | Term replay reject | Heartbeat with `term < currentTerm` → 409 + audit-logged; state unchanged. |
+| 7 | Lease expiry triggers election | Stop emitting heartbeats from the Orchestrator; the other member's engine detects `now > leaseExpires + FAILOVER_GRACE` and runs election within ELECTION_TIMEOUT × 2 (with backoff). |
+| 8 | Partition + heal | Inject a fake roster of 5; one side sees 2 members, other sees 3. Minority side fails to reach quorum (⌈5/2⌉=3) and never commits; majority commits. On heal, minority observes higher term and yields. |
+| 9 | Split-brain backoff | Two simultaneous candidates → both abort after ELECTION_TIMEOUT; random backoff (50–150 ms) means at most one succeeds on retry. Statistical: 10 runs, ≥9 should converge within 3 rounds. |
+| 10 | Pin CLI roundtrip | `pin --self` flips state, `Bump()` is called, next advertisement carries `pinned_orchestrator: true`. |
+| 11 | State persistence across restart | After commit, simulate restart by reloading `state.Clan` from disk; `currentTerm` + `currentOrchestrator` + `leaseExpires` survive. |
+
+### Smoke test (Windows, two state dirs on 127.0.0.1 — same pattern as Phase D smoke)
+
+Create `scripts/m4-phaseE-smoke.ps1`:
+
+1. Build `minti-cland.exe`.
+2. Wipe two state dirs (`$env:TEMP\cland-A`, `$env:TEMP\cland-B`).
+3. Founder on `:17980` runs `create`; joiner on `:17981` runs `join` with paste-key (Phase C path, already validated).
+4. Start both daemons.
+5. Within 8 s: `minti-cland orchestrator` (curl the new GET) on both → both report the same `current_orchestrator` (the founder, presumably — highest score; verify it's whichever has the higher `reasoning_score`).
+6. Kill the Orchestrator daemon (taskkill /F).
+7. Within FAILOVER_GRACE + ELECTION_TIMEOUT + safety margin (≈10 s): the surviving member becomes Orchestrator (term=2). Curl `/clan/orchestrator` on the survivor; assert `member_id == survivor` and `term == 2`.
+8. Bring the killed daemon back. Within one heartbeat cycle, it observes term=2, accepts the new Orchestrator, and starts receiving heartbeats. `Live(now)` is true on both sides.
+9. On the original Orchestrator, run `pin --self` and restart. After re-pin propagation (≤30 s, one advertise tick), it wins re-election. Term=3.
+10. `minti-cland election-history` on either node → 3 entries (terms 1, 2, 3) with the right winners + reasons (`bootstrap`, `lease_expired`, `pin_override`).
+
+All 10 pass = Phase E done. Commit + STATUS.md update + bump to "Next: Phase F (routing)".
+
+### Build sanity (host)
+
+```powershell
+$env:Path = "C:\Program Files\Go\bin;$env:Path"
+cd C:\Users\aouad\Documents\CCode\MINT\MINT_wip\cland
+go build ./...
+go test ./internal/election/...
+go vet ./...
+go build -o minti-cland.exe ./cmd/minti-cland
+```
+
+All green before invoking the smoke script.
+
+### Linux cross-compile (sanity only — Phase J does the real two-VM run)
+
+```powershell
+$env:GOOS = "linux"; $env:GOARCH = "amd64"
+go build -o ..\dist\minti-cland-linux-amd64 ./cmd/minti-cland
+$env:GOOS = ""; $env:GOARCH = ""
+```
+
+Must produce a binary; no runtime test until Phase J spins up the second VM.
+
+---
+
+## Out of scope (deferred)
+
+- Phase F routing through the elected Orchestrator (`/v1/chat/completions` proxy).
+- Cross-Clan tool calls + `VerifyCrossClanToken` (Phase G).
+- Key rotation 2PC (Phase H).
+- mDNS-cleanup-on-crash test (Phase J verification gate #14 — needs two real hosts).
+- `minti-cland.service` systemd hardening (Phase I).
+- `minti-fetch` Orchestrator surface (Phase I).
+
+All recorded in `velvet-drifting-codd.md` under their respective phases.
