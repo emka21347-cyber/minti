@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G done — two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, and cross-Clan signed-token tool execution all working end-to-end on Windows host. Phase H (key rotation + revocation) is next.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 in flight**: cland Phases 0 + A + B + C + D + E + F + G + H-1 done — two-daemon Clan formation, mDNS + peer-add discovery, capability advertise loop, leader-lease election with failover, Orchestrator chat-completion routing, cross-Clan signed-token tool execution, and orchestrator-driven 2PC key rotation all working end-to-end on Windows host. Phase H-2 (revocation gossip) and then I + J wrap M4.
 
 ---
 
@@ -80,7 +80,18 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     - **13 unit tests** in `internal/toolexec/`: sign/verify roundtrip, tamper-detection (Tool + RequestID bit-flip), wrong target → 403, expired → 401, future approved_at → 401, replay → 401, foreign clan_key → 401, args-tamper-after-sign → 401, grace-key acceptance during rotation, happy-path with audit, executor failure → 502, namespace parsing, replay cache TTL eviction.
     - **Phase E smoke regression-clean** with toolexec wired in.
     - **Deferred**: a real end-to-end smoke (origin daemon mints token → POSTs to target daemon → real MCP server spawns → returns tool output) needs a built minti-mcp-* binary on the smoke rig. The 13 unit tests + the M2 mcptest pattern (which has run real recon scans end-to-end) cover the executor path; the deferral is about smoke-test harness scope, not correctness. Local cland-side policy intercept (the spec's `403 policy_deny` before spawn) is deferred — the MCP server's own `deny_tools` enforcement still applies, but as an `IsError` result rather than a clean 403.
-  - **Next:** Phase H — key rotation 2PC + member revocation. `/clan/rotate-key` walks the IDLE → PROPOSED → ACK_COLLECTING → COMMITTED state machine with a 60 s propose-timeout-revert; the existing `crypto.KeyProvider.Rotate` already handles the grace-window mechanics. `/clan/revoke` writes the revocation list (already persisted) + gossips on every heartbeat for partition tolerance.
+  - **Phase H-1 done** (2026-05-28, see commit log): key rotation 2PC. New `cland/internal/keyrotate/` package:
+    - **types.go**: ProposeRequest / CommitRequest / AbortRequest / AckResponse / RotateResult wire shapes. PROPOSE_TIMEOUT=60s, MemberRevertAfter=90s (1.5×), DefaultGraceDuration=5min per spec §8.1.
+    - **store.go**: in-memory `ProposeStore` — at most one pending propose; `ErrAlreadyPending` on collision; idempotent re-put for same id; `SweepExpired` clears pending after MemberRevertAfter (defends against an Orchestrator crashing mid-rotation).
+    - **member.go**: `MemberHandler` exposes `POST /clan/rotate-key/{propose,commit,abort}` behind the existing HMAC middleware. Commit pops the pending key and invokes `KeyProvider.Rotate(newKey, graceDur)` — `crypto.KeyProvider`'s existing rotation mechanics (grace = old key, current = new) handle the 5-min in-flight tolerance natively.
+    - **coordinator.go**: Orchestrator-side 2PC. Generates 32-byte new key + propose_id, broadcasts PROPOSE to all active roster members in parallel, collects ACKs within PROPOSE_TIMEOUT. If any peer 4xx/5xx/timeout → broadcast ABORT to everyone who ACKed (so they don't have to wait MemberRevertAfter to revert) + skip self-rotate. If all ACK → broadcast COMMIT + self-rotate. Lone-orchestrator special case (no peers): self-rotates trivially.
+    - **trigger.go**: `POST /clan/rotate-key` (the local-CLI trigger) checks Orchestrator-status gate first, returns 503 + "not orchestrator" if not. Routes to coordinator.Rotate().
+    - **CLI**: `minti-cland rotate-key` — POSTs to local daemon, prints commit/abort result.
+    - **Daemon wiring** in main.go: also starts a background sweep goroutine that calls `proposeStore.SweepExpired()` every PROPOSE_TIMEOUT (60s) — covers the orchestrator-crash scenario.
+    - **10 unit tests** in `internal/keyrotate/`: store put-accepted / put-different-id-409 / put-same-id-idempotent / sweep-expired / take-matches-id; member propose happy / commit-without-propose-409 / commit-after-propose-rotates / abort-clears; coordinator happy-all-ack / one-peer-fails-aborts (no self-rotate) / lone-orch / network-error-treated-as-failure.
+    - **Phase E smoke regression-clean** with keyrotate wired.
+    - **Deferred to Phase H-2**: revocation gossip. `/clan/revoke` already exists from Phase C (writes `revocations.json`, flips roster entry to "revoked", `peers.Registry.SetRevocations` consults the list on candidate binding). What's missing is *cross-daemon propagation* — Phase H-2 will piggyback revocations digest on heartbeats so a partitioned-then-healed node syncs.
+  - **Next:** Phase H-2 — revocation gossip. Extend heartbeat payload with `revocations_digest` (sha256 of sorted revoked member_ids); on digest mismatch, fetch full list via a new `GET /clan/revocations`. Then **Phase I** — install.sh + Makefile + systemd unit. Then **Phase J** — two-node testbed validation. M4 wraps after J.
 
   - **Phase E done** (2026-05-27, see commit log): leader-lease election engine.
 
@@ -114,20 +125,20 @@ Continuing MINTI build. Read memory at
 C:\Users\aouad\.claude\projects\C--Users-aouad-Documents-CCode-MINT-MINT-wip\memory\MEMORY.md
 then read STATUS.md and the super-plan at
 C:\Users\aouad\.claude\plans\velvet-drifting-codd.md. M0–M3 done;
-M4 Phases 0 + A + B + C + D + E + F + G all committed and validated
-(two-daemon Clan, paste-key join, advertise, leader-lease election,
-failover with term bump, restart-accept, Orchestrator chat-completion
-routing, cross-Clan signed-token tool execution — 13 toolexec unit
-tests, full cland test suite green, Phase E regression smoke clean).
-Pre-flight, then execute Phase H per the super-plan — key rotation
-2PC + member revocation. /clan/rotate-key walks IDLE → PROPOSED →
-ACK_COLLECTING → COMMITTED with 60 s propose-timeout-revert; the
-existing crypto.KeyProvider.Rotate() already implements the
-grace-window mechanics, so Phase H mostly adds the orchestration +
-peer-broadcast layer on top. /clan/revoke writes to revocations.json
-(already persisted) + gossips on every heartbeat for partition
-tolerance — extend the existing /clan/heartbeat payload's
-active_roster digest to carry a revocations digest peers can sync from.
+M4 Phases 0 + A + B + C + D + E + F + G + H-1 all committed and
+validated (two-daemon Clan, paste-key join, advertise, leader-lease
+election with failover + restart-accept, Orchestrator chat-completion
+routing, cross-Clan signed-token tool execution, orchestrator-driven
+2PC key rotation — 10 keyrotate unit tests, full cland test suite
+green across all 15 packages, Phase E regression smoke clean).
+Pre-flight, then execute Phase H-2 per the super-plan — revocation
+gossip. /clan/revoke already writes revocations.json + flips roster
+entry locally; H-2 adds cross-daemon propagation by piggybacking
+revocations_digest (sha256 of sorted revoked member_ids) on every
+heartbeat. On digest mismatch, fetch full list via new GET
+/clan/revocations. After H-2 wraps the security work, Phase I adds
+install.sh / Makefile / systemd unit, Phase J validates two-node on
+a fresh VM clone. M4 done after J.
 ```
 
 ### Repo location

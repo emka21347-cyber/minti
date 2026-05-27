@@ -40,6 +40,7 @@ import (
 	"github.com/minti/cland/internal/discovery"
 	"github.com/minti/cland/internal/election"
 	"github.com/minti/cland/internal/identity"
+	"github.com/minti/cland/internal/keyrotate"
 	"github.com/minti/cland/internal/membership"
 	"github.com/minti/cland/internal/peers"
 	"github.com/minti/cland/internal/probe"
@@ -79,6 +80,8 @@ func main() {
 			err = cmdOrchestrator(os.Args[2:])
 		case "election-history":
 			err = cmdElectionHistory(os.Args[2:])
+		case "rotate-key":
+			err = cmdRotateKey(os.Args[2:])
 		case "show":
 			err = cmdShow(os.Args[2:])
 		case "help", "-h", "--help":
@@ -125,6 +128,7 @@ Usage:
   minti-cland pin [--self|--clear]     set or clear the self-pin (spec §5.6)
   minti-cland orchestrator             print current Orchestrator + term + lease
   minti-cland election-history         print recent elections (ring buffer)
+  minti-cland rotate-key               rotate the Clan key (Orchestrator only)
   minti-cland show                     print clan_id, pin, LAN address
   minti-cland help                     this message
 
@@ -453,6 +457,71 @@ func runDaemon(args []string) error {
 		"binaries_dir", cfg.MCP.BinariesDir,
 		"max_token_lifetime", cfg.MCP.MaxTokenLifetime,
 		"endpoints", "/mcp/execute")
+
+	// ----- Phase H-1: key rotation 2PC -----
+	proposeStore := keyrotate.NewProposeStore(nil)
+	(&keyrotate.MemberHandler{
+		SelfID: id.MemberID, Store: proposeStore, Rotater: kp,
+		Audit: audit, Log: log,
+	}).Register(srv)
+	// Sweep expired propose entries every PROPOSE_TIMEOUT — bounded background work.
+	sweepDoneCtx, sweepDoneCancel := context.WithCancel(context.Background())
+	defer sweepDoneCancel()
+	go func() {
+		t := time.NewTicker(keyrotate.ProposeTimeout)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepDoneCtx.Done():
+				return
+			case <-t.C:
+				proposeStore.SweepExpired()
+			}
+		}
+	}()
+
+	rotateCoord, err := keyrotate.NewCoordinator(keyrotate.CoordinatorOpts{
+		SelfID:  id.MemberID,
+		Rotater: kp,
+		Client:  advClient, // HMAC-stamping transport.Client
+		PeerSource: func() []keyrotate.Peer {
+			// Rotate against the persisted active roster: anyone currently
+			// "active" + with a known address in peers.Registry.
+			curClan, _ := store.LoadClan()
+			if curClan == nil {
+				return nil
+			}
+			activeIDs := map[string]bool{}
+			for _, m := range curClan.Roster {
+				if m.State == "active" && m.MemberID != id.MemberID {
+					activeIDs[m.MemberID] = true
+				}
+			}
+			_, members := registry.Snapshot()
+			out := make([]keyrotate.Peer, 0, len(activeIDs))
+			for _, m := range members {
+				if activeIDs[m.MemberID] && m.Address != "" {
+					out = append(out, keyrotate.Peer{MemberID: m.MemberID, Address: m.Address})
+				}
+			}
+			return out
+		},
+		Audit: audit,
+		Log:   log,
+	})
+	if err != nil {
+		return fmt.Errorf("keyrotate coordinator: %w", err)
+	}
+	(&keyrotate.TriggerHandler{
+		Coordinator: rotateCoord,
+		IsOrchestrator: func() bool {
+			return electionState.IAmOrchestrator(time.Now())
+		},
+	}).Register(srv)
+	log.Info("keyrotate enabled",
+		"propose_timeout", keyrotate.ProposeTimeout,
+		"grace_duration", keyrotate.DefaultGraceDuration,
+		"endpoints", "/clan/rotate-key /clan/rotate-key/{propose,commit,abort}")
 
 	select {
 	case <-ctx.Done():
@@ -1070,6 +1139,59 @@ func cmdElectionHistory(args []string) error {
 		fmt.Printf("  term=%-4d winner=%-36s reason=%-20s at=%s\n",
 			e.Term, e.Winner, e.Reason, e.At.Format(time.RFC3339))
 	}
+	return nil
+}
+
+// ---------- rotate-key ----------
+
+func cmdRotateKey(args []string) error {
+	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.Post(base+"/clan/rotate-key", "application/json", []byte("{}"))
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if *jsonOut {
+		fmt.Println(string(raw))
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("rotate-key returned %d", resp.StatusCode)
+		}
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("rotate-key failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var res keyrotate.RotateResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return err
+	}
+	fmt.Printf("Rotation committed (propose_id=%s)\n", res.ProposeID)
+	fmt.Printf("  ACKed by %d peers: %v\n", len(res.AckedBy), res.AckedBy)
+	if len(res.FailedBy) > 0 {
+		fmt.Printf("  Failed: %v\n", res.FailedBy)
+	}
+	fmt.Printf("  Grace window: %v (old key still valid)\n", keyrotate.DefaultGraceDuration)
 	return nil
 }
 
