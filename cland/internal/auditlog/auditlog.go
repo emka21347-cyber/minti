@@ -1,4 +1,5 @@
-// Package auditlog writes per-member audit events to ~/.minti/audit.jsonl.
+// Package auditlog writes per-member audit events to the canonical
+// `<state_dir>/audit.jsonl` path (see config.DefaultAuditLogPath).
 //
 // **Schema must stay byte-identical with mcp-servers/internal/audit/audit.go**
 // — both daemons write to the same file, and a future Console UI reader (M6)
@@ -20,6 +21,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/minti/cland/internal/config"
 )
 
 // Event mirrors the schema in mcp-servers/internal/audit. New optional fields
@@ -60,13 +63,11 @@ func NewFileLogger(path string) (*FileLogger, error) {
 	return &FileLogger{path: path}, nil
 }
 
-// DefaultPath returns ~/.minti/audit.jsonl for the invoking user.
+// DefaultPath returns the platform-canonical audit log path
+// (<state_dir>/audit.jsonl). Delegates to config.DefaultAuditLogPath so the
+// audit log lives next to identity.json + clan.json on every OS.
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".minti", "audit.jsonl"), nil
+	return config.DefaultAuditLogPath(), nil
 }
 
 func (l *FileLogger) Write(e Event) error {

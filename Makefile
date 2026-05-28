@@ -15,20 +15,29 @@ MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http
 MCP_BINS      := $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix $(EXE),$(MCP_SERVERS)))
 MCP_BINS_LINUX:= $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix -linux-amd64,$(MCP_SERVERS)))
 
-CLAND_DIR        := cland
-CLAND_PKG        := ./cmd/minti-cland
-CLAND_BIN        := $(CLAND_DIR)/minti-cland
-CLAND_BIN_LINUX  := $(CLAND_DIR)/dist/minti-cland-linux-amd64
+CLAND_DIR             := cland
+CLAND_PKG             := ./cmd/minti-cland
+CLAND_BIN             := $(CLAND_DIR)/minti-cland
+CLAND_BIN_LINUX       := $(CLAND_DIR)/dist/minti-cland-linux-amd64
+CLAND_BIN_WINDOWS     := $(CLAND_DIR)/dist/minti-cland-windows-amd64.exe
+CLAND_BIN_DARWIN_AMD64 := $(CLAND_DIR)/dist/minti-cland-darwin-amd64
+CLAND_BIN_DARWIN_ARM64 := $(CLAND_DIR)/dist/minti-cland-darwin-arm64
 
 DIST          := dist
 PACKS_DIR     := packs
 PACK_NAMES    := recon
-# Pinned to M4 — bump per-milestone.
-VERSION       := 0.1.0-M4
+# Pinned to M5-A — bump per-milestone.
+VERSION       := 0.2.0-M5
 LDFLAGS       := -X main.version=$(VERSION)
+# Release build flags: strip debug info, omit absolute build paths. ~30%
+# smaller binaries + no leaked /Users/... paths in error messages.
+LDFLAGS_REL   := $(LDFLAGS) -s -w
+GOFLAGS_REL   := -trimpath
 
 # ---------- Phony targets ----------
-.PHONY: help all runtime runtime-linux cland cland-linux mcp mcp-linux mcptest mcptest-linux \
+.PHONY: help all runtime runtime-linux \
+        cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms \
+        mcp mcp-linux mcptest mcptest-linux \
         packs pack-recon sign-recon \
         install-test test fmt vet tidy clean dist-dir
 
@@ -42,8 +51,12 @@ help:
 	@echo "  make packs        — build all debian tool packs"
 	@echo "  make pack-recon   — build minti-pack-recon.deb (lands in dist/)"
 	@echo "  make sign-recon   — sign the built .deb (requires MINTI_GPG_KEY env)"
-	@echo "  make cland        — build minti-cland (native)"
-	@echo "  make cland-linux  — cross-compile minti-cland for Linux amd64"
+	@echo "  make cland               — build minti-cland (native)"
+	@echo "  make cland-linux         — cross-compile minti-cland for Linux amd64"
+	@echo "  make cland-windows       — cross-compile minti-cland for Windows amd64 (.exe)"
+	@echo "  make cland-darwin-amd64  — cross-compile minti-cland for macOS x86_64"
+	@echo "  make cland-darwin-arm64  — cross-compile minti-cland for macOS arm64 (Apple Silicon)"
+	@echo "  make cland-all-platforms — all four cland binaries"
 	@echo "  make install-test — run install.sh against a fresh Debian VM (TODO)"
 	@echo "  make fmt vet      — gofmt + go vet on all Go modules"
 	@echo "  make tidy         — go mod tidy on all Go modules"
@@ -106,7 +119,7 @@ sign-recon:
 	  echo ">> sign $$deb with $(MINTI_GPG_KEY)"; \
 	  dpkg-sig --sign builder -k $(MINTI_GPG_KEY) "$$deb"
 
-# ---------- cland (M4) ----------
+# ---------- cland (M4 + M5 cross-OS) ----------
 cland: $(CLAND_BIN)
 
 $(CLAND_BIN):
@@ -114,7 +127,21 @@ $(CLAND_BIN):
 
 cland-linux:
 	mkdir -p $(CLAND_DIR)/dist
-	cd $(CLAND_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build -ldflags "$(LDFLAGS)" -o dist/minti-cland-linux-amd64 $(CLAND_PKG)
+	cd $(CLAND_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-cland-linux-amd64 $(CLAND_PKG)
+
+cland-windows:
+	mkdir -p $(CLAND_DIR)/dist
+	cd $(CLAND_DIR) && GOOS=windows GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-cland-windows-amd64.exe $(CLAND_PKG)
+
+cland-darwin-amd64:
+	mkdir -p $(CLAND_DIR)/dist
+	cd $(CLAND_DIR) && GOOS=darwin GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-cland-darwin-amd64 $(CLAND_PKG)
+
+cland-darwin-arm64:
+	mkdir -p $(CLAND_DIR)/dist
+	cd $(CLAND_DIR) && GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-cland-darwin-arm64 $(CLAND_PKG)
+
+cland-all-platforms: cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64
 
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"

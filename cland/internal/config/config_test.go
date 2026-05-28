@@ -11,8 +11,14 @@ func TestDefault(t *testing.T) {
 	if c.Listen.Port != 7777 {
 		t.Errorf("default port = %d, want 7777", c.Listen.Port)
 	}
-	if c.State.Dir != "/var/lib/minti/cland" {
-		t.Errorf("default state dir = %q", c.State.Dir)
+	// State.Dir is platform-canonical now (M5-A). Assert it matches the
+	// helper rather than a hardcoded path so the test stays valid on
+	// linux + windows + darwin.
+	if c.State.Dir != DefaultStateDir() {
+		t.Errorf("default state dir = %q, want %q", c.State.Dir, DefaultStateDir())
+	}
+	if c.State.Dir == "" {
+		t.Errorf("default state dir must not be empty")
 	}
 	if !c.Discovery.MDNSEnabled {
 		t.Errorf("default mdns_enabled should be true")
@@ -48,9 +54,10 @@ discovery:
 	if c.Discovery.MDNSEnabled {
 		t.Errorf("mdns_enabled overlay lost")
 	}
-	// Untouched default should still apply.
-	if c.State.Dir != "/var/lib/minti/cland" {
-		t.Errorf("state.dir default clobbered: %q", c.State.Dir)
+	// Untouched default should still apply (now platform-canonical via
+	// DefaultStateDir, not a hardcoded /var/lib path).
+	if c.State.Dir != DefaultStateDir() {
+		t.Errorf("state.dir default clobbered: got %q, want %q", c.State.Dir, DefaultStateDir())
 	}
 }
 

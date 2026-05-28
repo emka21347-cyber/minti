@@ -135,17 +135,17 @@ Usage:
   minti-cland help                     this message
 
 Daemon flags:
-  --config PATH    config file (default /etc/minti/cland.yaml)
+  --config PATH    config file (default %s)
   --state DIR      state directory (overrides config)
 
-`, version)
+`, version, config.DefaultConfigPath())
 }
 
 // ---------- daemon ----------
 
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 
@@ -598,7 +598,12 @@ func runDaemon(args []string) error {
 		}
 	}
 
-	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 3 s budget: paired with NSSM AppStopMethodConsole=5500 ms on Windows
+	// + the SCM "Not Responding" 10 s threshold (M5 peer-review item 7 from
+	// gemma + deepseek). On Linux/macOS the budget is the same; systemd's
+	// TimeoutStopSec default (90 s) gives plenty of headroom and we don't
+	// want a slow remote HMAC reply to delay a clean shutdown.
+	shCtx, shCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shCancel()
 	if err := srv.Shutdown(shCtx); err != nil {
 		log.Warn("graceful shutdown failed", "err", err)
@@ -610,7 +615,7 @@ func runDaemon(args []string) error {
 
 func cmdCreate(args []string) error {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	addressFlag := fs.String("address", "", "LAN address joiners should reach us at (default: auto-detected)")
 	jsonOut := fs.Bool("json", false, "output the paste-key as a single JSON line")
@@ -667,7 +672,7 @@ func cmdCreate(args []string) error {
 
 func cmdInvite(args []string) error {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	ttl := fs.Duration("ttl", time.Hour, "token validity (60s..24h)")
 	jsonOut := fs.Bool("json", false, "output the invite response as JSON")
@@ -724,7 +729,7 @@ func cmdInvite(args []string) error {
 
 func cmdJoin(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	mnemonic := fs.String("mnemonic", "", "12-word BIP39 paste-key (omit if using --token)")
 	token := fs.String("token", "", "invite token (omit if using --mnemonic)")
@@ -869,7 +874,7 @@ func joinToken(token, address, pin string, id *identity.Identity, store *state.S
 
 func cmdLeave(args []string) error {
 	fs := flag.NewFlagSet("leave", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	confirm := fs.Bool("yes", false, "skip the destructive-op confirmation")
 	_ = fs.Parse(args)
@@ -901,7 +906,7 @@ func cmdLeave(args []string) error {
 
 func cmdRevoke(args []string) error {
 	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	reason := fs.String("reason", "", "human-readable reason recorded in the revocation entry")
 	_ = fs.Parse(args)
@@ -945,7 +950,7 @@ func cmdRevoke(args []string) error {
 
 func cmdPeerAdd(args []string) error {
 	fs := flag.NewFlagSet("peer-add", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 	if fs.NArg() < 1 {
@@ -986,7 +991,7 @@ func cmdPeerAdd(args []string) error {
 
 func cmdPeers(args []string) error {
 	fs := flag.NewFlagSet("peers", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
@@ -1048,7 +1053,7 @@ func cmdPeers(args []string) error {
 
 func cmdPin(args []string) error {
 	fs := flag.NewFlagSet("pin", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	self := fs.Bool("self", false, "pin self as Orchestrator (overrides election score)")
 	clear := fs.Bool("clear", false, "clear the self-pin")
@@ -1098,7 +1103,7 @@ func cmdPin(args []string) error {
 
 func cmdOrchestrator(args []string) error {
 	fs := flag.NewFlagSet("orchestrator", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
@@ -1157,7 +1162,7 @@ func cmdOrchestrator(args []string) error {
 
 func cmdElectionHistory(args []string) error {
 	fs := flag.NewFlagSet("election-history", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
@@ -1211,7 +1216,7 @@ func cmdElectionHistory(args []string) error {
 
 func cmdRotateKey(args []string) error {
 	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	jsonOut := fs.Bool("json", false, "raw JSON output")
 	_ = fs.Parse(args)
@@ -1264,7 +1269,7 @@ func cmdRotateKey(args []string) error {
 
 func cmdMembers(args []string) error {
 	fs := flag.NewFlagSet("members", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 
@@ -1293,7 +1298,7 @@ func cmdMembers(args []string) error {
 
 func cmdShow(args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
-	cfgPath := fs.String("config", "/etc/minti/cland.yaml", "path to cland config")
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	_ = fs.Parse(args)
 

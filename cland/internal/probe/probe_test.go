@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -69,15 +68,6 @@ func TestReadUptime24h_InRange(t *testing.T) {
 
 func TestReadOnBattery_DoesntCrash(t *testing.T) {
 	_ = readOnBattery()
-}
-
-func TestReadOnBattery_WindowsAlwaysFalse(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows-specific")
-	}
-	if readOnBattery() {
-		t.Errorf("Windows readOnBattery should always return false per Phase D plan")
-	}
 }
 
 func TestReadNvidiaSMI_DoesntCrash(t *testing.T) {

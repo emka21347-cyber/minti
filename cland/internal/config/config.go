@@ -86,8 +86,8 @@ type TelemetryConfig struct {
 func Default() Config {
 	return Config{
 		Listen:    ListenConfig{Address: "0.0.0.0", Port: 7777},
-		State:     StateConfig{Dir: "/var/lib/minti/cland"},
-		Discovery: DiscoveryConfig{MDNSEnabled: true, RubricPath: "/etc/minti/reasoning-scores.yaml"},
+		State:     StateConfig{Dir: DefaultStateDir()},
+		Discovery: DiscoveryConfig{MDNSEnabled: true, RubricPath: DefaultRubricPath()},
 		Advertise: AdvertiseConfig{
 			Interval:     30 * time.Second,
 			BumpRate:     1 * time.Second,
@@ -102,7 +102,7 @@ func Default() Config {
 			RuntimeProbeMaxAge: 60 * time.Second,
 		},
 		MCP: MCPConfig{
-			BinariesDir:      "/opt/minti/mcp",
+			BinariesDir:      DefaultMCPBinariesDir(),
 			MaxTokenLifetime: 10 * time.Minute,
 			ExecTimeout:      5 * time.Minute,
 		},

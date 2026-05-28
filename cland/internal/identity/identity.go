@@ -82,6 +82,12 @@ func (id *Identity) saveAtomic(path string) error {
 		return fmt.Errorf("identity: marshal: %w", err)
 	}
 	tmp := path + ".tmp"
+	// 0o600 enforces owner-only access on POSIX (Linux + macOS). On Windows
+	// the mode bits are a no-op against NTFS ACLs — the installer at
+	// cland/windows/nssm/install-cland.ps1 is load-bearing here: it sets a
+	// restrictive DACL on the state dir (SYSTEM + Administrators full
+	// control, no inheritance) via icacls, and identity.json inherits.
+	// See M5 plan deviation #3 for the trade-off rationale.
 	if err := os.WriteFile(tmp, buf, 0o600); err != nil {
 		return fmt.Errorf("identity: write tmp: %w", err)
 	}
