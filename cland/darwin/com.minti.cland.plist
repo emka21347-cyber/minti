@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    MINTI cland — system-wide launchd daemon (10.10+).
+
+    Dropped at /Library/LaunchDaemons/com.minti.cland.plist by
+    cland/darwin/install-cland.sh. The per-user variant (user has no
+    root) is generated dynamically by the installer because it omits
+    UserName and switches paths under $HOME — see install-cland.sh
+    "Per-user (non-root)" branch.
+
+    Notes:
+      - KeepAlive={SuccessfulExit: false} restarts the process iff it
+        exits non-zero (crash). Clean exits (operator launchctl bootout)
+        do NOT restart.
+      - ThrottleInterval bounds restart-storm to one launch per 5 s.
+      - HOME=/Library/Application Support/MINTI/cland mirrors the
+        Linux systemd unit trick so any code path that still uses
+        os.UserHomeDir() lands in a writable place; under the _minti
+        service account the OS default is /var/empty.
+      - ProcessType=Background is the right hint for a network
+        daemon — keeps it out of App Nap / nominal QoS demotion.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.minti.cland</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/minti-cland</string>
+        <string>--config</string>
+        <string>/Library/Application Support/MINTI/cland/cland.yaml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>UserName</key>
+    <string>_minti</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Library/Application Support/MINTI/cland</string>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/minti/cland.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/minti/cland.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Library/Application Support/MINTI/cland</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -36,7 +36,7 @@ GOFLAGS_REL   := -trimpath
 
 # ---------- Phony targets ----------
 .PHONY: help all runtime runtime-linux \
-        cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip \
+        cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip cland-darwin-tarball \
         mcp mcp-linux mcptest mcptest-linux \
         packs pack-recon sign-recon \
         install-test test fmt vet tidy clean dist-dir
@@ -58,6 +58,7 @@ help:
 	@echo "  make cland-darwin-arm64  — cross-compile minti-cland for macOS arm64 (Apple Silicon)"
 	@echo "  make cland-all-platforms — all four cland binaries"
 	@echo "  make cland-windows-zip   — bundle Windows .zip distribution (NSSM service)"
+	@echo "  make cland-darwin-tarball— bundle macOS .tar.gz distributions (amd64 + arm64, launchd)"
 	@echo "  make install-test — run install.sh against a fresh Debian VM (TODO)"
 	@echo "  make fmt vet      — gofmt + go vet on all Go modules"
 	@echo "  make tidy         — go mod tidy on all Go modules"
@@ -153,6 +154,12 @@ cland-windows-zip:
 	else \
 	  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(CLAND_DIR)/windows/nssm/build-zip.ps1 -Version $(VERSION); \
 	fi
+
+# Bundle the macOS launchd-managed-service distribution(s).
+# Produces dist/minti-cland-darwin-amd64-v$VERSION.tar.gz +
+# dist/minti-cland-darwin-arm64-v$VERSION.tar.gz.
+cland-darwin-tarball:
+	VERSION=$(VERSION) GO=$(GO) bash $(CLAND_DIR)/darwin/build-tarball.sh
 
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
