@@ -52,6 +52,9 @@ audit.jsonl
 apt-repo/db/
 apt-repo/conf/distributions.local
 
+# M5-B: cached upstream artifacts pulled by build-zip.ps1 (NSSM 2.24 etc.)
+cland/windows/nssm/.cache/
+
 # Temp
 *.tmp
 *.bak

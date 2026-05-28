@@ -36,7 +36,7 @@ GOFLAGS_REL   := -trimpath
 
 # ---------- Phony targets ----------
 .PHONY: help all runtime runtime-linux \
-        cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms \
+        cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip \
         mcp mcp-linux mcptest mcptest-linux \
         packs pack-recon sign-recon \
         install-test test fmt vet tidy clean dist-dir
@@ -57,6 +57,7 @@ help:
 	@echo "  make cland-darwin-amd64  — cross-compile minti-cland for macOS x86_64"
 	@echo "  make cland-darwin-arm64  — cross-compile minti-cland for macOS arm64 (Apple Silicon)"
 	@echo "  make cland-all-platforms — all four cland binaries"
+	@echo "  make cland-windows-zip   — bundle Windows .zip distribution (NSSM service)"
 	@echo "  make install-test — run install.sh against a fresh Debian VM (TODO)"
 	@echo "  make fmt vet      — gofmt + go vet on all Go modules"
 	@echo "  make tidy         — go mod tidy on all Go modules"
@@ -142,6 +143,16 @@ cland-darwin-arm64:
 	cd $(CLAND_DIR) && GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-cland-darwin-arm64 $(CLAND_PKG)
 
 cland-all-platforms: cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64
+
+# Bundle the Windows NSSM-managed-service distribution.
+# Runs the PowerShell builder; produces dist/minti-cland-windows-amd64-v$VERSION.zip.
+# pwsh.exe is preferred (PS7), falls back to powershell.exe (PS5.1).
+cland-windows-zip:
+	@if command -v pwsh >/dev/null 2>&1; then \
+	  pwsh -NoProfile -ExecutionPolicy Bypass -File $(CLAND_DIR)/windows/nssm/build-zip.ps1 -Version $(VERSION); \
+	else \
+	  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(CLAND_DIR)/windows/nssm/build-zip.ps1 -Version $(VERSION); \
+	fi
 
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"

@@ -1,0 +1,44 @@
+# MINTI cland — Windows defaults (NSSM-managed service install).
+#
+# install-cland.ps1 drops this file at %PROGRAMDATA%\MINTI\cland\cland.yaml on
+# first install (preserves any existing file on re-install). The explicit
+# `state.dir:` is load-bearing — without it, cland under the LocalSystem
+# service account would compute its default state dir from %PROGRAMDATA%
+# (correct behaviour, per cland/internal/config/paths_windows.go) but the
+# config file gives a single source of truth that survives even if a future
+# refactor changes the helper's fallback rules.
+
+listen:
+  address: "0.0.0.0"
+  port: 7777
+
+state:
+  # Holds clan.json, identity.json, audit.jsonl. The install script sets a
+  # restrictive NTFS DACL (SYSTEM + Administrators full control, no
+  # inheritance) on this directory — see cland/windows/nssm/README.md
+  # "Security model" for why.
+  dir: 'C:\ProgramData\MINTI\cland'
+
+discovery:
+  mdns_enabled: true
+  # Reasoning-score rubric. Operator-overridable.
+  rubric_path: 'C:\ProgramData\MINTI\reasoning-scores.yaml'
+
+# Election / advertise cadences left at defaults (spec §5.2). Override
+# only if you know what you're doing — they're locked by the clan
+# protocol.
+
+mcp:
+  binaries_dir: 'C:\Program Files\MINTI\mcp'
+
+runtime:
+  # cland talks to minti-runtime over loopback. The Windows install ships
+  # without a bundled minti-runtime (Ollama on Windows is the user-side
+  # dependency); cland will report itself as runtime-unhealthy unless the
+  # operator either installs minti-runtime locally OR sets the
+  # MINTI_CLAND_FORCE_HEALTHY=1 env-var via
+  # `nssm set Minti-Cland AppEnvironmentExtra "MINTI_CLAND_FORCE_HEALTHY=1"`.
+  base_url: "http://127.0.0.1:7780"
+
+telemetry:
+  log_level: "info"
