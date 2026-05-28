@@ -1,0 +1,331 @@
+You are reviewing the implementation plan for MINTI M4 Phase J — a
+3-node testbed comprising two cloned Linux VMs (minti-dev + minti-dev-2)
+PLUS the Windows 11 host running cland directly. After Phase J, M4 is done.
+
+Phases 0/A/B/C/D/E/F/G/H-1/H-2/I are all committed + validated. The full
+cland test suite (16 packages) is green. The single-node install +
+systemd + minti-fetch path was end-to-end-validated on the real Linux VM
+in the last session.
+
+Your job is to find concrete problems. Be willing to say "looks good"
+rather than padding criticism. Be willing to disagree with the plan
+author. Cite spec sections, plan passes, or specific files by their
+identifier.
+
+Look for, in this priority order:
+
+1. **3-node-specific correctness gaps.** Things that are fine at N=1 or
+   N=2 but break at N=3: quorum off-by-one, election conflict (3 candidates
+   simultaneously elect), revocation gossip taking longer than expected
+   because of the digest-fetch round-trip, key rotation needing unanimous
+   ACK exposing partial-failure cases. Phase E + H-1 + H-2 tests were
+   primarily 1-2 node; Phase J is the first real consensus test.
+
+2. **Windows-as-member traps.** The plan calls Windows a "full member"
+   running cland.exe directly. Will mDNS actually fail-and-fall-back-cleanly
+   to manual peer-add on the VirtualBox host-only ↔ Windows boundary? Are
+   there Windows-specific file path / permission / process-lifecycle
+   surprises that aren't accounted for? Does running cland.exe as a
+   foreground PowerShell job survive long enough for the 16-test gate
+   (~30-45 min)?
+
+3. **VBoxManage clone gotchas.** The clone script adds a host-only NIC 2 to
+   BOTH VMs, regenerates the MAC on -dev-2, re-adds the shared folder.
+   What's missing? (Examples: SSH host keys conflict because they were
+   cloned verbatim; static MAC in netplan; persistent network rules on
+   eth0/eth1 baked into udev; previous /etc/minti/cland.yaml from the
+   parent VM if cland was already installed; the existing identity.json
+   would clone too — same member_id on both VMs is a real bug source.)
+
+4. **Test ordering + state contamination.** The 16 tests run sequentially
+   and mutate state (revoke, pin, kill, restart). Are there tests that
+   depend on cleanup the prior test didn't perform? E.g., test 6 stops
+   minti-cland on A; test 7 restarts A + pins — but does the systemd
+   restart re-fetch state cleanly, or does the in-memory election state
+   need warming-up time the test doesn't provide?
+
+5. **Pre-flagged-failure-mode adequacy.** The plan flags test 14 (mDNS
+   goodbye) and test 10 (third-node post-revoke) as expected non-blockers.
+   Are these calls correct, or is the plan hiding real bugs as "expected
+   fail"?
+
+6. **Time estimates + sequencing risk.** 2 hours total estimated; Pass 4
+   alone is 30-45 min. If something fails midway through Pass 4, can the
+   script resume from where it left off, or does it have to restart from
+   scratch (re-creating the Clan etc.)?
+
+7. **Anything the plan is overconfident about.** "No protocol or daemon-
+   code changes anticipated" — is this realistic given 3-node consensus is
+   genuinely new territory?
+
+End your review with a short verdict:
+  VERDICT: ship plan v1 as-is | ship after addressing items N..M | block on item K
+
+Below are FOUR documents.
+==================================================================
+DOCUMENT 1: The Phase J plan being reviewed
+==================================================================
+
+# MINTI M4 — Phase J: 3-node testbed (VMs + Windows host) + peer-review + 16-test gate
+
+## Context
+
+Phase I is committed (`912eafb`) and end-to-end-validated on the real `minti-dev` Linux Mint VM: install runs clean, hardened systemd unit comes up active, lone-member Clan self-elects at term=1, `minti-fetch` surfaces the full Clan-aware status, idempotent re-install works. The single-node happy path is proven.
+
+**Phase J's job** is to prove the Clan actually works as a *Clan* — multiple peers, real heartbeats over a real LAN, election under partition, cross-peer chat-completion routing, cross-Clan tool execution, key rotation across nodes, revocation gossip. The user-asked additions on top of the super-plan's vanilla "2-node testbed":
+
+1. **3 members, not 2.** Quorum becomes ⌈3/2⌉=2 — exercises real consensus instead of the 2-node edge case where any one node can self-elect with quorum=1.
+2. **Windows 11 host as the 3rd member.** Just run the existing `cland/minti-cland.exe` directly on the host (no Windows Service wrapping). Satisfies "any device that can speak Clan protocol becomes useful again" without anticipating M5's full cross-platform Clan Agent.
+3. **Local-LLM peer-review of this plan BEFORE execution** (Phase E pattern). Three reviewers (qwen3.6 `think:false`, deepseek-r1:32b, gemma4:31b). Their findings fold into plan v2 before any scripts run.
+
+Spec authority: super-plan `velvet-drifting-codd.md` Phase J + the 16-test "M4 acceptance gate". This plan is more concrete than the super-plan version because we now have the real Windows-as-member angle to handle.
+
+---
+
+## Execution sequence
+
+The plan executes in four passes; each gates the next.
+
+### Pass 1 — Peer-review the plan (BEFORE any other work)
+
+Build on the working template at `scripts/m4-phaseE-review.py` (small surgical fork → `scripts/m4-phaseJ-review.py`):
+- Input: this plan file + super-plan Phase J section + the 16-test table + a short code-summary of Windows-specific quirks (probe_windows.go's battery=false default, mDNS graceful-fallback to peer-add on host-only networks, the FORCE_HEALTHY env-var, audit log at `C:\Users\<user>\.minti\audit.jsonl`).
+- Models: qwen3.6:latest with `think:false`, deepseek-r1:32b, gemma4:31b.
+- Output: `scripts/m4-reviews/phaseJ-{model}.md` + `phaseJ-input.txt` for reproducibility.
+- Triage: lead with the **bottom line** (recommendation table), explicitly overrule wrong findings with reasons (Phase E captured 4 overrules — record same here).
+- Adopt findings as `J1`/`J2`/... revisions into a "Peer-review revisions" section of this plan, weave the changes into the relevant sub-sections.
+
+If a reviewer surfaces a blocker (the way gemma4 caught the zombie-leader gate in Phase E), Pass 1 produces plan v2 and the rest of the execution waits.
+
+### Pass 2 — Provision the 3 nodes
+
+#### A. Clone the VM (Windows host, VBoxManage)
+
+New script: `scripts/m4-setup-second-vm.ps1`.
+
+- Pre-flight: `VBoxManage list runningvms` — abort if `minti-dev` is running (clone requires powered-off).
+- `VBoxManage clonevm minti-dev --name minti-dev-2 --register`.
+- Regenerate MAC: `VBoxManage modifyvm minti-dev-2 --macaddress1 auto`.
+- **Add a host-only NIC 2 to BOTH VMs.** Pick the first existing host-only adapter (or `VBoxManage hostonlyif create` if none) — this is the network the daemons will discover each other on. Documented gotcha (from the Phase J exploration report): mDNS multicast doesn't reliably traverse VirtualBox NAT; host-only is mandatory.
+- Port-forwards for `minti-dev-2`: `127.0.0.1:2223→22` (ssh), `127.0.0.1:17780→7780` (runtime; ignored for now), `127.0.0.1:27777→7777` (cland).
+- **Re-add the shared folder** on `minti-dev-2` (clones do NOT inherit it per the exploration report). VBoxManage `sharedfolder add` against `minti-dev-2` with the same `name=minti-repo path=<repo>`.
+- Print a final `VBoxManage showvminfo` summary for both VMs.
+
+#### B. Boot + SSH key + install on minti-dev-2
+
+After running the clone script, the user boots both VMs (or I do it via `VBoxManage startvm --type headless`). Then SSH to minti-dev-2 (`-p 2223`) and run the same `bash /media/sf_minti-repo/install/install.sh` — Phase I install path; idempotent; should land cland + systemd unit + everything else minti-dev already has.
+
+#### C. Windows host preparation
+
+- Use the already-built `cland/minti-cland.exe` (15 MB, verified).
+- State dir: `$env:LOCALAPPDATA\MINTI\cland\` (Windows convention; cland's `--state` flag takes any directory; `os.UserHomeDir()` audit log lands at `C:\Users\aouad\.minti\audit.jsonl` automatically).
+- Config: `$env:LOCALAPPDATA\MINTI\cland\cland.yaml` written from `cland/configs/cland.yaml.example` with the state dir patched in + `mcp.binaries_dir` pointed at a Windows-appropriate path (or left at Linux default since cross-Clan tool exec won't fire on the Windows node for v1 — Windows is participating in election/routing, not serving tools).
+- Run with `$env:MINTI_CLAND_FORCE_HEALTHY = "1"` (no minti-runtime on Windows for this test; election needs a candidate).
+- Launch in a foreground PowerShell session (`minti-cland.exe --config ... --state ...`). Logs to stderr.
+
+### Pass 3 — Form the 3-node Clan
+
+1. **VM-A (founder)**: `sudo -u minti env HOME=/var/lib/minti/cland minti-cland create --address <VM-A-host-only-IP>:7777`. Captures paste-key (mnemonic + pin + address).
+2. **VM-B**: `sudo -u minti env HOME=/var/lib/minti/cland minti-cland join --mnemonic "..." --address <VM-A-IP>:7777 --pin sha256:...`. Restart systemd unit so it picks up the new state.
+3. **Windows host**: `minti-cland.exe join --mnemonic "..." --address <VM-A-IP>:7777 --pin sha256:...`. Then restart the Windows minti-cland.exe daemon process so it loads the Clan state.
+4. **Cross-peer-add**: since mDNS doesn't cross VirtualBox host-only ↔ Windows cleanly, fall back to manual `peer-add` on each side per the existing Phase E smoke pattern. Each member calls `peer-add` for the other two.
+5. Wait ~15 s for advertise + election. Verify all three agree on Orchestrator via `minti-cland orchestrator --json` on each node; term should be 1 (or higher if step transitions caused re-elections).
+
+### Pass 4 — Run the 16-test acceptance gate (3-node aware)
+
+New script: `scripts/m4-validate.sh` (bash, runs on VM-A — the Linux side has the richest tooling; Windows interactions happen via SSH to the host... no wait, the host *is* Windows. Use the existing ssh from VM-A to *back* to Windows via the VirtualBox NAT? That's reversed. Better: the validate script runs on the **Windows host** (PowerShell) since it has SSH access to both VMs + direct access to the Windows cland. Make it `scripts/m4-validate.ps1`).
+
+Layout:
+- Each test = one PowerShell function. Tests continue on failure (don't bail).
+- Each test prints `PASS / FAIL / SKIP <name>: <reason>` and bumps a counter.
+- Footer: `summary: PASSED X / FAILED Y / SKIPPED Z`, exit 0 iff all green.
+- A "test infra" block at the top runs commands via SSH (`ssh -p 2222 minti@127.0.0.1`, `ssh -p 2223 minti@127.0.0.1`) for the VMs + direct PowerShell for the Windows member.
+
+The 16 tests (verbatim from super-plan; **3-node specific notes** in italics added where relevant):
+
+| # | Test | Assert |
+|---|---|---|
+| 1 | `create` on A | clan-id + paste-key printed, persisted, mDNS registered (or skipped if host-only-only) |
+| 2 | `invite --ttl 1h` on A | Single-use token + cert_pin + LAN address returned |
+| 3 | `join` on B + C via paste-key + invite token (mix both flows) | `members` on all three nodes shows 3 entries within one heartbeat |
+| 4 | `GET /clan/orchestrator` on every node | All three agree; A is Orchestrator (highest reasoning_score) |
+| 5 | Chat completion via cland on B → routes to A's runtime | Response streams back; audit log on A shows `request_received` |
+| 6 | `systemctl stop minti-cland` on A | *Quorum-relevant: B + C (2/3) must reach consensus.* Within 6-8 s the survivors elect a new Orchestrator (term=2). `election-history` on one of them shows the failover with reason `lease_expired` |
+| 7 | Restart A + `pin --self` on A | A re-wins next election; `pin --clear` restores natural |
+| 8 | Cross-Clan tool call (B → A): `mcp-recon nmap_scan target=127.0.0.1` | Token validated; nmap runs on A; both audit logs show `tool_executed` with same request_id |
+| 9 | `rotate-key` on Orchestrator | *3-node: all 3 must ACK propose (NOT 2/3 — rotation requires unanimity per H-1).* Commit lands; in-flight requests survive grace; `key_rotated` on all 3 audit logs |
+| 10 | `revoke <C_member_id>` on A | C's subsequent calls 401/403; B detects via heartbeat digest gossip + fetches list within one heartbeat round |
+| 11 | Clock-skew test (`X-Minti-Timestamp = now-65s`) | 401 empty body; audit `transport.auth deny timestamp_skew` |
+| 12 | Lone Clan baseline (already proven in Phase I; mark SKIP — covered) | n/a |
+| 13 | Executor-side `deny_tools: [nmap_scan]` on A | Cross-Clan call from B → A returns IsError=true with policy_deny reason |
+| 14 | Hard-kill cland on A (`taskkill /F` on Windows / `kill -9` in VM) | `Live=false` after FAILOVER_GRACE; the other two failover |
+| 15 | Rotation-abort: stop B's cland, then `rotate-key` on A | Aborts after PROPOSE_TIMEOUT; A still on old key |
+| 16 | Multi-pin: `pin --self` on BOTH A and C | Lower `member_id` wins; both audit logs record warning |
+
+**Windows-specific quirks the script must handle**:
+- `systemctl stop`/`taskkill` differ by node type — script branches on which node is targeted.
+- Some tests (5, 8) need real minti-runtime → ensure A's runtime is live; FORCE_HEALTHY on the Windows node only.
+- Tests 9 (rotation), 10 (revoke), 15 (rotation-abort) all REQUIRE the Windows node to be reachable for the 2PC; the validate script ensures Windows minti-cland.exe is up before running them.
+
+---
+
+## Critical files to be created or modified
+
+**New:**
+- `scripts/m4-phaseJ-review.py` — peer-review driver (fork of m4-phaseE-review.py)
+- `scripts/m4-setup-second-vm.ps1` — Windows host-side VBoxManage clone
+- `scripts/m4-validate.ps1` — 16-test gate (PowerShell on Windows host; SSHs to VMs)
+- `scripts/m4-reviews/phaseJ-{qwen3.6_latest,deepseek-r1_32b,gemma4_31b}.md` — captured reviews
+- `scripts/m4-reviews/phaseJ-input.txt` — reproducibility snapshot
+
+**Modified (likely; depends on findings):**
+- `STATUS.md` — Phase J Done, M4 closed
+- Possibly small follow-up fixes to `cland/...` if Phase J surfaces real bugs
+
+No protocol or daemon-code changes anticipated; Phase J is execution + scripts. Code touches happen only as fix-cycles for any failing test.
+
+---
+
+## Existing patterns to reuse
+
+| Need | Where | Why |
+|---|---|---|
+| Peer-review driver structure | `scripts/m4-phaseE-review.py` | Same 3-model setup, same think:false for qwen, same input-persistence pattern |
+| SSH-into-VM + verification | `scripts/m4-phaseE-smoke.ps1` | Already shows the ssh-key + port-forward pattern + step-by-step PASS/FAIL output |
+| Paste-key + join handshake | Existing Phase C code (`cmdJoin` in main.go) | All 3 nodes use it; no new code |
+| Manual peer-add fallback | `cmdPeerAdd` in main.go + `peers.AddPeer` | The mDNS-doesn't-work-on-host-only mitigation per Phase D plan |
+| Hardware probe Windows quirks | `cland/internal/probe/probe_windows.go` lines 54-60 | Documents battery=false; accepted limitation |
+| Shared cert priv key flow | `membership.Service.Welcome` (service.go:190-225) | Joiners get the founder's cert priv via welcome; verified during exploration |
+
+---
+
+## Verification
+
+End-to-end pass = 14 of 16 tests green (skipping test 12 which was already proven in Phase I).
+
+Expected fail modes flagged in advance (each → a follow-up commit, NOT a blocker for Phase J completion):
+
+- **Test 14 (mDNS goodbye on hard-kill)**: cland doesn't currently send mDNS goodbye on `kill -9` or `taskkill /F`. The peer's entry will remain in `peers.Member` but `Live=false` after `FAILOVER_GRACE` (4 s). The 16-gate test as worded expects the entry removed; my script may need to soften that expectation to "marked Live=false within FAILOVER_GRACE." If the user wants stricter behavior we add a TTL-decay sweep in a follow-up.
+- **Test 10 third-node propagation**: H-2 covers heartbeat-digest sync between TWO nodes that are both currently up. For a 3rd node that joins AFTER a revoke happened, the join handshake doesn't re-fetch revocations. If C joined after A revoked someone-else, C won't have that revocation until A heartbeats it (within seconds — probably fine in practice). My script should test the realistic "all 3 up, revoke C, B detects" path, not the harder "C joins post-revoke" path.
+
+If more than 4 of 16 tests fail and the failures aren't on the pre-flagged list, that's a Phase J bug-fix cycle in this same session — not a separate phase.
+
+Final acceptance: STATUS.md flip to "M4 done", final commit, handoff prompt updated to point at M4.1 (remote-API backend in runtime-adapter → Cardputer-as-Orchestrator demo) or M5 (cross-platform Clan Agent).
+
+---
+
+## Time estimate
+
+- Pass 1 (peer-review): ~10-15 min (3 models × ~30-90 s + triage)
+- Pass 2 (provision): ~30 min (clone script + boot + install on VM-B + Windows setup)
+- Pass 3 (form Clan): ~10 min (create + 2 joins + peer-adds + election wait)
+- Pass 4 (16-test gate): ~30-45 min (~2 min per test on average + log capture for any failures)
+- Fix-cycles + commit + STATUS: 30 min buffer
+
+Total: ~2 hours. Stops earlier if reviewers flag blockers requiring plan revision.
+
+
+==================================================================
+DOCUMENT 2: Super-plan Phase J section + the 16-test acceptance gate
+==================================================================
+
+### Phase J — Two-node testbed + validation
+
+- `scripts/m4-setup-second-vm.sh`: VBoxManage clones `minti-dev → minti-dev-2`, regenerates MAC, adds a second NIC to BOTH VMs on the same host-only network for mDNS multicast, NAT port forwards `127.0.0.1:2223 → 22` and `127.0.0.1:27777 → 7777` for the second VM.
+- `scripts/m4-validate.sh`: 16-step gate (10 from PRD §8 + 6 new from peer review — listed below).
+
+
+
+--- M4 acceptance gate ---
+
+## Verification — the M4 acceptance gate
+
+Run in order. All must pass.
+
+| # | Test | Expected |
+|---|---|---|
+| 1 | `minti-cland create` on Node A | clan_id/key/cert generated; persisted; mDNS service registered. |
+| 2 | `minti-cland invite --ttl 1h` on Node A | Single-use token + cert_pin + LAN address returned. |
+| 3 | `minti-cland join <token>` on Node B within 60 s | Both members in `GET /clan/members` from either node within one heartbeat. |
+| 4 | `GET /clan/orchestrator` on either node | Node A (highest reasoning_score). |
+| 5 | Agent chat completion via `https://localhost:7777/v1/chat/completions` on Node B | Routes to A's minti-runtime; response streams back; audit logs on both nodes show `request_sent` and `request_received`. |
+| 6 | `sudo systemctl stop minti-cland` on Node A | Node B observes lease expiry within 6–8 s, increments term, becomes Orchestrator. `election_observed` event on B. |
+| 7 | Bring A back; `minti-cland pin --self` on A | A re-wins election regardless of score. Pin-removal restores natural election. |
+| 8 | Cross-Clan tool call (Node B → A, signed token with `target_member=A` in claims): `mcp-recon nmap_scan target=127.0.0.1` | Consent renders on B; token validated on A; nmap runs on A; output streams back to B; both audit logs show `tool_executed` with same `request_id`. |
+| 9 | `minti-cland rotate-key` on Orchestrator (happy path) | Both members ACK; 5-min grace; new key verifies after grace; in-flight requests succeed. `key_rotated` on both audit logs. |
+| 10 | `minti-cland revoke <B_member_id>` on Node A | B's pubkey-hash on pin-revocation list; B's subsequent calls 403. |
+| **11 NEW** | Clock-skew test: send request with `X-Minti-Timestamp` set to `now − 65 s` | 401 empty body; audit log shows `auth_rejected` with `reason: timestamp_skew`. |
+| **12 NEW** | Single-member Clan: `minti-cland create` on Node A only | A is trivially Orchestrator; `GET /clan/members` returns [A]; chat completions self-serve via the fast path bypass. |
+| **13 NEW** | Executor-side policy deny: with `mcp.recon.deny_tools: [nmap_scan]` in **A's** `~/.minti/policy.yaml`, B sends the cross-Clan call from Test 8 | 403 `policy_deny`; both audit logs record the deny with reason; nmap is NOT spawned on A. |
+| **14 NEW** | mDNS-cleanup-on-crash: hard-kill cland on A (no graceful shutdown). Within 30 s, observe from B | mDNS TTL expires; A's entry disappears from `GET /clan/members`; calls to A fail-over per spec §3.4 retry-once. |
+| **15 NEW** | Rotation-abort path: stop Node B's cland, then `minti-cland rotate-key` on A | Rotation aborts after `PROPOSE_TIMEOUT`; A reverts to old key; B (on restart) finds old key still valid; `key_rotated` audit event NOT written. |
+| **16 NEW** | Multi-pin tiebreaker: pin BOTH A and B as orchestrator | The lower `member_id` wins; a warning is audit-logged on every member. |
+
+All 16 pass → M4 done; STATUS.md flipped from In flight → Done.
+
+---
+
+
+
+==================================================================
+DOCUMENT 3: Windows-host-as-member code summary
+==================================================================
+
+Windows-host-as-member quirks the reviewer should know:
+
+1. `cland/internal/probe/probe_windows.go` deliberately stubs `readOnBattery()`
+   to always return false (battery detection is M5 territory). VRAM + uptime
+   work via Win32 APIs (GlobalMemoryStatusEx, GetTickCount64). system_score
+   on Windows won't get the on-battery penalty (acceptable for fixed testbed).
+
+2. mDNS discovery via grandcat/zeroconf v1.0.0 works on Windows but does
+   NOT reliably cross VirtualBox host-only ↔ Windows host boundaries.
+   The Phase D plan documented this as the reason peer-add manual fallback
+   exists (OQ-2 pulled forward into v1). Phase J uses manual peer-add for
+   3-node setup.
+
+3. The `MINTI_CLAND_FORCE_HEALTHY=1` env-var (set via PowerShell:
+   `$env:MINTI_CLAND_FORCE_HEALTHY = "1"`) bypasses both:
+   - the R1 zombie-leader heartbeat gate (no minti-runtime needed)
+   - the localSelf reasoning_enabled gate (so the node IS a candidate)
+   Used in Phase E smoke + planned for Phase J's Windows node (no runtime there).
+
+4. Audit log on Windows: `os.UserHomeDir()` returns %USERPROFILE%, so the
+   log lands at `C:\Users\aouad\.minti\audit.jsonl`. mkdir works fine;
+   POSIX permission modes (0600/0700) are ignored on Windows.
+
+5. Shared cert priv key for joiners: the founder's clan_cert priv key is
+   delivered via /clan/welcome response and persisted into the joiner's
+   clan.json (ClanCertPrivKeyB64 field). Verified during exploration — works
+   on Windows too. Required because the TLS server presents the shared cert.
+
+6. Cross-Clan tool exec (/mcp/execute) on Windows: not exercised in Phase J.
+   The Windows node participates in election + heartbeat + revocation gossip;
+   tool execution still happens on Linux VMs (where the MCP server binaries
+   live in /opt/minti/mcp/).
+
+7. Quorum at N=3: ⌈3/2⌉ = 2. Failover requires 2 of 3 active. Key rotation
+   requires unanimous ACK per H-1 (3 of 3). Revocation gossip needs only one
+   heartbeat round to converge.
+
+
+==================================================================
+DOCUMENT 4: Phase I end-state recap (the starting point for Phase J)
+==================================================================
+
+Phase I (just shipped, commit 912eafb) end-to-end-validated on real
+minti-dev VM:
+  - install.sh installs cland clean (5/5 MCP + runtime + cland + opencode)
+  - systemd unit comes up active (one operational fix: Environment=HOME=
+    /var/lib/minti/cland so audit log clears ProtectHome=true)
+  - Lone-member Clan self-elects at term=1
+  - minti-fetch shows full Clan-aware surface (clan_id + role + members
+    + Orch + (self) tag + term)
+  - HTTPS listener returns 401 on unauthed curl (HMAC wired)
+  - Re-running install.sh is idempotent (configs preserved, binary hash
+    match → no restart)
+  - Journald shows "election engine started" → "election won term=1 accepts=1
+    quorum=1" cycle clean
+
+So Phase J starts from a known-good single-node baseline. New surface area:
+multi-node, multi-OS, mDNS-or-peer-add discovery, real LAN, 16-test gate.

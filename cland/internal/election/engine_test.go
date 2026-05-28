@@ -402,7 +402,11 @@ func TestEngine_LeaseExpiryTriggersElection(t *testing.T) {
 
 // ---------- 8. Quorum from persisted active roster, not live registry (R5) ----------
 
-func TestEngine_Quorum_PersistedActiveOnly(t *testing.T) {
+func TestEngine_Quorum_CountsActiveAndAdmitted(t *testing.T) {
+	// Phase J revision: the admitted→active promotion (spec §3.1) isn't
+	// wired in v1, so members stay "admitted" until Phase H-3 lands. Counting
+	// only "active" makes quorum=1 per node on a fresh Clan → break. Count
+	// both. Revoked members are excluded.
 	store := mkStore(t)
 	saveClan(t, store, &state.Clan{
 		ClanID: "c1",
@@ -410,9 +414,9 @@ func TestEngine_Quorum_PersistedActiveOnly(t *testing.T) {
 			{MemberID: "A", State: "active"},
 			{MemberID: "B", State: "active"},
 			{MemberID: "C", State: "active"},
-			{MemberID: "D", State: "active"},
-			{MemberID: "E", State: "active"},
-			{MemberID: "F", State: "admitted"}, // R5: must be excluded
+			{MemberID: "D", State: "admitted"},
+			{MemberID: "E", State: "admitted"},
+			{MemberID: "F", State: "revoked"}, // excluded
 		},
 	})
 	e := mkEngine(t, EngineOpts{
@@ -426,7 +430,7 @@ func TestEngine_Quorum_PersistedActiveOnly(t *testing.T) {
 	})
 	q := e.quorum(mustLoad(t, store))
 	if q != 3 {
-		t.Errorf("quorum for 5 active (+ 1 admitted, excluded): got %d want 3", q)
+		t.Errorf("quorum for 3 active + 2 admitted (revoked excluded): got %d want 3", q)
 	}
 }
 

@@ -442,13 +442,22 @@ func (e *Engine) selectCandidate(clan *state.Clan) (LocalCandidate, string) {
 	return candidates[0], ReasonLeaseExpire
 }
 
-// quorum is ⌈N/2⌉ where N is the persisted active roster size (R5).
-// Computed from state.Clan, NOT the live registry — that's the partition-
-// tolerance guarantee (spec §5.5).
+// quorum is ⌈N/2⌉ where N is the persisted roster size (per spec §5.5,
+// computed from state.Clan NOT the live registry — that's the partition-
+// tolerance guarantee). Counts both "active" AND "admitted" members.
+//
+// Phase J finding: the admitted→active promotion (spec §3.1) isn't wired
+// through the advertise loop in v1, so members stay "admitted" forever.
+// Filtering to "active" only (the original R5 fix from Phase E peer-review)
+// makes quorum=1 per node, which breaks 3-node consensus entirely. Counting
+// "admitted" too is the pragmatic interim until Phase H-3 wires the
+// promotion + gossips it. The downside (admitted members can vote in
+// elections before fully validated) is documented in the M4 STATUS as a
+// known limitation.
 func (e *Engine) quorum(clan *state.Clan) int {
 	n := 0
 	for _, m := range clan.Roster {
-		if m.State == "active" {
+		if m.State == "active" || m.State == "admitted" {
 			n++
 		}
 	}
