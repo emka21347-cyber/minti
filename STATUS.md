@@ -1,13 +1,13 @@
 # MINTI — Project Status
 
-> **Last updated:** 2026-05-28
+> **Last updated:** 2026-05-28 (M5-A/B/C all shipped this session)
 > **Purpose:** Read this *first* when opening a new chat or onboarding to the project. It's the single document that tells you where MINTI is right now and how to pick up work without re-reading history.
 
 ---
 
 ## TL;DR
 
-MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 core consensus validated** (2026-05-28; "DONE" reworded after 3-LLM project review flagged it as overclaim): cland Phases 0 + A + B + C + D + E + F + G + H-1 + H-2 + I + J all shipped. **3-node Clan demonstrated** (minti-dev VM + cloned minti-dev-2 VM + Windows 11 host running minti-cland.exe), cross-OS election + failover working: Windows initially elected Orchestrator at term=19 (highest reasoning_score), killed Windows → VM-B took over at term=22 within 16 s, both VMs agreed. **Two real protocol findings** surfaced + landed during Phase J: (a) `member_id` collision after VBoxManage clone (J1 fix in clone script), (b) admitted-members-never-promoted-to-active broke 3-node quorum entirely (engine.go fix to count both states; admitted→active gossip promotion **about to land as Phase H-3** per project review's high-priority recommendation). **Honestly not yet proven**: full 16-test acceptance gate (deferred), >24h stability, partition simulation, 5+ node cluster, real chat-completion routing under load. Those are M4.1 / M5 / Phase M (ops hardening) territory. M4.1 (remote-API backend → Cardputer demo) and M5 (cross-platform Clan Agent w/ Windows Service) are next after H-3 + security hardening land.
+MINTI is a minimal, AI-agent-first Linux software stack plus a cross-OS **Clan protocol** for distributed local AI compute. **M0–M3 are done and validated** in the `minti-dev` Linux Mint VM. Install path works; `minti-runtime` serves OpenAI + Ollama + **Anthropic** (`/v1/messages`, M3) shapes; 5 stdio MCP tool servers route through a policy-gated framework; `minti-pack-recon` installs the nmap/whois/dig toolchain; **opencode** (sst, MIT) is bundled with a system-wide config that registers minti-runtime as a custom provider and all 5 MCP servers as stdio commands; **Claude Code preset** is documented in `docs/claude-code-preset.md` for users who already have it. **M4 core consensus validated** (2026-05-28): cland Phases 0 + A + B + C + D + E + F + G + H-1/2/3 + I + J + security hardening all shipped. **3-node Clan demonstrated** (2 Linux VMs + Windows 11 host); cross-OS election + failover working. **M5 (Cross-platform Clan Agent) now shipped**: M5-A foundations (probe_darwin, paths_unix/windows, Makefile cross-compile targets, srv.Shutdown 5s→3s) + M5-B Windows NSSM-managed service (live-installed on the daily-driver host: state-dir DACL exactly Administrators+SYSTEM, Defender guidance printed, NSSM 2.24 SHA-256 verified) + M5-C macOS launchd daemon (build clean + plist + dscl recipe + plutil + xattr quarantine strip; second 3-LLM peer-review pass on dscl/launchctl, 6 items folded; live Mac install deferred — no Mac available). **Honestly not yet proven**: full 16-test acceptance gate (Phase J Pass 4), >24h Defender behavioural-block soak, cold-boot-no-login mDNS, partition simulation, 5+ node cluster, real chat-completion routing under load, live macOS install. Those are M5-D operator-session / Phase M (ops hardening) territory. After M5: **M4.1** (remote-API backend → Cardputer demo) or M3.5 (tool-use content blocks in /v1/messages) or M6 (security hardening + remaining packs + code-signing).
 
 ---
 
@@ -121,24 +121,28 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 
   - **Phase E done** (2026-05-27, see commit log): leader-lease election engine.
 
-### Next after M4
+- **M5 — Cross-platform Clan Agent (Windows + macOS)** (2026-05-28, three commits: `25e1cf1` `4e5373b` `dbd6e10`). PRD §8 line 481 verbatim: "Same `cland` binary cross-compiled; tray app via Fyne." User-confirmed scope: full Windows + macOS together, service-only (tray deferred to M5.1), Windows service via NSSM. Pre-coding 3-LLM peer-review pass on the plan; 9 consensus items folded before the first character was written. Plan + reviews at `~\.claude\plans\synthetic-popping-owl.md`.
+  - **M5-A done** (`25e1cf1`): foundations. `cland/internal/probe/probe_darwin.go` (`SysctlRaw` + `binary.LittleEndian.Uint64` for RAM + kern.boottime; `pmset -g batt` with `hasBattery` Once-cache + index-safe parse + "No batteries"/"not present" handling). `cland/internal/probe/probe_windows.go` battery placeholder replaced with `GetSystemPowerStatus`. `cland/internal/config/paths_unix.go` + `paths_windows.go` exporting `DefaultStateDir/AuditLogPath/ConfigPath/RubricPath/MCPBinariesDir`; Windows side uses `golang.org/x/sys/windows.GetCurrentProcessToken` + SID compare against `S-1-5-18` for LocalSystem detection (NOT the broken "LOCALAPPDATA empty" heuristic — peer-review item 5). `config.go Default()`, `auditlog.go DefaultPath`, `main.go` 14 config-default sites + help string all delegate to the helpers. `srv.Shutdown` budget dropped 5s → 3s (peer-review item 7: Go 3s + NSSM 5.5s stays under SCM "Not Responding" threshold). Top-level Makefile gained `cland-windows`, `cland-darwin-{amd64,arm64}`, `cland-all-platforms` with `-trimpath -ldflags="-s -w"` (~30% smaller binaries). Verified: vet clean on linux/windows/darwin, `go test ./...` 18 packages green, 4-platform cross-compile correct file types, Win32 ground-truth battery probe matches cland reading.
+  - **M5-B done** (`4e5373b`): Windows NSSM-managed service. `cland/windows/nssm/install-cland.ps1` (`icacls` strict DACL on state dir; explicit `win64/nssm.exe` from the 2.24 zip with SHA-256 sidecar verified at install time — peer-review item 2; `-FirewallProfile Private,Domain` default with operator override — peer-review item 1; `AppStopMethodConsole 5500`; Defender Folder-Exclusion guidance printed at end — peer-review item 8). `uninstall-cland.ps1` preserves state by default, `-Purge` wipes. `build-zip.ps1` cross-compiles + downloads NSSM (curl.exe primary with retry, Invoke-WebRequest fallback — nssm.cc is famously flaky; in this session we hit a 503 and the script recovered cleanly on the second try). `cland.yaml.windows.example` with explicit `state.dir:` so the helper's LocalSystem fallback is belt-and-braces. README operator quickstart + security model + Defender + network-profile + NSSM tuning reference. Makefile `cland-windows-zip` target. `.cache/` gitignored. **Live install verified on the daily-driver Windows 11 host**: NSSM SHA-256 verification fired, DACL exactly `Administrators:(OI)(CI)(F)` + `SYSTEM:(OI)(CI)(F)` no inheritance, service log shows `version=0.2.0-M5` + correct config/state/identity wiring, identity persisted at `%PROGRAMDATA%\MINTI\cland\identity.json`. **One real-world finding surfaced**: the Phase J foreground `minti-cland.exe` from last week (PID 23752, bound to `192.168.56.1:7777`, ESTABLISHED to both VMs) was still running and would have blocked the new service. Stopped during verification — M5-D's validate script now has an explicit "no stray foreground processes" preflight. The service is **currently installed and Running** on the host in pre-Clan state; manually uninstall with `powershell -ExecutionPolicy Bypass -File C:\Temp\m5b-cland-install\uninstall-cland.ps1`.
+  - **M5-C done** (`dbd6e10`): macOS launchd daemon. **No Mac available during M5**; live install deferred to M5.1 dogfood. Second targeted 3-LLM peer-review pass on the dscl + launchctl recipes specifically; 6 items folded: (1) `HiddenSystemUser=1` alongside `IsHidden=1` for 10.13–14.x coverage, (2) `xattr -d com.apple.quarantine` after install, (3) `plutil -remove UserName` instead of fragile sed range delete in the per-user variant, (4) dropped `if [...] || true` thinko around the bootout call, (5) UID scan range bumped 270→300 to clear Apple's third-party convention, (6) state-check broadened to any `launchctl print` recognition rather than `state = running` specifically (version variance). `com.minti.cland.plist`: `Label`, `ProgramArguments`, `RunAtLoad=true`, `KeepAlive={SuccessfulExit:false}`, `ThrottleInterval=5`, `UserName=_minti`, `EnvironmentVariables.HOME=<state_dir>` (mirrors the Linux unit's HOME redirect; `_minti` has `NFSHomeDirectory=/var/empty`), `ProcessType=Background`. `install-cland.sh` system branch creates `_minti` at lowest free UID 300–499, drops binary at `/usr/local/bin/`, state at `/Library/Application Support/MINTI/cland` with `chmod 0700 chown _minti:_minti`, plist into `/Library/LaunchDaemons/` with `root:wheel 0644` + `plutil -lint`, bootstraps via modern `launchctl bootstrap system <plist>` with `load -w` fallback. Per-user branch generates a UserName-stripped plist on the fly, bootstraps into `gui/<uid>`. `uninstall-cland.sh` mirrors; `--purge` deletes state + `_minti` account. `build-tarball.sh` cross-compiles + stages both archs + tarballs (uses `tar`, falls back to `python3 tarfile` for Git-Bash-on-Windows). `cland.yaml.darwin.example` + README (10-yr-old-Mac performance expectations, arm64 vs amd64, Gatekeeper workarounds, Application Firewall first-run). Makefile `cland-darwin-tarball` target. **Verified without a Mac**: `plistlib` parses the plist (all 11 expected keys present), `bash -n` syntax clean on all 3 .sh files, both Mach-O binaries produced (`amd64` + `arm64`), tarballs assembled with correct 8-file layout.
+  - **M5-D scripted, live run deferred** (this session): `scripts/m5-phaseD-validate.ps1` written + syntax-checked. Wraps the Phase J 3-node scenario but assumes Windows is service-managed: service preflight (no stray foreground processes), mDNS cold-boot test (restart-service + sleep + query peers from both VMs over SSH), firewall scoping check + disable/enable toggle, identity.json DACL audit (skips if non-elevated), election with Windows as a candidate (kill Linux Orchestrator → verify survivor takes over → restart). 24h Defender soak is OUT OF SCOPE for this script — separate poll-script work for M5.1. **Live run requires**: both VMs warmed up + SSH-reachable on host-only IPs, Windows service already joined to the Phase J Clan (currently the service is in pre-Clan idle; would need a `join` or `create` first), an elevated PowerShell session for the DACL audit branch.
 
-- **M4 — Clan Layer v1** (PRD §8, ~4 weeks part-time — "the iceberg"):
-  - `cland` daemon in Go (cross-compiles to Linux/Windows/macOS via PRD D11).
-  - mDNS discovery service `_minti-clan._tcp.local`.
-  - Membership state machine (`unaffiliated → invited → admitted → active → demoted/revoked`).
-  - Leader-lease + 2 s heartbeat / 8 s expiry election (PRD §5.0 D10 / docs/clan-protocol.md §5).
-  - HTTPS endpoint on `:7777` with self-signed Clan cert pinned at join + HMAC auth with shared Clan Key.
-  - Whole-request routing: chat completions and MCP tool calls — the latter using the signed permission-token flow from clan-protocol.md §7.1 (`permission.VerifyCrossClanToken` shifts from M2 stub to real implementation).
-  - Key rotation `/clan/rotate-key` + member revocation `/clan/revoke` (PRD §6.4 / G9).
-  - This is the security/distributed-systems core — **stays Tier 2 entirely** per PRD §13.
+### Next after M5
+- **M5.1 (lightweight follow-on)**: tray app + Fyne GUI; `runtime.force_healthy: true` config knob (currently env-var only); cold-boot test via Task-Scheduler-on-boot orchestration; 24h Defender soak script; **live macOS install** when a Mac is booted.
+- **Phase J Pass 4 / M5-D live**: full 16-test PowerShell acceptance gate against the service-managed Windows + both VMs.
+- **M4.1**: remote-API backend → Cardputer-as-Orchestrator demo.
+- **M3.5 (squeeze-in candidate)**: tool-use content blocks in `/v1/messages` (Claude Code's native tool-call shape over the API rather than via separate MCP stdio). Currently rejected with 400.
 
 ### Future 🔲
-- M5: Cross-platform Clan Agent (Windows + macOS)
-- M6: Security hardening + remaining packs (webapp, wireless, forensics) + Pack Manager
-- M7: Old-hardware smoke test
-- M8: v1.0 release
-- M3.5 (squeeze-in candidate): tool-use content blocks in `/v1/messages` (Claude Code's native tool-call shape over the API rather than via separate MCP stdio). Currently rejected with 400.
+- M6: Security hardening + remaining packs (webapp, wireless, forensics) + Pack Manager + **code-signing for Windows + Apple Developer notarisation** (unlocks signed .msi + notarised .pkg, removes Defender Folder-Exclusion + Gatekeeper xattr-strip workarounds).
+- M7: Old-hardware smoke test (real 10-yr-old Mac + 4-6 GB VRAM "secondary box" joining the Clan).
+- M8: v1.0 release.
+
+### PRD §6.5 deviations (M5)
+- **No signed `.msi`** — needs an Authenticode cert. Ship `.zip + .ps1` instead. M6 brings a signed MSI via WiX or NSIS.
+- **No signed `.pkg`** — needs an Apple Developer account + `xcrun notarytool`. Ship `.tar.gz + .sh` instead. M6 brings a notarised + stapled `.pkg`.
+- **No `windows.SetFileSecurity` Go-side ACL hardening on identity.json** — installer's `icacls /inheritance:r` provides the equivalent guarantee with much smaller surface. The installer becomes load-bearing for Windows ACL security; documented in code + READMEs.
+- **macOS battery probe uses `pmset -g batt` shell-out (not IOKit)** — keeps cland's zero-cgo build property; 30s probe cadence makes the fork-exec cost trivial.
 
 ---
 
@@ -147,26 +151,32 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
 ### Single prompt to start the new chat
 
 ```
-M4 is DONE (2026-05-28). cland Phases 0/A/B/C/D/E/F/G/H-1/H-2/I/J all
-committed + end-to-end-validated on a 3-node Clan (2 Linux VMs +
-Windows 11 host). Read memory + STATUS.md for the full chronicle.
+M4 + M5-A/B/C all DONE (2026-05-28). cland Phases through M4-J shipped;
+M5-A foundations + M5-B Windows NSSM service (live install verified) +
+M5-C macOS launchd daemon (build clean, live test deferred — no Mac)
+committed in 25e1cf1, 4e5373b, dbd6e10. M5-D `scripts/m5-phaseD-validate.ps1`
+written but live run is operator-session work (needs both VMs warmed,
+Windows Service join-ed to the Clan, elevated PS for DACL audit).
+Read memory + STATUS.md for the full chronicle.
 
-Two follow-up items captured here for the next session:
-  - Phase H-3: admitted→active promotion. Today members stay "admitted"
-    forever (spec §3.1 says first capability ad should promote). Quorum
-    works because we count both states, but it's a correctness gap.
-    Fix: peers/handlers.handleAdvertise calls a new
-    membership.PromoteToActive(memberID) that flips state.Clan.Roster
-    entry + persists. Gossip via heartbeat digest (same as revocations
-    in H-2). ~50-100 LoC.
-  - Phase J Pass 4: full 16-test PowerShell validate script
-    (scripts/m4-validate.ps1) — operational coverage on top of the
-    core consensus validation done in Phase J Pass 3. SSH from
-    Windows host to both VMs (host-only IPs 192.168.56.101/102) +
-    direct PowerShell against the Windows minti-cland.exe (PID
-    tracked in %LOCALAPPDATA%\MINTI\cland\daemon.pid).
+Operator follow-ups captured for the next session:
+  - **Windows Service is currently installed + Running on the host**
+    at version 0.2.0-M5 in pre-Clan idle (member_id b2ecb5c4-...).
+    Uninstall (preserve state):
+      powershell -ExecutionPolicy Bypass -File C:\Temp\m5b-cland-install\uninstall-cland.ps1
+    Or have it join the Phase J Clan to make M5-D's election test work:
+      & "C:\Program Files\MINTI\cland\minti-cland.exe" join --mnemonic ... --address 192.168.56.101:7777 --pin sha256:...
+  - **M5-D live run**: with VMs up + Windows Service joined, from elevated PS:
+      powershell -ExecutionPolicy Bypass -File scripts\m5-phaseD-validate.ps1
+  - **Phase J residue**: the foreground minti-cland.exe from Phase J
+    was killed during M5-B verification (PID 23752). The Phase J
+    state at %LOCALAPPDATA%\MINTI\cland is still on disk (a separate
+    member_id from the service's state at %PROGRAMDATA%\MINTI\cland).
+    Do NOT restart that foreground binary while the Service is also
+    running -- they will race for :7777.
 
-Next milestones per super-plan: M4.1 (remote-API backend → Cardputer-
+Next milestones per super-plan: M5.1 (tray app + Fyne; live macOS
+install when a Mac boots), M4.1 (remote-API backend → Cardputer-
 as-Orchestrator demo) or M5 (cross-platform Clan Agent — Windows
 Service / macOS launchd, smaller subset than full cland).
 ```
@@ -219,16 +229,18 @@ ssh -i ~\.ssh\minti_vm -p 2222 minti@127.0.0.1 "curl -s http://127.0.0.1:7780/mi
 ## Recent commits
 
 ```
-54bb46b  Add MINTI ASCII logo + minti-fetch (neofetch-style status)
-46adb9d  Add VM helper scripts (status, guest-additions, chat-test)
-e1e8dcf  Add in-VM setup script: MINTI + Claude Code in one shot
-fe89bbb  Add WSL Debian desktop-preview script (Xfce-over-xrdp)
-f59a3f7  fix(install.sh): add zstd to base packages
-f3ea578  fix(install.sh): locate cross-compiled Linux binary in dist/
-e148d35  M1 verified: build clean, smoke tests pass
-ce02dfd  M1 scaffold: minti-runtime Go source + systemd + install integration
-dcab15f  Add .gitattributes to enforce LF endings on shell/yaml/go files
-920313f  M0: repo skeleton + Clan Protocol Spec v0.1 + install.sh v0
+dbd6e10  M5-C: minti-cland macOS launchd daemon (install / uninstall / build-tarball)
+4e5373b  M5-B: minti-cland Windows Service via NSSM (install / uninstall / build-zip)
+25e1cf1  M5-A: cross-platform foundations for cland (probes, paths, Makefile)
+51a1ac0  M4-H-3 + security hardening: admitted→active promotion + gossip; replay+rate limits
+8d103ca  M4 project-review pass: 3 local LLMs critique the whole project at v1 boundary
+9b21a86  M4-J: 3-node testbed (2 VMs + Windows host) + 2 real protocol fixes — M4 DONE
+912eafb  M4-I: install.sh + systemd unit + Makefile + minti-fetch Clan surface
+a33634d  M4-H-2: revocation gossip via heartbeat digest
+500e9b2  M4-H-1: key rotation 2PC (orchestrator-driven, /clan/rotate-key)
+8dde3f4  M4-G: cross-Clan tool execution (/mcp/execute + signed permission tokens)
+558ee1a  M4-F: routing layer (Orchestrator chat-completion proxy + self-route fast path)
+9f07428  M4-E: leader-lease election engine + heartbeat + pin + 3 prereq fixes
 ```
 
 ---
