@@ -144,6 +144,64 @@ func (r *Revocations) Merge(other *Revocations) *Revocations {
 // IsActive reports whether this member is currently part of a Clan.
 func (c *Clan) IsActive() bool { return c != nil && c.ClanID != "" }
 
+// RosterDigest returns sha256-hex over sorted "(member_id):(state)" tuples.
+// Used by Phase H-3 heartbeat-driven gossip — two daemons compare digests,
+// and on mismatch the receiver fetches the full roster to reconcile state
+// transitions (admitted → active being the dominant case). Stable across
+// goroutine call order; ignores PubKeyB64 + AdmittedAt + LastSeenAt (only
+// the (id, state) projection matters for quorum + filtering).
+func (c *Clan) RosterDigest() string {
+	if c == nil || len(c.Roster) == 0 {
+		s := sha256.Sum256(nil)
+		return hex.EncodeToString(s[:])
+	}
+	pairs := make([]string, 0, len(c.Roster))
+	for _, m := range c.Roster {
+		pairs = append(pairs, m.MemberID+":"+m.State)
+	}
+	sort.Strings(pairs)
+	joined := strings.Join(pairs, "\n")
+	s := sha256.Sum256([]byte(joined))
+	return hex.EncodeToString(s[:])
+}
+
+// MergeRoster takes the union with `other`, preferring the "more progressed"
+// state per spec §3.1 hierarchy (revoked > active > admitted > unaffiliated).
+// New members in `other` are appended verbatim. Local entries not in `other`
+// are preserved. Returns the merged roster; caller persists.
+func MergeRosterStates(local, other []RosterMember) []RosterMember {
+	rank := map[string]int{"unaffiliated": 0, "admitted": 1, "active": 2, "revoked": 3}
+	byID := make(map[string]RosterMember, len(local))
+	for _, m := range local {
+		byID[m.MemberID] = m
+	}
+	for _, m := range other {
+		existing, present := byID[m.MemberID]
+		if !present {
+			byID[m.MemberID] = m
+			continue
+		}
+		if rank[m.State] > rank[existing.State] {
+			existing.State = m.State
+			byID[m.MemberID] = existing
+		}
+	}
+	out := make([]RosterMember, 0, len(byID))
+	// Iterate `local` first to preserve order, then any additions from other.
+	seen := map[string]bool{}
+	for _, m := range local {
+		out = append(out, byID[m.MemberID])
+		seen[m.MemberID] = true
+	}
+	for _, m := range other {
+		if !seen[m.MemberID] {
+			out = append(out, byID[m.MemberID])
+			seen[m.MemberID] = true
+		}
+	}
+	return out
+}
+
 // ClanKey returns the decoded 32-byte HMAC key, or nil if unaffiliated.
 func (c *Clan) ClanKey() []byte {
 	if c == nil || c.ClanKeyB64 == "" {

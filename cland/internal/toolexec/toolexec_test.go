@@ -398,6 +398,100 @@ func TestExecutor_ResolveBinary_ParsesNamespace(t *testing.T) {
 	}
 }
 
+// ---------- 12b. rate limiter — allow/deny + per-origin isolation ----------
+
+func TestRateLimiter_AllowUnderLimit(t *testing.T) {
+	rl := NewRateLimiter(3, time.Minute)
+	for i := 0; i < 3; i++ {
+		if !rl.Allow("B") {
+			t.Errorf("request %d should be allowed", i+1)
+		}
+	}
+}
+
+func TestRateLimiter_DenyOverLimit(t *testing.T) {
+	rl := NewRateLimiter(2, time.Minute)
+	rl.Allow("B")
+	rl.Allow("B")
+	if rl.Allow("B") {
+		t.Errorf("3rd request in window should be denied")
+	}
+}
+
+func TestRateLimiter_PerOriginIsolated(t *testing.T) {
+	rl := NewRateLimiter(1, time.Minute)
+	if !rl.Allow("B") {
+		t.Errorf("first req from B should be allowed")
+	}
+	if !rl.Allow("C") {
+		t.Errorf("first req from C should be allowed (different bucket)")
+	}
+	if rl.Allow("B") {
+		t.Errorf("second req from B should be denied")
+	}
+}
+
+func TestRateLimiter_EmptyOriginBypasses(t *testing.T) {
+	rl := NewRateLimiter(1, time.Minute)
+	for i := 0; i < 5; i++ {
+		if !rl.Allow("") {
+			t.Errorf("empty origin should always bypass; got deny at %d", i)
+		}
+	}
+}
+
+func TestRateLimiter_WindowSlides(t *testing.T) {
+	rl := NewRateLimiter(1, 100*time.Millisecond)
+	// Inject a deterministic clock.
+	now := time.Now()
+	rl.now = func() time.Time { return now }
+	if !rl.Allow("B") {
+		t.Fatalf("first allow")
+	}
+	if rl.Allow("B") {
+		t.Fatalf("second should deny")
+	}
+	now = now.Add(150 * time.Millisecond)
+	if !rl.Allow("B") {
+		t.Errorf("after window slides, should allow again")
+	}
+}
+
+func TestHandler_RateLimited_Returns429(t *testing.T) {
+	key := mkKey(1)
+	kp, _ := crypto.NewSimpleKeyProvider(key)
+	rl := NewRateLimiter(1, time.Minute) // strict: 1 per minute
+	fake := &fakeExecutor{}
+	audit := &recordingAudit{}
+	h := mkHandler(t, HandlerOpts{
+		SelfID: "B", KeyProvider: kp,
+		Executor: fake, RateLimiter: rl, Audit: audit,
+	})
+	// 1st request — passes rate limit + succeeds.
+	args := []byte(`{}`)
+	tok1 := mkToken(t, key, "B", "mcp-fs.read_file", args, time.Now(), time.Now().Add(5*time.Minute))
+	tok1.RequestID = "rid-1"
+	tok1.Sign(key)
+	w1 := httptest.NewRecorder()
+	h.handleExecute(w1, mkRequest(t, tok1, args))
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first req: %d", w1.Code)
+	}
+	// 2nd request from same origin (different request_id) — rate-limited.
+	tok2 := mkToken(t, key, "B", "mcp-fs.read_file", args, time.Now(), time.Now().Add(5*time.Minute))
+	tok2.RequestID = "rid-2"
+	tok2.Sign(key)
+	w2 := httptest.NewRecorder()
+	h.handleExecute(w2, mkRequest(t, tok2, args))
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("second req should be 429, got %d", w2.Code)
+	}
+	reasons := strings.Join(audit.reasons(), ",")
+	if !strings.Contains(reasons, "rate_limited") {
+		t.Errorf("audit should record rate_limited; got %v", audit.reasons())
+	}
+}
+
 // ---------- 13. replay cache TTL eviction ----------
 
 func TestReplayCache_TTLEviction(t *testing.T) {
@@ -411,5 +505,34 @@ func TestReplayCache_TTLEviction(t *testing.T) {
 	}
 	if !c.CheckAndStore("rid-1", now.Add(100*time.Millisecond)) {
 		t.Fatal("after-TTL re-presentation should be allowed (entry expired)")
+	}
+}
+
+// ---------- 13b. replay cache overflow rejects rather than evicts (H-3) ----------
+
+func TestReplayCache_OverflowRejectsRatherThanEvict(t *testing.T) {
+	// qwen project-review hardening: when cap is hit + no expirable entries,
+	// the cache must REJECT the new request (return false) rather than
+	// evict a still-valid entry. Otherwise an attacker could provoke
+	// eviction by flooding distinct request_ids, then replay an evicted one.
+	c := NewReplayCache(3, time.Hour)
+	now := time.Now()
+	for i, rid := range []string{"a", "b", "c"} {
+		if !c.CheckAndStore(rid, now) {
+			t.Fatalf("insert %d (%q) should succeed", i, rid)
+		}
+	}
+	// Cap reached. New request must be rejected (overflow), NOT accepted-via-eviction.
+	if c.CheckAndStore("d", now) {
+		t.Fatalf("overflow request must be rejected; got accepted (eviction bug)")
+	}
+	if c.OverflowCount() != 1 {
+		t.Errorf("OverflowCount: got %d want 1", c.OverflowCount())
+	}
+	// Existing entries must still be in the cache (not evicted).
+	for _, rid := range []string{"a", "b", "c"} {
+		if c.CheckAndStore(rid, now) {
+			t.Errorf("entry %q should still be in cache (replay should detect)", rid)
+		}
 	}
 }

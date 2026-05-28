@@ -402,11 +402,11 @@ func TestEngine_LeaseExpiryTriggersElection(t *testing.T) {
 
 // ---------- 8. Quorum from persisted active roster, not live registry (R5) ----------
 
-func TestEngine_Quorum_CountsActiveAndAdmitted(t *testing.T) {
-	// Phase J revision: the admitted→active promotion (spec §3.1) isn't
-	// wired in v1, so members stay "admitted" until Phase H-3 lands. Counting
-	// only "active" makes quorum=1 per node on a fresh Clan → break. Count
-	// both. Revoked members are excluded.
+func TestEngine_Quorum_ActiveOnly_PostH3(t *testing.T) {
+	// Phase H-3: admitted→active promotion is now wired, so the active-only
+	// filter (originally R5) is correct again. Admitted members are
+	// intentionally excluded until their first advertisement promotes them.
+	// Revoked members are excluded.
 	store := mkStore(t)
 	saveClan(t, store, &state.Clan{
 		ClanID: "c1",
@@ -414,9 +414,10 @@ func TestEngine_Quorum_CountsActiveAndAdmitted(t *testing.T) {
 			{MemberID: "A", State: "active"},
 			{MemberID: "B", State: "active"},
 			{MemberID: "C", State: "active"},
-			{MemberID: "D", State: "admitted"},
-			{MemberID: "E", State: "admitted"},
-			{MemberID: "F", State: "revoked"}, // excluded
+			{MemberID: "D", State: "active"},
+			{MemberID: "E", State: "active"},
+			{MemberID: "F", State: "admitted"}, // excluded — not yet validated
+			{MemberID: "G", State: "revoked"},  // excluded — kicked out
 		},
 	})
 	e := mkEngine(t, EngineOpts{
@@ -430,7 +431,7 @@ func TestEngine_Quorum_CountsActiveAndAdmitted(t *testing.T) {
 	})
 	q := e.quorum(mustLoad(t, store))
 	if q != 3 {
-		t.Errorf("quorum for 3 active + 2 admitted (revoked excluded): got %d want 3", q)
+		t.Errorf("quorum for 5 active (1 admitted + 1 revoked both excluded): got %d want 3", q)
 	}
 }
 

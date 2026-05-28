@@ -55,6 +55,12 @@ type EngineOpts struct {
 	Audit        auditlog.Logger
 	Log          *slog.Logger
 
+	// OnSelfElected is called after CommitSelfElection succeeds. Phase H-3
+	// uses this to fire membership.PromoteToActive(self) — the Orchestrator
+	// never receives a heartbeat (it only sends), so the normal advertise-
+	// receive promotion path doesn't reach it. Optional; nil = no-op.
+	OnSelfElected func()
+
 	// Cadence — typically cfg.Election. Defaults applied via DefaultIfZero.
 	HeartbeatInterval time.Duration
 	LeaseDuration     time.Duration
@@ -216,12 +222,17 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 		e.opts.Log.Error("election: load clan for heartbeat", "err", err)
 		return
 	}
-	// Phase H-2: include local revocations digest so receivers can detect
-	// drift and sync. Cheap (small read + sha256 over a few member_ids).
+	// Phase H-2 + H-3: include local revocations + roster digests so
+	// receivers can detect drift and sync. Both cheap (small reads + small
+	// sha256 each).
 	revs, _ := e.opts.Store.LoadRevocations()
 	revDigest := ""
 	if revs != nil {
 		revDigest = revs.Digest()
+	}
+	rosterDigest := ""
+	if clan != nil {
+		rosterDigest = clan.RosterDigest()
 	}
 	hb := Heartbeat{
 		MemberID:          e.opts.SelfID,
@@ -231,6 +242,7 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 		ReasoningScore:    self.ReasoningScore,
 		ActiveRoster:      activeRoster(clan),
 		RevocationsDigest: revDigest,
+		RosterDigest:      rosterDigest,
 	}
 	body, err := json.Marshal(hb)
 	if err != nil {
@@ -308,6 +320,7 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		ReasoningScore:    candidate.ReasoningScore,
 		ActiveRoster:      activeRoster(clan),
 		RevocationsDigest: revDigest,
+		RosterDigest:      clan.RosterDigest(),
 	}
 	body, _ := json.Marshal(hb)
 	_, members := e.opts.Registry.Snapshot()
@@ -333,6 +346,13 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 			if err := e.persistTermAndOrch(newTerm, e.opts.SelfID); err != nil {
 				e.opts.Log.Error("election: persist after self-elect", "err", err)
 			}
+		}
+		// Phase H-3: self-promote our roster entry to "active" when we win
+		// an election. The advertise-receive promotion path doesn't fire
+		// for us because we (the Orchestrator) only SEND heartbeats; we
+		// never receive an /clan/advertise from ourselves.
+		if e.opts.OnSelfElected != nil {
+			e.opts.OnSelfElected()
 		}
 		e.opts.Log.Info("election won",
 			"term", newTerm, "accepts", accepts, "quorum", quorum, "reason", reason)
@@ -442,22 +462,19 @@ func (e *Engine) selectCandidate(clan *state.Clan) (LocalCandidate, string) {
 	return candidates[0], ReasonLeaseExpire
 }
 
-// quorum is ⌈N/2⌉ where N is the persisted roster size (per spec §5.5,
-// computed from state.Clan NOT the live registry — that's the partition-
-// tolerance guarantee). Counts both "active" AND "admitted" members.
+// quorum is ⌈N/2⌉ where N is the persisted ACTIVE roster size (R5 +
+// Phase H-3 — the spec §5.5 partition-tolerance guarantee). Computed from
+// state.Clan NOT the live registry.
 //
-// Phase J finding: the admitted→active promotion (spec §3.1) isn't wired
-// through the advertise loop in v1, so members stay "admitted" forever.
-// Filtering to "active" only (the original R5 fix from Phase E peer-review)
-// makes quorum=1 per node, which breaks 3-node consensus entirely. Counting
-// "admitted" too is the pragmatic interim until Phase H-3 wires the
-// promotion + gossips it. The downside (admitted members can vote in
-// elections before fully validated) is documented in the M4 STATUS as a
-// known limitation.
+// Phase H-3 (2026-05-28) wires the admitted→active promotion through
+// /clan/advertise (membership.Service.PromoteToActive) + gossips it via
+// the heartbeat roster_digest (rostersync.Syncer). With promotion working,
+// "active" is the right voter set; admitted members are intentionally
+// excluded until their first advertisement validates them as alive.
 func (e *Engine) quorum(clan *state.Clan) int {
 	n := 0
 	for _, m := range clan.Roster {
-		if m.State == "active" || m.State == "admitted" {
+		if m.State == "active" {
 			n++
 		}
 	}

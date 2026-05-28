@@ -18,6 +18,12 @@ type RevocationsSyncer interface {
 	MaybeSync(ctx context.Context, senderID, theirDigest string) bool
 }
 
+// RosterSyncer is the Phase H-3 counterpart for roster state transitions
+// (admitted→active per spec §3.1, etc.). Same shape as RevocationsSyncer.
+type RosterSyncer interface {
+	MaybeSync(ctx context.Context, senderID, theirDigest string) bool
+}
+
 // Handlers bundles the four Phase E endpoints:
 //
 //   POST /clan/heartbeat        — Orchestrator → peers (anti-spoof + term gate
@@ -34,6 +40,7 @@ type Handlers struct {
 	Store  *state.Store
 	Bump   func() // optional; called after /clan/pin succeeds to propagate the new pin
 	RevocationsSync RevocationsSyncer // optional; Phase H-2
+	RosterSync      RosterSyncer      // optional; Phase H-3
 }
 
 func (h *Handlers) Register(srv *transport.Server) {
@@ -83,11 +90,15 @@ func (h *Handlers) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// Phase H-2: opportunistically sync revocations after the heartbeat
-	// passes lease/term/anti-spoof. Cheap when digests match, non-blocking
-	// when they don't (Syncer dedupes per-peer in-flight).
+	// Phase H-2 + H-3: opportunistically sync revocations + roster state
+	// transitions after the heartbeat passes lease/term/anti-spoof. Cheap
+	// when digests match; per-peer in-flight dedup in each Syncer when
+	// they don't.
 	if h.RevocationsSync != nil && hb.RevocationsDigest != "" {
 		_ = h.RevocationsSync.MaybeSync(context.Background(), sender, hb.RevocationsDigest)
+	}
+	if h.RosterSync != nil && hb.RosterDigest != "" {
+		_ = h.RosterSync.MaybeSync(context.Background(), sender, hb.RosterDigest)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted":     res.Accepted,

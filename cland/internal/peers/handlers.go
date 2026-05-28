@@ -23,7 +23,8 @@ type PeersListResponse struct {
 // trigger an immediate advertisement broadcast on peer-add.
 type Handlers struct {
 	Registry *Registry
-	Bump     func() // optional; called after /clan/peer-add succeeds
+	Bump     func()             // optional; called after /clan/peer-add succeeds
+	Promote  func(memberID string) error // optional; Phase H-3 — flips roster admitted→active on first ad
 }
 
 // Register wires the three Phase D endpoints onto a transport.Server.
@@ -49,6 +50,13 @@ func (h *Handlers) handleAdvertise(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err)
 		}
 		return
+	}
+	// Phase H-3: spec §3.1 admitted→active promotion fires on first
+	// successful capability advertisement. Idempotent + non-blocking;
+	// failure to promote doesn't fail the advertise (peer is bound either
+	// way; promotion will retry on the next ad).
+	if h.Promote != nil {
+		_ = h.Promote(ad.MemberID)
 	}
 	// 200 OK with empty body per spec §4.2 v0.3.
 	w.WriteHeader(http.StatusOK)

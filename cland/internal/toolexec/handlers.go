@@ -25,6 +25,7 @@ type HandlerOpts struct {
 	KeyProvider  crypto.KeyProvider // for HMAC verify (current + grace)
 	Executor     ExecutorIface
 	Replay       *ReplayCache
+	RateLimiter  *RateLimiter // optional; nil disables. Per-origin tool-call rate limit.
 	Audit        auditlog.Logger
 	Log          *slog.Logger
 	MaxLifetime  time.Duration // max (exp - approved_at); zero → DefaultMaxTokenLifetime
@@ -131,6 +132,18 @@ func (h *Handler) handleExecute(w http.ResponseWriter, r *http.Request) {
 	//    attacker exhaust the cache cheaply).
 	if !h.opts.Replay.CheckAndStore(req.Token.RequestID, now) {
 		h.deny(w, http.StatusUnauthorized, "replay", &req.Token, ErrReplay)
+		return
+	}
+
+	// 4b. Per-origin rate limit (project peer-review hardening, qwen
+	//     insider-threat mitigation). Bounds blast radius if an insider
+	//     starts forging tool calls or a compromised origin floods the
+	//     network. AFTER all auth checks — a rate-limit-rejected token has
+	//     already been validated, so the request_id IS now in the replay
+	//     cache (correct; we don't want to allow re-use of the token even
+	//     when rate-limited).
+	if h.opts.RateLimiter != nil && !h.opts.RateLimiter.Allow(req.Token.OriginMember) {
+		h.deny(w, http.StatusTooManyRequests, "rate_limited", &req.Token, nil)
 		return
 	}
 

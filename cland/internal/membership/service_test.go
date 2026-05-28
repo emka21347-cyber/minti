@@ -287,6 +287,52 @@ func TestService_Revoke(t *testing.T) {
 	}
 }
 
+func TestService_PromoteToActive(t *testing.T) {
+	svc, store, id := newService(t)
+	foundCreate(t, svc, store, id)
+	// Add a second member via Welcome (lands as "admitted" per spec §3.1).
+	if _, err := svc.Welcome(WelcomeRequest{MemberID: "joiner", MemberPubKey: "pub-b64"}); err != nil {
+		t.Fatal(err)
+	}
+	// Initial state should be admitted.
+	clan, _ := store.LoadClan()
+	for _, m := range clan.Roster {
+		if m.MemberID == "joiner" && m.State != "admitted" {
+			t.Fatalf("freshly-welcomed member: state=%q want admitted", m.State)
+		}
+	}
+
+	// Promote.
+	if err := svc.PromoteToActive("joiner"); err != nil {
+		t.Fatal(err)
+	}
+	clan, _ = store.LoadClan()
+	var promoted bool
+	for _, m := range clan.Roster {
+		if m.MemberID == "joiner" {
+			promoted = m.State == "active"
+		}
+	}
+	if !promoted {
+		t.Errorf("PromoteToActive didn't flip state to active")
+	}
+
+	// Idempotent: re-promoting is a no-op (no error).
+	if err := svc.PromoteToActive("joiner"); err != nil {
+		t.Errorf("idempotent promote should not error: %v", err)
+	}
+
+	// Unknown member: no-op (don't error — race with revoke / leave).
+	if err := svc.PromoteToActive("nobody"); err != nil {
+		t.Errorf("promoting unknown should be no-op, got %v", err)
+	}
+
+	// Empty ID: no-op.
+	if err := svc.PromoteToActive(""); err != nil {
+		t.Errorf("empty member_id should be no-op")
+	}
+}
+
 func TestService_SweepZombies(t *testing.T) {
 	svc, store, id := newService(t)
 	foundCreate(t, svc, store, id)

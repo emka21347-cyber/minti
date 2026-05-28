@@ -45,6 +45,7 @@ import (
 	"github.com/minti/cland/internal/peers"
 	"github.com/minti/cland/internal/probe"
 	"github.com/minti/cland/internal/revocations"
+	"github.com/minti/cland/internal/rostersync"
 	"github.com/minti/cland/internal/router"
 	"github.com/minti/cland/internal/scores"
 	"github.com/minti/cland/internal/state"
@@ -296,7 +297,11 @@ func runDaemon(args []string) error {
 		InitialWait:    cfg.Advertise.InitialDelay,
 		BumpRate:       cfg.Advertise.BumpRate,
 	}
-	(&peers.Handlers{Registry: registry, Bump: advSvc.Bump}).Register(srv)
+	(&peers.Handlers{
+		Registry: registry,
+		Bump:     advSvc.Bump,
+		Promote:  membSvc.PromoteToActive, // Phase H-3: §3.1 admitted→active on first ad
+	}).Register(srv)
 
 	discSvc := &discovery.Service{
 		ClanID:    clan.ClanID,
@@ -398,6 +403,12 @@ func runDaemon(args []string) error {
 		LocalSelf:         localSelfFn,
 		Audit:             audit,
 		Log:               log,
+		OnSelfElected: func() {
+			// Phase H-3: when self wins election, promote our own roster
+			// entry to "active" (the advertise-receive path doesn't fire
+			// for us since we only emit heartbeats, not receive them).
+			_ = membSvc.PromoteToActive(id.MemberID)
+		},
 		HeartbeatInterval: cfg.Election.HeartbeatInterval,
 		LeaseDuration:     cfg.Election.LeaseDuration,
 		FailoverGrace:     cfg.Election.FailoverGrace,
@@ -429,11 +440,35 @@ func runDaemon(args []string) error {
 	}
 	(&revocations.Handler{Store: store, Log: log}).Register(srv)
 
+	// Phase H-3: roster gossip (same pattern as H-2 revocations).
+	rosterSyncer, err := rostersync.NewSyncer(rostersync.SyncerOpts{
+		SelfID:   id.MemberID,
+		Store:    store,
+		Registry: registry,
+		Fetcher:  advClient,
+		LookupAddr: func(memberID string) string {
+			_, members := registry.Snapshot()
+			for _, m := range members {
+				if m.MemberID == memberID {
+					return m.Address
+				}
+			}
+			return ""
+		},
+		Audit: audit,
+		Log:   log,
+	})
+	if err != nil {
+		return fmt.Errorf("rostersync: %w", err)
+	}
+	(&rostersync.Handler{Store: store, Log: log}).Register(srv)
+
 	(&election.Handlers{
 		Engine:          electionEng,
 		Store:           store,
 		Bump:            advSvc.Bump,
 		RevocationsSync: revSyncer,
+		RosterSync:      rosterSyncer,
 	}).Register(srv)
 	electionCtx, electionCancel := context.WithCancel(context.Background())
 	defer electionCancel()
@@ -474,6 +509,7 @@ func runDaemon(args []string) error {
 		KeyProvider: kp,
 		Executor:    toolExecutor,
 		Replay:      toolexec.NewReplayCache(0, 0),
+		RateLimiter: toolexec.NewRateLimiter(0, 0), // defaults: 10 req per 60s per origin
 		Audit:       audit,
 		Log:         log,
 		MaxLifetime: cfg.MCP.MaxTokenLifetime,

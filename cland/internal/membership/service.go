@@ -312,6 +312,52 @@ func (s *Service) Revoke(memberID, reason, revoker string) error {
 	return nil
 }
 
+// PromoteToActive flips a roster entry from "admitted" to "active" per
+// spec §3.1 — "first successful capability advertisement". Idempotent;
+// returns nil + no-op if the member is already active or not in roster.
+// Phase H-3 of M4 closes the correctness gap project-review flagged:
+// without this, members stayed "admitted" forever and the active-only
+// quorum filter (R5) computed N=1 per node → 3-node consensus broken.
+//
+// Wired from peers/handlers.handleAdvertise after BindMember succeeds.
+// Safe to call from any goroutine — the inner mutex serializes writes.
+func (s *Service) PromoteToActive(memberID string) error {
+	if memberID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clan, err := s.store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return nil // unaffiliated; nothing to promote
+	}
+	changed := false
+	for i, m := range clan.Roster {
+		if m.MemberID == memberID && m.State == "admitted" {
+			clan.Roster[i].State = "active"
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := s.store.SaveClan(clan); err != nil {
+		return err
+	}
+	_ = s.audit.Write(auditlog.Event{
+		Server:   "minti-cland",
+		Tool:     "membership.promote",
+		Decision: "allow",
+		Reason:   "first_advertisement",
+		Args:     map[string]any{"member_id": memberID},
+	})
+	return nil
+}
+
 // SweepZombies removes members stuck in `admitted` state past ZombieMaxAge
 // per spec §3.1. Returns the number purged. Idempotent — safe to call
 // repeatedly on a ticker.

@@ -47,6 +47,7 @@ type Heartbeat struct {
 	ReasoningScore     int       `json:"reasoning_score"`
 	ActiveRoster       []string  `json:"active_roster"`
 	RevocationsDigest  string    `json:"revocations_digest,omitempty"` // Phase H-2: sha256 of sorted revoked member_ids
+	RosterDigest       string    `json:"roster_digest,omitempty"`      // Phase H-3: sha256 of sorted (member_id, state) tuples
 }
 
 // HistoryEntry is one row in the in-memory ring at /clan/election/history.
