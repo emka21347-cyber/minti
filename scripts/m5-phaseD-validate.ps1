@@ -119,18 +119,31 @@ if ($SkipColdBoot) {
     Write-Host "    sleeping $ColdBootSleepSec s for mDNS re-advertise..."
     Start-Sleep -Seconds $ColdBootSleepSec
 
+    # AdFresh window per cland/internal/peers/peers.go: 90 s. The peers JSON
+    # exposes `last_ad` per member; `os` lives under nested `latest_ad`.
+    # Both fields are absent in the legacy shape we drafted against — this
+    # block was rewritten 2026-05-29 against the real wire format.
+    $now = Get-Date
     foreach ($vmIp in @($VmAIp, $VmBIp)) {
-        $peers = Invoke-OnVm $vmIp "sudo /usr/local/bin/minti-cland peers --json 2>/dev/null"
+        $peersJson = Invoke-OnVm $vmIp "sudo /usr/local/bin/minti-cland peers --json 2>/dev/null"
         if ($LASTEXITCODE -ne 0) {
             Warn2 "ssh to $vmIp failed or minti-cland peers returned non-zero; skipping this VM"
             continue
         }
         $parsed = $null
-        try { $parsed = $peers | ConvertFrom-Json } catch { }
+        try { $parsed = $peersJson | ConvertFrom-Json } catch { }
         $winSeen = $false
         if ($parsed) {
             foreach ($member in $parsed.members) {
-                if ($member.os -eq 'windows' -and $member.ad_fresh) {
+                $memberOs = if ($member.latest_ad) { [string]$member.latest_ad.os } else { '' }
+                $adFresh  = $false
+                if ($member.last_ad) {
+                    try {
+                        $lastAd  = [DateTime]$member.last_ad
+                        $adFresh = ($now.ToUniversalTime() - $lastAd.ToUniversalTime()).TotalSeconds -lt 90
+                    } catch { }
+                }
+                if ($memberOs -eq 'windows' -and $adFresh) {
                     $winSeen = $true; break
                 }
             }
@@ -199,52 +212,82 @@ if (-not (Test-Admin)) {
 
 Step "5/5 election with Windows-Service as a candidate"
 
-# Pre-check: do the VMs even know about the Windows member?
-$preState = Invoke-OnVm $VmAIp "sudo /usr/local/bin/minti-cland orchestrator --json 2>/dev/null"
-if ($LASTEXITCODE -ne 0) {
-    Skip2 "VM A unreachable; cannot exercise election failover. Bring up VMs and re-run."
-} else {
-    $orchA = $null
-    try { $orchA = $preState | ConvertFrom-Json } catch {}
-    if (-not $orchA -or -not $orchA.member_id) {
-        Skip2 "VM A reports no current Orchestrator; Clan not converged."
-    } elseif ($orchA.member_id -match 'windows' -or $orchA.os -eq 'windows') {
-        # The Windows service won the election (because it has the highest
-        # reasoning score with FORCE_HEALTHY, or because no VM has Ollama
-        # alive). For the failover test we need a Linux Orchestrator; skip.
-        Skip2 "current Orchestrator is the Windows host; skipping the kill-orch-survivor failover test (set MINTI_CLAND_FORCE_HEALTHY=0 on Windows to force Linux to win and re-run)"
-    } else {
-        $termBefore = $orchA.term
-        Pass "current Orchestrator is on a Linux VM at term $termBefore"
-        Write-Host "    killing Orchestrator -> waiting up to 30s for failover..."
-        $orchIp = $orchA.address.Split(':')[0]
-        Invoke-OnVm $orchIp "sudo systemctl stop minti-cland 2>&1" | Out-Null
+# Wire shapes (rewritten 2026-05-29 against the actual JSON):
+#   /clan/orchestrator -> { current_orchestrator, current_term, lease_expires, self, is_self }
+#   /clan/peers        -> { candidates[], members[ { member_id, address, last_ad,
+#                            latest_ad { os, reasoning_score, system_score, ... } } ] }
+# The orchestrator endpoint does NOT expose the orchestrator's address or os —
+# we look those up by cross-referencing current_orchestrator against members[].
 
-        $deadline = (Get-Date).AddSeconds(30)
-        $newOrch = $null
-        while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 2
-            $survivorIp = if ($orchIp -eq $VmAIp) { $VmBIp } else { $VmAIp }
-            $check = Invoke-OnVm $survivorIp "sudo /usr/local/bin/minti-cland orchestrator --json 2>/dev/null"
-            if ($LASTEXITCODE -eq 0) {
-                try {
-                    $j = $check | ConvertFrom-Json
-                    if ($j.term -gt $termBefore) { $newOrch = $j; break }
-                } catch {}
-            }
-        }
-        if ($newOrch) {
-            Pass "failover succeeded: new Orchestrator at term $($newOrch.term), os=$($newOrch.os)"
-            if ($newOrch.os -eq 'windows') {
-                Warn2 "Windows host won the election. Acceptable, but unusual without FORCE_HEALTHY; double-check reasoning_score rubric."
-            }
-        } else {
-            Warn2 "no Orchestrator within 30s; surviving VM may be partitioned or also dead"
-        }
+function Get-OrchestratorInfo {
+    param([string]$VmIp)
+    $rawOrch = Invoke-OnVm $VmIp "sudo /usr/local/bin/minti-cland orchestrator --json 2>/dev/null"
+    if ($LASTEXITCODE -ne 0) { return $null }
+    try { $orch = $rawOrch | ConvertFrom-Json } catch { return $null }
+    if (-not $orch -or [string]::IsNullOrEmpty($orch.current_orchestrator)) { return $null }
 
-        # Restart the killed VM cland to leave the testbed in a clean state.
-        Invoke-OnVm $orchIp "sudo systemctl start minti-cland 2>&1" | Out-Null
+    $rawPeers = Invoke-OnVm $VmIp "sudo /usr/local/bin/minti-cland peers --json 2>/dev/null"
+    $peers = $null
+    if ($LASTEXITCODE -eq 0) { try { $peers = $rawPeers | ConvertFrom-Json } catch {} }
+
+    $address = $null; $os = ''
+    if ($orch.is_self) {
+        $address = "${VmIp}:7777"
+        $os      = 'linux'
+    } elseif ($peers -and $peers.members) {
+        $m = $peers.members | Where-Object { $_.member_id -eq $orch.current_orchestrator } | Select-Object -First 1
+        if ($m) {
+            $address = $m.address
+            if ($m.latest_ad) { $os = [string]$m.latest_ad.os }
+        }
     }
+    return [pscustomobject]@{
+        MemberID = $orch.current_orchestrator
+        Term     = [uint64]$orch.current_term
+        Address  = $address
+        OS       = $os
+        IsSelf   = [bool]$orch.is_self
+    }
+}
+
+$pre = Get-OrchestratorInfo -VmIp $VmAIp
+if (-not $pre) {
+    Skip2 "VM A unreachable or reports no current Orchestrator; Clan not converged."
+} elseif ($pre.OS -eq 'windows') {
+    # Windows won the election (likely FORCE_HEALTHY=1 or no VM has a healthy
+    # runtime). The failover test needs a Linux Orchestrator to kill; skip.
+    Skip2 "current Orchestrator is the Windows host; skipping the kill-orch-survivor failover test (set MINTI_CLAND_FORCE_HEALTHY=0 on Windows to force Linux to win and re-run)"
+} elseif (-not $pre.Address) {
+    Skip2 "could not resolve Orchestrator address from peers list; aborting failover test"
+} else {
+    $termBefore = $pre.Term
+    Pass "current Orchestrator is on Linux ($($pre.Address)) at term $termBefore"
+    Write-Host "    killing Orchestrator -> waiting up to 30s for failover..."
+    $orchIp = $pre.Address.Split(':')[0]
+    Invoke-OnVm $orchIp "sudo systemctl stop minti-cland 2>&1" | Out-Null
+
+    $survivorIp = if ($orchIp -eq $VmAIp) { $VmBIp } else { $VmAIp }
+    $deadline = (Get-Date).AddSeconds(30)
+    $newOrch = $null
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 2
+        $candidate = Get-OrchestratorInfo -VmIp $survivorIp
+        if ($candidate -and $candidate.Term -gt $termBefore) {
+            $newOrch = $candidate
+            break
+        }
+    }
+    if ($newOrch) {
+        Pass "failover succeeded: new Orchestrator at term $($newOrch.Term), member=$($newOrch.MemberID), os=$($newOrch.OS)"
+        if ($newOrch.OS -eq 'windows') {
+            Warn2 "Windows host won the election. Acceptable, but unusual without FORCE_HEALTHY; double-check reasoning_score rubric."
+        }
+    } else {
+        Warn2 "no Orchestrator at higher term within 30s; surviving VM may be partitioned or also dead"
+    }
+
+    # Restart the killed VM cland to leave the testbed in a clean state.
+    Invoke-OnVm $orchIp "sudo systemctl start minti-cland 2>&1" | Out-Null
 }
 
 # ---------- summary ----------
