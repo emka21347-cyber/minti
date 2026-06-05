@@ -1,0 +1,6 @@
+{
+  "name": "hermes3",
+  "kind": "ollama-model",
+  "tag":  "hermes3:8b",
+  "size_bytes": 5050000000
+}

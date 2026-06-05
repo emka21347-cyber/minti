@@ -1,0 +1,35 @@
+[Unit]
+Description=MINTI offline-knowledge server (kiwix-serve, loopback only)
+Documentation=https://kiwix.org/  https://github.com/kiwix/kiwix-tools
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# Loopback only by design — Clan members reach this via mcp-wiki, not raw
+# HTTP. If you genuinely want LAN-visible kiwix-serve, override with a
+# systemd drop-in: edit /etc/systemd/system/minti-kiwix-serve.service.d/local.conf
+# and add ExecStart= with --address=0.0.0.0 + the matching firewall rule.
+ExecStart=/usr/bin/kiwix-serve --port=8888 --address=127.0.0.1 --library /var/lib/minti/wiki/library.xml
+ExecStartPre=/bin/sh -c '/usr/bin/kiwix-manage /var/lib/minti/wiki/library.xml add /var/lib/minti/wiki/*.zim 2>/dev/null || true'
+
+Restart=on-failure
+RestartSec=3
+
+# Hardening — mirrors the cland systemd unit's profile.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/minti/wiki /tmp
+
+[Install]
+WantedBy=multi-user.target

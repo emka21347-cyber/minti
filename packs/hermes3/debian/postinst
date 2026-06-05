@@ -1,0 +1,42 @@
+#!/bin/sh
+# Postinst for minti-pack-hermes3.
+#
+# Calls `minti-pack-fetch hermes3` to pull the model via Ollama. The fetch
+# helper honours MINTI_PACK_NO_FETCH=1 (set in the environment when running
+# `apt install`) and skips the actual pull, just dropping the .installed
+# marker. The operator then runs `sudo minti-pack-fetch hermes3` later.
+#
+# Failure mode: ollama-not-running is the common case (the user installed
+# MINTI but hasn't started Ollama yet). minti-pack-fetch returns a clear
+# error in that case; we surface a hint here and exit non-zero so dpkg
+# marks the package as half-configured (which is the correct semantic —
+# it isn't usable until the model is on disk). User can re-run with
+# `sudo dpkg-reconfigure minti-pack-hermes3` after starting Ollama, or
+# call `sudo minti-pack-fetch hermes3` directly.
+
+set -e
+
+case "$1" in
+    configure)
+        if [ "${MINTI_PACK_NO_FETCH:-0}" = "1" ]; then
+            /usr/local/bin/minti-pack-fetch -no-fetch hermes3 || true
+            echo "minti-pack-hermes3: MINTI_PACK_NO_FETCH=1 → skipped model pull."
+            echo "  Run: sudo minti-pack-fetch hermes3"
+            echo "  when you're ready to download."
+        else
+            if ! /usr/local/bin/minti-pack-fetch hermes3; then
+                echo "minti-pack-hermes3: model pull failed."
+                echo "  If Ollama isn't running yet:"
+                echo "    sudo systemctl start ollama"
+                echo "  Then re-run:"
+                echo "    sudo minti-pack-fetch hermes3"
+                exit 1
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

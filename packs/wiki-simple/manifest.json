@@ -1,0 +1,9 @@
+{
+  "name": "wiki-simple",
+  "kind": "kiwix-zim",
+  "url":  "https://download.kiwix.org/zim/wikipedia/wikipedia_en_simple_all_nopic_2024-06.zim",
+  "sha256": "",
+  "size_bytes": 1500000000,
+  "dest":  "/var/lib/minti/wiki",
+  "_comment": "Refresh URL + sha256 quarterly per https://download.kiwix.org/zim/wikipedia/. sha256 left empty for v0.1; the fetcher accepts missing checksums but skips verification — pin one when you have a known-good snapshot."
+}

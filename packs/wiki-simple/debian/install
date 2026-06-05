@@ -1,0 +1,3 @@
+skill.md                              usr/share/minti/packs/wiki-simple/
+manifest.json                         usr/share/minti/packs/wiki-simple/
+systemd/minti-kiwix-serve.service     lib/systemd/system/

@@ -1,0 +1,9 @@
+#!/usr/bin/make -f
+# debhelper sequence for minti-pack-wiki-simple. Architecture: all, ships
+# the systemd unit + manifest + skill.md. With compat=13, the systemd
+# sequence is auto-loaded — dh_installsystemd runs whenever a .service
+# file is present under lib/systemd/system/, so no `--with systemd` here
+# (deprecated since compat 11).
+
+%:
+	dh $@

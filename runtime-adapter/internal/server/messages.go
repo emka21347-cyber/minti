@@ -72,14 +72,22 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		anthropicError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("decode body: %v", err))
 		return
 	}
-	if req.Model == "" {
-		anthropicError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return
-	}
 	if len(req.Messages) == 0 {
 		anthropicError(w, http.StatusBadRequest, "invalid_request_error", "messages must not be empty")
 		return
 	}
+	// Default-model fallback shared with the OpenAI handler.
+	resolved, err := s.resolveModel(r.Context(), req.Model)
+	if err != nil {
+		anthropicError(w, http.StatusBadGateway, "api_error", err.Error())
+		return
+	}
+	if resolved == "" {
+		anthropicError(w, http.StatusBadRequest, "invalid_request_error",
+			"model is required (no models pulled — run `ollama pull hermes3:8b` or install minti-pack-hermes3)")
+		return
+	}
+	req.Model = resolved
 
 	// Translate to internal shape. System prompt is prepended as a system-role
 	// message because the internal interface keeps everything in the messages

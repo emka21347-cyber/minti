@@ -1,0 +1,52 @@
+#!/bin/sh
+# Postinst for minti-pack-wiki-simple.
+#
+# Sequence:
+#   1. Ensure /var/lib/minti/wiki/ exists, owned by root:root, 0755 (the ZIM
+#      file is world-readable — kiwix-serve runs as root via the unit but
+#      this could later be tightened to a `minti` user).
+#   2. Call `minti-pack-fetch wiki-simple` to download the ZIM (or skip if
+#      MINTI_PACK_NO_FETCH=1).
+#   3. Enable + start minti-kiwix-serve.service.
+#   4. If the fetch was skipped, leave the service disabled with a hint.
+
+set -e
+
+case "$1" in
+    configure)
+        mkdir -p /var/lib/minti/wiki
+        chmod 0755 /var/lib/minti/wiki
+
+        skip_fetch=0
+        if [ "${MINTI_PACK_NO_FETCH:-0}" = "1" ]; then
+            skip_fetch=1
+            /usr/local/bin/minti-pack-fetch -no-fetch wiki-simple || true
+            echo "minti-pack-wiki-simple: MINTI_PACK_NO_FETCH=1 → skipped ZIM download."
+            echo "  Run: sudo minti-pack-fetch wiki-simple"
+            echo "  then: sudo systemctl enable --now minti-kiwix-serve"
+        else
+            if ! /usr/local/bin/minti-pack-fetch wiki-simple; then
+                echo "minti-pack-wiki-simple: ZIM download failed."
+                echo "  Re-run: sudo minti-pack-fetch wiki-simple"
+                exit 1
+            fi
+        fi
+
+        if [ "$skip_fetch" = "0" ]; then
+            # The systemd helper is invoked by debhelper via #DEBHELPER#
+            # below; nothing else needed here unless we want to force-start
+            # immediately. Force the active state to make the first install
+            # observable.
+            if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+                systemctl daemon-reload || true
+                systemctl enable --now minti-kiwix-serve.service || \
+                    echo "minti-pack-wiki-simple: warn: could not start minti-kiwix-serve (try manually)"
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

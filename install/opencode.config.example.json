@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "_comment_minti": "MINTI default opencode config — installed by install.sh to ~/.config/opencode/opencode.json on first install. Edit freely; install.sh preserves user-modified copies.",
+  "_comment_minti": "MINTI default opencode config — installed by install.sh to ~/.config/opencode/opencode.json on first install. Edit freely; install.sh preserves user-modified copies. The conceptual default chat model is hermes3:8b (install minti-pack-hermes3 to pull it); minti-runtime falls back to that automatically when callers omit the model field.",
 
   "provider": {
     "minti-runtime": {
@@ -10,11 +10,12 @@
         "baseURL": "http://127.0.0.1:7780/v1"
       },
       "models": {
-        "llama3.2:3b":     { "name": "Llama 3.2 3B (local, ~2 GB)" },
+        "hermes3:8b":      { "name": "Hermes 3 8B (local, agent-tuned, default) — install minti-pack-hermes3" },
+        "mistral:7b":      { "name": "Mistral 7B Instruct (local) — install minti-pack-mistral" },
+        "llama3.2:3b":     { "name": "Llama 3.2 3B (local, ~2 GB, CPU-friendly)" },
         "qwen2.5:7b":      { "name": "Qwen 2.5 7B (local, ~5 GB)" },
-        "deepseek-r1:32b": { "name": "DeepSeek-R1 32B (local, ~19 GB)" },
-        "hermes3:8b":      { "name": "Hermes 3 8B (local, agent-tuned)" },
-        "hermes3:70b":     { "name": "Hermes 3 70B (local, agent-tuned)" }
+        "deepseek-r1:32b": { "name": "DeepSeek-R1 32B (local, ~19 GB, reasoner)" },
+        "hermes3:70b":     { "name": "Hermes 3 70B (local, ~40 GB, big-GPU only) — install minti-pack-hermes3-70b" }
       }
     }
   },

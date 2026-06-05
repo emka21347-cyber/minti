@@ -1,0 +1,19 @@
+#!/bin/sh
+# Postrm for minti-pack-hermes3.
+#
+# On purge: remove the .installed marker. We do NOT `ollama rm hermes3:8b` —
+# the operator may have other uses for the model; let them clean it up
+# explicitly.
+
+set -e
+
+case "$1" in
+    purge)
+        rm -f /var/lib/minti/packs/hermes3.installed
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

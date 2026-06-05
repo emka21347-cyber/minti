@@ -30,6 +30,7 @@ type MCPPolicy struct {
 	Recon ReconPolicy `yaml:"recon"`
 	Pkg   PkgPolicy   `yaml:"pkg"`
 	HTTP  HTTPPolicy  `yaml:"http"`
+	Wiki  WikiPolicy  `yaml:"wiki"`
 }
 
 type FSPolicy struct {
@@ -59,6 +60,13 @@ type PkgPolicy struct {
 type HTTPPolicy struct {
 	MaxBodyBytes int64    `yaml:"max_body_bytes"`
 	DenyTools    []string `yaml:"deny_tools"`
+}
+
+// WikiPolicy gates the offline-Wikipedia MCP server. Knowledge access is
+// inherently low-risk; the only knob is DenyTools (e.g. operator wants to
+// allow wiki_search but block wiki_get to avoid huge article payloads).
+type WikiPolicy struct {
+	DenyTools []string `yaml:"deny_tools"`
 }
 
 // Defaults returns the most-restrictive starting policy. Used when no files are

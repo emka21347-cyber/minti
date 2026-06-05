@@ -1,0 +1,7 @@
+minti-pack-wiki-simple (0.1.0-M6) unstable; urgency=medium
+
+  * Initial release (M6-content): downloads Simple English Wikipedia ZIM
+    (~1.5 GB) and exposes it via kiwix-serve on loopback. Clan members
+    reach the corpus through minti-mcp-wiki (separate package).
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 00:00:00 +0000

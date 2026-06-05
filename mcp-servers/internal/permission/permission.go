@@ -50,6 +50,8 @@ func Check(p *policy.Policy, server, tool string, args map[string]any) (Decision
 		return checkPkg(&p.MCP.Pkg, tool, args)
 	case "minti-mcp-http":
 		return checkHTTP(&p.MCP.HTTP, tool, args)
+	case "minti-mcp-wiki":
+		return checkWiki(&p.MCP.Wiki, tool, args)
 	}
 	return Allow, ""
 }
@@ -140,6 +142,13 @@ func checkPkg(p *policy.PkgPolicy, tool string, args map[string]any) (Decision, 
 func checkHTTP(p *policy.HTTPPolicy, tool string, args map[string]any) (Decision, string) {
 	if denied(p.DenyTools, tool) {
 		return Deny, "tool '" + tool + "' is on http.deny_tools"
+	}
+	return Allow, ""
+}
+
+func checkWiki(p *policy.WikiPolicy, tool string, args map[string]any) (Decision, string) {
+	if denied(p.DenyTools, tool) {
+		return Deny, "tool '" + tool + "' is on wiki.deny_tools"
 	}
 	return Allow, ""
 }

@@ -78,6 +78,16 @@ clan_role="-"
 clan_orch="-"
 clan_term="-"
 clan_members="-"
+
+# Addons (M6+): /var/lib/minti/packs/<name>.installed marker files dropped by
+# minti-pack-fetch. Listing them is best-effort + read-only; degrade cleanly
+# if the dir is missing or unreadable.
+addons_v="(none)"
+if [[ -d /var/lib/minti/packs ]]; then
+    addons_v="$(find /var/lib/minti/packs -maxdepth 1 -name '*.installed' -printf '%f\n' 2>/dev/null \
+        | sed 's/\.installed$//' | sort | paste -sd' ' - || true)"
+    [[ -z "$addons_v" ]] && addons_v="(none)"
+fi
 clan_pin=""
 if command -v minti-cland >/dev/null 2>&1; then
     clan_id="(not affiliated)"
@@ -147,6 +157,7 @@ info=(
 "${label}Models:${reset}    ${val}${runtime_models:-not running}${reset}"
 "${label}Clan:${reset}      ${val}${clan_id}${reset} ${dim}role=${clan_role} members=${clan_members}${reset}"
 "${label}Orch:${reset}      ${val}${clan_orch}${reset} ${dim}term=${clan_term}${reset}"
+"${label}Addons:${reset}    ${val}${addons_v}${reset}"
 )
 
 # ---------- render side-by-side ----------

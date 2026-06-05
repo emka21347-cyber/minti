@@ -1,0 +1,22 @@
+#!/bin/sh
+# Postrm for minti-pack-wiki-simple.
+#
+# On purge: drop the .installed marker AND the downloaded ZIM (large; the
+# user explicitly asked for purge). On normal `remove`, leave the ZIM on
+# disk — it's likely the user wants to keep it for a re-install.
+
+set -e
+
+case "$1" in
+    purge)
+        rm -f /var/lib/minti/packs/wiki-simple.installed
+        rm -f /var/lib/minti/wiki/wikipedia_en_simple_all_nopic_*.zim
+        # Leave /var/lib/minti/wiki itself in place (other wiki packs may
+        # share the directory).
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

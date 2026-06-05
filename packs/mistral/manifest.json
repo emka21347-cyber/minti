@@ -1,0 +1,6 @@
+{
+  "name": "mistral",
+  "kind": "ollama-model",
+  "tag":  "mistral:7b",
+  "size_bytes": 4100000000
+}

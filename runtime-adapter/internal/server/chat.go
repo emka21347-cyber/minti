@@ -76,14 +76,22 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, fmt.Sprintf("decode body: %v", err))
 		return
 	}
-	if req.Model == "" {
-		httpError(w, http.StatusBadRequest, "model is required")
-		return
-	}
 	if len(req.Messages) == 0 {
 		httpError(w, http.StatusBadRequest, "messages must not be empty")
 		return
 	}
+	// Default-model fallback: empty `model` resolves to hermes3:8b → mistral:7b →
+	// first available. See resolveModel for the preference list.
+	resolved, err := s.resolveModel(r.Context(), req.Model)
+	if err != nil {
+		httpError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if resolved == "" {
+		httpError(w, http.StatusBadRequest, "model is required (no models pulled — run `ollama pull hermes3:8b` or install minti-pack-hermes3)")
+		return
+	}
+	req.Model = resolved
 
 	internal := backend.ChatRequest{
 		Model:       req.Model,

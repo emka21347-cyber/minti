@@ -1,0 +1,29 @@
+Source: minti-pack-hermes3
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-pack-hermes3
+Architecture: all
+Depends:
+ ${misc:Depends}
+Recommends:
+ ollama
+Description: MINTI addon — Hermes 3 8B chat model
+ Pulls the Nous Hermes 3 8B agent-tuned chat model (Llama-3.1 base) into the
+ local Ollama install via `minti-pack-fetch hermes3`. Once installed,
+ minti-runtime and any client of /v1/chat/completions can address it as
+ `hermes3:8b`.
+ .
+ Size: ~4.7 GB on disk, ~5 GB RAM at load (Q4_K_M quant). Fits on an 8 GB
+ RAM host alongside one other 7-8B model loaded one-at-a-time.
+ .
+ Requires /usr/local/bin/minti-pack-fetch from the base MINTI install
+ (deployed by install.sh, not packaged separately for v0.1).
+ .
+ Postinst calls `minti-pack-fetch hermes3`. Set MINTI_PACK_NO_FETCH=1 in the
+ environment when installing to defer the actual download — the operator
+ then runs `sudo minti-pack-fetch hermes3` when bandwidth and disk allow.

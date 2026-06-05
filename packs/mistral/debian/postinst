@@ -1,0 +1,28 @@
+#!/bin/sh
+# Postinst for minti-pack-mistral. Mirrors minti-pack-hermes3 postinst.
+set -e
+
+case "$1" in
+    configure)
+        if [ "${MINTI_PACK_NO_FETCH:-0}" = "1" ]; then
+            /usr/local/bin/minti-pack-fetch -no-fetch mistral || true
+            echo "minti-pack-mistral: MINTI_PACK_NO_FETCH=1 → skipped model pull."
+            echo "  Run: sudo minti-pack-fetch mistral"
+            echo "  when you're ready to download."
+        else
+            if ! /usr/local/bin/minti-pack-fetch mistral; then
+                echo "minti-pack-mistral: model pull failed."
+                echo "  If Ollama isn't running yet:"
+                echo "    sudo systemctl start ollama"
+                echo "  Then re-run:"
+                echo "    sudo minti-pack-fetch mistral"
+                exit 1
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

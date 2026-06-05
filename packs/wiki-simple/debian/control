@@ -1,0 +1,35 @@
+Source: minti-pack-wiki-simple
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-pack-wiki-simple
+Architecture: all
+Depends:
+ ${misc:Depends},
+ kiwix-tools,
+ ca-certificates
+Description: MINTI addon — Simple English Wikipedia (offline)
+ Downloads a Simple English Wikipedia ZIM snapshot (~1.5 GB) to
+ /var/lib/minti/wiki/ and starts kiwix-serve on 127.0.0.1:8888 (LAN
+ invisible by default; Clan members reach it via the minti-mcp-wiki
+ MCP server, not raw HTTP).
+ .
+ First-tier knowledge addon — fits comfortably even on the 8 GB RAM /
+ 40 GB disk test VM. Heavier tiers (full English no-pic ~50 GB,
+ top-50k with pics ~20 GB) will arrive as separate packs
+ (minti-pack-wiki-en, minti-pack-wiki-en-top).
+ .
+ Requires /usr/local/bin/minti-pack-fetch from the base MINTI install
+ (deployed by install.sh, not packaged separately for v0.1).
+ .
+ Postinst calls `minti-pack-fetch wiki-simple`. Set MINTI_PACK_NO_FETCH=1
+ in the environment when installing to defer the download — the operator
+ then runs `sudo minti-pack-fetch wiki-simple` when bandwidth allows.
+ .
+ The ZIM filename and SHA-256 in /usr/share/minti/packs/wiki-simple/manifest.json
+ are pinned to a known-good snapshot; refresh them periodically per
+ https://download.kiwix.org/zim/wikipedia/.

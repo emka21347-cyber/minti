@@ -11,9 +11,14 @@ RUNTIME_BIN   := $(RUNTIME_DIR)/minti-runtime
 RUNTIME_BIN_LINUX := $(RUNTIME_DIR)/dist/minti-runtime-linux-amd64
 
 MCP_DIR       := mcp-servers
-MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http
+MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http mcp-wiki
 MCP_BINS      := $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix $(EXE),$(MCP_SERVERS)))
 MCP_BINS_LINUX:= $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix -linux-amd64,$(MCP_SERVERS)))
+
+PM_DIR        := pack-manager
+PM_PKG        := ./cmd/minti-pack-fetch
+PM_BIN        := $(PM_DIR)/minti-pack-fetch
+PM_BIN_LINUX  := $(PM_DIR)/dist/minti-pack-fetch-linux-amd64
 
 CLAND_DIR             := cland
 CLAND_PKG             := ./cmd/minti-cland
@@ -25,7 +30,7 @@ CLAND_BIN_DARWIN_ARM64 := $(CLAND_DIR)/dist/minti-cland-darwin-arm64
 
 DIST          := dist
 PACKS_DIR     := packs
-PACK_NAMES    := recon
+PACK_NAMES    := recon hermes3 mistral wiki-simple
 # Pinned to M5-A — bump per-milestone.
 VERSION       := 0.2.0-M5
 LDFLAGS       := -X main.version=$(VERSION)
@@ -38,7 +43,8 @@ GOFLAGS_REL   := -trimpath
 .PHONY: help all runtime runtime-linux \
         cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip cland-darwin-tarball \
         mcp mcp-linux mcptest mcptest-linux \
-        packs pack-recon sign-recon \
+        pack-fetch pack-fetch-linux \
+        packs pack-recon pack-hermes3 pack-mistral pack-wiki-simple sign-recon \
         install-test test fmt vet tidy clean dist-dir
 
 help:
@@ -48,9 +54,14 @@ help:
 	@echo "  make runtime-linux— cross-compile minti-runtime for Linux amd64"
 	@echo "  make mcp          — build the 5 MCP servers + mcptest (native)"
 	@echo "  make mcp-linux    — cross-compile MCP servers for Linux amd64"
-	@echo "  make packs        — build all debian tool packs"
-	@echo "  make pack-recon   — build minti-pack-recon.deb (lands in dist/)"
-	@echo "  make sign-recon   — sign the built .deb (requires MINTI_GPG_KEY env)"
+	@echo "  make pack-fetch        — build minti-pack-fetch helper (native)"
+	@echo "  make pack-fetch-linux  — cross-compile minti-pack-fetch for Linux"
+	@echo "  make packs             — build all debian tool + addon packs"
+	@echo "  make pack-recon        — build minti-pack-recon.deb (lands in dist/)"
+	@echo "  make pack-hermes3      — build minti-pack-hermes3.deb (addon: chat model)"
+	@echo "  make pack-mistral      — build minti-pack-mistral.deb (addon: chat model)"
+	@echo "  make pack-wiki-simple  — build minti-pack-wiki-simple.deb (addon: offline Wikipedia)"
+	@echo "  make sign-recon        — sign the built .deb (requires MINTI_GPG_KEY env)"
 	@echo "  make cland               — build minti-cland (native)"
 	@echo "  make cland-linux         — cross-compile minti-cland for Linux amd64"
 	@echo "  make cland-windows       — cross-compile minti-cland for Windows amd64 (.exe)"
@@ -65,7 +76,7 @@ help:
 	@echo "  make test         — go test ./... in all Go modules"
 	@echo "  make clean        — remove build artifacts"
 
-all: runtime mcp cland
+all: runtime mcp cland pack-fetch
 
 dist-dir:
 	@mkdir -p $(DIST)
@@ -99,19 +110,56 @@ mcp-linux:
 	@echo ">> build mcptest (linux/amd64)"
 	@cd $(MCP_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build -ldflags "$(LDFLAGS)" -o dist/mcptest-linux-amd64 ./cmd/mcptest
 
-# ---------- packs (M2 — recon only; M6 adds webapp/wireless/forensics) ----------
-packs: pack-recon
+# ---------- pack-manager (M6) ----------
+pack-fetch: $(PM_BIN)
 
-pack-recon: dist-dir
-	@echo ">> build minti-pack-recon"
+$(PM_BIN):
+	cd $(PM_DIR) && $(GO) build -ldflags "$(LDFLAGS)" -o minti-pack-fetch $(PM_PKG)
+
+pack-fetch-linux:
+	mkdir -p $(PM_DIR)/dist
+	cd $(PM_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-pack-fetch-linux-amd64 $(PM_PKG)
+
+# ---------- packs (M2 = recon; M6-content = hermes3 + mistral + wiki-simple) ----------
+packs: pack-recon pack-hermes3 pack-mistral pack-wiki-simple
+
+# Common dpkg-buildpackage runner. $(1) = pack name (matches packs/<name>/).
+# Uses the same chmod-rules + buildpackage pattern that pack-recon used at M2.
+define build-pack
+	@echo ">> build minti-pack-$(1)"
 	@command -v dpkg-buildpackage >/dev/null 2>&1 || { \
 	  echo "ERROR: dpkg-buildpackage not found — run this on a Debian/Ubuntu host."; \
 	  exit 1; \
 	}
-	@chmod +x $(PACKS_DIR)/recon/debian/rules
-	@cd $(PACKS_DIR)/recon && dpkg-buildpackage -b -uc -us
-	@mv $(PACKS_DIR)/minti-pack-recon_*.deb $(PACKS_DIR)/minti-pack-recon_*.buildinfo $(PACKS_DIR)/minti-pack-recon_*.changes $(DIST)/ 2>/dev/null || true
-	@ls -la $(DIST)/minti-pack-recon_*.deb
+	@chmod +x $(PACKS_DIR)/$(1)/debian/rules
+	@chmod +x $(PACKS_DIR)/$(1)/debian/postinst 2>/dev/null || true
+	@chmod +x $(PACKS_DIR)/$(1)/debian/postrm   2>/dev/null || true
+	@chmod +x $(PACKS_DIR)/$(1)/debian/prerm    2>/dev/null || true
+	@# vboxsf shared-folder mounts mark everything executable by default,
+	@# which causes dh_install to treat debian/install + debian/dirs as
+	@# executable config scripts (then tries to run them and chokes on the
+	@# bare "skill.md" line). Force them non-executable before build.
+	@chmod -x $(PACKS_DIR)/$(1)/debian/install 2>/dev/null || true
+	@chmod -x $(PACKS_DIR)/$(1)/debian/dirs    2>/dev/null || true
+	@chmod -x $(PACKS_DIR)/$(1)/debian/control 2>/dev/null || true
+	@chmod -x $(PACKS_DIR)/$(1)/debian/changelog 2>/dev/null || true
+	@chmod -x $(PACKS_DIR)/$(1)/debian/copyright 2>/dev/null || true
+	@cd $(PACKS_DIR)/$(1) && dpkg-buildpackage -b -uc -us
+	@mv $(PACKS_DIR)/minti-pack-$(1)_*.deb $(PACKS_DIR)/minti-pack-$(1)_*.buildinfo $(PACKS_DIR)/minti-pack-$(1)_*.changes $(DIST)/ 2>/dev/null || true
+	@ls -la $(DIST)/minti-pack-$(1)_*.deb
+endef
+
+pack-recon: dist-dir
+	$(call build-pack,recon)
+
+pack-hermes3: dist-dir
+	$(call build-pack,hermes3)
+
+pack-mistral: dist-dir
+	$(call build-pack,mistral)
+
+pack-wiki-simple: dist-dir
+	$(call build-pack,wiki-simple)
 
 # Test-key signing (M2). For the production key ceremony (M6), set
 # MINTI_GPG_KEY to the project key ID and run this.
@@ -165,7 +213,7 @@ install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
 
 # ---------- Go hygiene ----------
-GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR)
+GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR) $(PM_DIR)
 
 fmt:
 	@for m in $(GO_MODULES); do echo ">> gofmt $$m"; cd $$m && $(GO) fmt ./... && cd - >/dev/null; done
@@ -183,9 +231,11 @@ clean:
 	rm -rf $(RUNTIME_DIR)/minti-runtime $(RUNTIME_DIR)/dist
 	rm -rf $(MCP_DIR)/dist
 	rm -rf $(CLAND_DIR)/minti-cland $(CLAND_DIR)/minti-cland.exe $(CLAND_DIR)/dist
+	rm -rf $(PM_DIR)/minti-pack-fetch $(PM_DIR)/minti-pack-fetch.exe $(PM_DIR)/dist
 	rm -rf $(DIST)
 	find . -type f -name 'minti-runtime' -delete
 	find . -type f -name 'minti-cland' -delete
 	find . -type f -name 'minti-mcp-*' -delete
+	find . -type f -name 'minti-pack-fetch' -delete
 	find . -type f -name 'mcptest' -delete
 	find . -type f -name '*.deb' -delete

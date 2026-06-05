@@ -30,6 +30,49 @@ func New(b backend.Backend, log *slog.Logger) *Server {
 	return &Server{Backend: b, Log: log}
 }
 
+// defaultModelPreference is the ordered list of models we prefer when the
+// caller omits the `model` field. Hermes 3 8B is the agent-tuned default
+// (lands via minti-pack-hermes3); Mistral 7B is the fallback (minti-pack-
+// mistral). If neither is pulled we fall through to the first model the
+// backend reports.
+var defaultModelPreference = []string{
+	"hermes3:8b",
+	"mistral:7b",
+}
+
+// resolveModel returns the model the caller asked for, or — if they didn't —
+// the first preferred default that the backend has resident. If no preferred
+// default matches, returns the first available model. Returns ("", nil) only
+// if the backend has zero models; handlers must error in that case.
+//
+// We deliberately probe Capabilities every call. The cost is one Ollama
+// /api/tags fetch per inbound request with an empty model — Ollama serves
+// that in <5 ms. A cache would couple us to "did the user pull a model
+// since the runtime started" — staleness here would silently route to a
+// pulled-but-removed model. Better to ask each time.
+func (s *Server) resolveModel(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	caps, err := s.Backend.Capabilities(ctx)
+	if err != nil {
+		return "", fmt.Errorf("model not specified and could not list backend models: %w", err)
+	}
+	if len(caps.Models) == 0 {
+		return "", nil
+	}
+	available := make(map[string]bool, len(caps.Models))
+	for _, m := range caps.Models {
+		available[m.Name] = true
+	}
+	for _, pref := range defaultModelPreference {
+		if available[pref] {
+			return pref, nil
+		}
+	}
+	return caps.Models[0].Name, nil
+}
+
 // Routes returns a mux with all endpoints wired.
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()

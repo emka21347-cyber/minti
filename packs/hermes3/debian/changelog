@@ -1,0 +1,6 @@
+minti-pack-hermes3 (0.1.0-M6) unstable; urgency=medium
+
+  * Initial release (M6-content): pulls hermes3:8b via Ollama in postinst,
+    gated by MINTI_PACK_NO_FETCH=1 escape hatch for slow/metered links.
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 00:00:00 +0000

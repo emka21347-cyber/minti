@@ -1,0 +1,7 @@
+#!/usr/bin/make -f
+# debhelper sequence for the minti-pack-hermes3 metapackage.
+# Architecture: all, no binaries built — dh handles install of skill.md +
+# manifest.json under /usr/share/minti/packs/hermes3/.
+
+%:
+	dh $@

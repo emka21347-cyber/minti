@@ -1,0 +1,5 @@
+#!/usr/bin/make -f
+# debhelper sequence for the minti-pack-mistral metapackage.
+
+%:
+	dh $@

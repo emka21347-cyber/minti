@@ -1,0 +1,29 @@
+Source: minti-pack-mistral
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-pack-mistral
+Architecture: all
+Depends:
+ ${misc:Depends}
+Recommends:
+ ollama
+Description: MINTI addon — Mistral 7B Instruct chat model
+ Pulls the Mistral 7B Instruct v0.3 chat model into the local Ollama install
+ via `minti-pack-fetch mistral`. Once installed, minti-runtime and any
+ client of /v1/chat/completions can address it as `mistral:7b`.
+ .
+ Size: ~4.1 GB on disk, ~4.5 GB RAM at load (Q4_K_M quant). Slightly smaller
+ footprint than Hermes 3 8B; the two coexist on an 8 GB RAM host with one
+ loaded at a time.
+ .
+ Requires /usr/local/bin/minti-pack-fetch from the base MINTI install
+ (deployed by install.sh, not packaged separately for v0.1).
+ .
+ Postinst calls `minti-pack-fetch mistral`. Set MINTI_PACK_NO_FETCH=1 in the
+ environment when installing to defer the actual download — the operator
+ then runs `sudo minti-pack-fetch mistral` when bandwidth and disk allow.
