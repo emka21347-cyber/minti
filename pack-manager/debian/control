@@ -1,0 +1,39 @@
+Source: minti-pack-fetch
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-pack-fetch
+Architecture: amd64
+Depends:
+ ${misc:Depends}
+Recommends:
+ ollama
+Description: MINTI addon-pack content fetcher
+ Single-binary helper that reads /usr/share/minti/packs/<name>/manifest.json
+ and dispatches by `kind`:
+ .
+   * ollama-model — shells to `ollama pull <tag>` (idempotent).
+   * kiwix-zim    — HTTPS Range-resumable download with SHA-256 verify and
+                    1.25x free-disk precheck, then atomic rename.
+ .
+ Writes /var/lib/minti/packs/<name>.installed state markers (consumed by
+ minti-fetch's `Addons:` line). Honours MINTI_PACK_NO_FETCH=1: writes the
+ marker without downloading, so `apt install minti-pack-<addon>` finishes
+ fast on a slow link and the operator runs `sudo minti-pack-fetch <name>`
+ later when bandwidth and disk allow.
+ .
+ Required by all MINTI addon packs (minti-pack-hermes3, minti-pack-mistral,
+ minti-pack-wiki-simple, ...).
+ .
+ Ships a pre-built Go binary (compiled by `make pack-fetch-linux` on the
+ host or in CI) rather than rebuilding at dpkg-buildpackage time — keeps
+ the build dep-list to just debhelper and matches the project convention
+ (cland, runtime, MCP servers all package pre-built artifacts the same way).
+ .
+ Installs the binary at /usr/bin/minti-pack-fetch. (install.sh continues to
+ deploy a bare binary at /usr/local/bin/minti-pack-fetch for operators who
+ don't install via dpkg; PATH lookup finds either one.)

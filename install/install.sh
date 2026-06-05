@@ -339,6 +339,38 @@ else
     warn "Build with: make cland (native) or make cland-linux (for this host)"
 fi
 
+# ---------- minti-pack-fetch (M6-content — addon-pack content fetcher) ----------
+# Not a daemon; just a helper binary called by addon-pack postinst scripts.
+# The minti-pack-fetch.deb (built via `make pack-fetch-deb`) installs the
+# same binary to the same path — this bare-binary deploy lets `apt install
+# ./minti-pack-<addon>_*.deb` resolve the Depends without the user having
+# to install pack-fetch.deb first.
+pack_fetch_bin=""
+for candidate in \
+    "${repo_root}/pack-manager/minti-pack-fetch" \
+    "${repo_root}/pack-manager/dist/minti-pack-fetch-linux-amd64" \
+    "${repo_root}/pack-manager/dist/minti-pack-fetch"; do
+    if [[ -x "${candidate}" ]]; then
+        pack_fetch_bin="${candidate}"
+        break
+    fi
+done
+
+pack_fetch_status="skipped (binary not built)"
+if [[ -n "${pack_fetch_bin}" ]]; then
+    info "Installing minti-pack-fetch (source: ${pack_fetch_bin#${repo_root}/})..."
+    install -m 0755 "${pack_fetch_bin}" /usr/local/bin/minti-pack-fetch
+    install -d -m 0755 /var/lib/minti/packs
+    pack_fetch_status="installed at /usr/local/bin/minti-pack-fetch"
+    ok "minti-pack-fetch ready (addon packs can call it)."
+else
+    warn "minti-pack-fetch binary not found at any of:"
+    warn "  ${repo_root}/pack-manager/minti-pack-fetch (native build)"
+    warn "  ${repo_root}/pack-manager/dist/minti-pack-fetch-linux-amd64 (cross-compile)"
+    warn "Build with: make pack-fetch (native) or make pack-fetch-linux (for this host)"
+    warn "Without it, addon packs (minti-pack-hermes3, etc) will fail at postinst."
+fi
+
 # ---------- opencode (M3 — bundled agent client) ----------
 # Per PRD §6.3 + P1, opencode (sst, MIT) is the bundled default terminal agent.
 # We use upstream's official install script (a single shell-piped command) and
@@ -439,6 +471,7 @@ printf "  Ollama:  %s\n" "$(ollama --version 2>&1 | head -1 || echo 'present')"
 printf "  Runtime: %s\n" "${runtime_status}"
 printf "  MCP:     %s\n" "${mcp_status}"
 printf "  Cland:   %s\n" "${cland_status}"
+printf "  Pack-fetch: %s\n" "${pack_fetch_status}"
 printf "  opencode: %s\n" "${opencode_status}"
 printf "  Pack:    %s\n" "${pack_status}"
 printf "\n"

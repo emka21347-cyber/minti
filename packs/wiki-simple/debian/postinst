@@ -20,12 +20,12 @@ case "$1" in
         skip_fetch=0
         if [ "${MINTI_PACK_NO_FETCH:-0}" = "1" ]; then
             skip_fetch=1
-            /usr/local/bin/minti-pack-fetch -no-fetch wiki-simple || true
+            minti-pack-fetch -no-fetch wiki-simple || true
             echo "minti-pack-wiki-simple: MINTI_PACK_NO_FETCH=1 → skipped ZIM download."
             echo "  Run: sudo minti-pack-fetch wiki-simple"
             echo "  then: sudo systemctl enable --now minti-kiwix-serve"
         else
-            if ! /usr/local/bin/minti-pack-fetch wiki-simple; then
+            if ! minti-pack-fetch wiki-simple; then
                 echo "minti-pack-wiki-simple: ZIM download failed."
                 echo "  Re-run: sudo minti-pack-fetch wiki-simple"
                 exit 1

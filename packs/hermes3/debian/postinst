@@ -19,12 +19,12 @@ set -e
 case "$1" in
     configure)
         if [ "${MINTI_PACK_NO_FETCH:-0}" = "1" ]; then
-            /usr/local/bin/minti-pack-fetch -no-fetch hermes3 || true
+            minti-pack-fetch -no-fetch hermes3 || true
             echo "minti-pack-hermes3: MINTI_PACK_NO_FETCH=1 → skipped model pull."
             echo "  Run: sudo minti-pack-fetch hermes3"
             echo "  when you're ready to download."
         else
-            if ! /usr/local/bin/minti-pack-fetch hermes3; then
+            if ! minti-pack-fetch hermes3; then
                 echo "minti-pack-hermes3: model pull failed."
                 echo "  If Ollama isn't running yet:"
                 echo "    sudo systemctl start ollama"

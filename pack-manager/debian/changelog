@@ -1,0 +1,10 @@
+minti-pack-fetch (0.1.0-M6) unstable; urgency=medium
+
+  * Initial standalone packaging of the addon-pack content fetcher
+    (previously deployed bare from pack-manager/dist/ by install.sh).
+    Restores a real `Depends: minti-pack-fetch (>= 0.1)` chain on the
+    three M6-content addon packs (minti-pack-{hermes3,mistral,wiki-simple})
+    so `apt install ./minti-pack-hermes3_*.deb` no longer has to assume
+    install.sh ran first.
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 12:00:00 +0000

@@ -9,7 +9,8 @@ Rules-Requires-Root: no
 Package: minti-pack-hermes3
 Architecture: all
 Depends:
- ${misc:Depends}
+ ${misc:Depends},
+ minti-pack-fetch (>= 0.1)
 Recommends:
  ollama
 Description: MINTI addon — Hermes 3 8B chat model
@@ -20,9 +21,6 @@ Description: MINTI addon — Hermes 3 8B chat model
  .
  Size: ~4.7 GB on disk, ~5 GB RAM at load (Q4_K_M quant). Fits on an 8 GB
  RAM host alongside one other 7-8B model loaded one-at-a-time.
- .
- Requires /usr/local/bin/minti-pack-fetch from the base MINTI install
- (deployed by install.sh, not packaged separately for v0.1).
  .
  Postinst calls `minti-pack-fetch hermes3`. Set MINTI_PACK_NO_FETCH=1 in the
  environment when installing to defer the actual download — the operator

@@ -10,6 +10,7 @@ Package: minti-pack-wiki-simple
 Architecture: all
 Depends:
  ${misc:Depends},
+ minti-pack-fetch (>= 0.1),
  kiwix-tools,
  ca-certificates
 Description: MINTI addon — Simple English Wikipedia (offline)
@@ -22,9 +23,6 @@ Description: MINTI addon — Simple English Wikipedia (offline)
  40 GB disk test VM. Heavier tiers (full English no-pic ~50 GB,
  top-50k with pics ~20 GB) will arrive as separate packs
  (minti-pack-wiki-en, minti-pack-wiki-en-top).
- .
- Requires /usr/local/bin/minti-pack-fetch from the base MINTI install
- (deployed by install.sh, not packaged separately for v0.1).
  .
  Postinst calls `minti-pack-fetch wiki-simple`. Set MINTI_PACK_NO_FETCH=1
  in the environment when installing to defer the download — the operator

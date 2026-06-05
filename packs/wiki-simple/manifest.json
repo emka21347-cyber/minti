@@ -1,9 +1,9 @@
 {
   "name": "wiki-simple",
   "kind": "kiwix-zim",
-  "url":  "https://download.kiwix.org/zim/wikipedia/wikipedia_en_simple_all_nopic_2024-06.zim",
-  "sha256": "",
-  "size_bytes": 1500000000,
+  "url":  "https://download.kiwix.org/zim/wikipedia/wikipedia_en_simple_all_nopic_2026-05.zim",
+  "sha256": "503b74027d101ec13b272f1ebbd23473e1d260be71a35a71141dfc985fd20d0a",
+  "size_bytes": 982788870,
   "dest":  "/var/lib/minti/wiki",
-  "_comment": "Refresh URL + sha256 quarterly per https://download.kiwix.org/zim/wikipedia/. sha256 left empty for v0.1; the fetcher accepts missing checksums but skips verification — pin one when you have a known-good snapshot."
+  "_comment": "Pinned to wikipedia_en_simple_all_nopic_2026-05.zim (937 MB, ~250k articles, no images). SHA-256 cross-checked against the Kiwix-published .sha256 sidecar and the 302-redirect Digest header. Refresh quarterly per https://download.kiwix.org/zim/wikipedia/ — pick the next wikipedia_en_simple_all_nopic_YYYY-MM snapshot and update url + sha256 + size_bytes together. The fetcher verifies sha256 strictly when present."
 }

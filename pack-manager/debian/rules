@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+# debhelper sequence for minti-pack-fetch.
+#
+# Architecture: amd64. The binary is pre-built on the host (or in CI) via
+# `make pack-fetch-linux`, then staged into ./minti-pack-fetch by the
+# top-level Makefile's pack-fetch-deb target just before dpkg-buildpackage
+# runs. We don't compile Go at deb-build time — matches how cland-windows-zip
+# and cland-darwin-tarball ship pre-built binaries too, and keeps Build-Depends
+# to just debhelper (no golang-go required in the build VM).
+#
+# dh_install reads debian/install and copies ./minti-pack-fetch to
+# debian/minti-pack-fetch/usr/local/bin/. Nothing to test, nothing to clean
+# beyond what dh handles by default.
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Pre-built; nothing to do here.
+
+override_dh_auto_test:
+	# No tests.

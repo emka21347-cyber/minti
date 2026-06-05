@@ -43,7 +43,7 @@ GOFLAGS_REL   := -trimpath
 .PHONY: help all runtime runtime-linux \
         cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip cland-darwin-tarball \
         mcp mcp-linux mcptest mcptest-linux \
-        pack-fetch pack-fetch-linux \
+        pack-fetch pack-fetch-linux pack-fetch-deb \
         packs pack-recon pack-hermes3 pack-mistral pack-wiki-simple sign-recon \
         install-test test fmt vet tidy clean dist-dir
 
@@ -56,6 +56,7 @@ help:
 	@echo "  make mcp-linux    — cross-compile MCP servers for Linux amd64"
 	@echo "  make pack-fetch        — build minti-pack-fetch helper (native)"
 	@echo "  make pack-fetch-linux  — cross-compile minti-pack-fetch for Linux"
+	@echo "  make pack-fetch-deb    — build minti-pack-fetch_*.deb (run on Debian)"
 	@echo "  make packs             — build all debian tool + addon packs"
 	@echo "  make pack-recon        — build minti-pack-recon.deb (lands in dist/)"
 	@echo "  make pack-hermes3      — build minti-pack-hermes3.deb (addon: chat model)"
@@ -120,6 +121,38 @@ pack-fetch-linux:
 	mkdir -p $(PM_DIR)/dist
 	cd $(PM_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-pack-fetch-linux-amd64 $(PM_PKG)
 
+# Build minti-pack-fetch as a .deb. Source-tree layout differs from the
+# packs/ macro (debian/ lives inside pack-manager/, not in packs/<name>/),
+# so it has its own target.
+#
+# Ships a PRE-BUILT binary — requires pack-fetch-linux to run first (handled
+# as a make-dependency below). The pre-built strategy keeps Build-Depends to
+# debhelper only (no golang-go), and matches how cland's Windows .zip and
+# macOS .tar.gz are assembled.
+#
+# chmod knobs mirror the build-pack macro for vboxsf safety. The pre-build
+# binary is staged at pack-manager/minti-pack-fetch (without the -linux-amd64
+# suffix) so debian/install can refer to it by the deployed name.
+pack-fetch-deb: dist-dir pack-fetch-linux
+	@echo ">> build minti-pack-fetch.deb"
+	@command -v dpkg-buildpackage >/dev/null 2>&1 || { \
+	  echo "ERROR: dpkg-buildpackage not found — run this on a Debian/Ubuntu host."; \
+	  exit 1; \
+	}
+	@# Stage the pre-built binary at the name debian/install expects.
+	@cp $(PM_DIR)/dist/minti-pack-fetch-linux-amd64 $(PM_DIR)/minti-pack-fetch
+	@chmod 0755 $(PM_DIR)/minti-pack-fetch
+	@chmod +x $(PM_DIR)/debian/rules
+	@chmod -x $(PM_DIR)/debian/install      2>/dev/null || true
+	@chmod -x $(PM_DIR)/debian/control      2>/dev/null || true
+	@chmod -x $(PM_DIR)/debian/changelog    2>/dev/null || true
+	@chmod -x $(PM_DIR)/debian/copyright    2>/dev/null || true
+	@chmod -x $(PM_DIR)/debian/source/format 2>/dev/null || true
+	@cd $(PM_DIR) && dpkg-buildpackage -b -uc -us
+	@mv minti-pack-fetch_*.deb minti-pack-fetch_*.buildinfo minti-pack-fetch_*.changes $(DIST)/ 2>/dev/null || true
+	@rm -f $(PM_DIR)/minti-pack-fetch
+	@ls -la $(DIST)/minti-pack-fetch_*.deb
+
 # ---------- packs (M2 = recon; M6-content = hermes3 + mistral + wiki-simple) ----------
 packs: pack-recon pack-hermes3 pack-mistral pack-wiki-simple
 
@@ -144,6 +177,7 @@ define build-pack
 	@chmod -x $(PACKS_DIR)/$(1)/debian/control 2>/dev/null || true
 	@chmod -x $(PACKS_DIR)/$(1)/debian/changelog 2>/dev/null || true
 	@chmod -x $(PACKS_DIR)/$(1)/debian/copyright 2>/dev/null || true
+	@chmod -x $(PACKS_DIR)/$(1)/debian/source/format 2>/dev/null || true
 	@cd $(PACKS_DIR)/$(1) && dpkg-buildpackage -b -uc -us
 	@mv $(PACKS_DIR)/minti-pack-$(1)_*.deb $(PACKS_DIR)/minti-pack-$(1)_*.buildinfo $(PACKS_DIR)/minti-pack-$(1)_*.changes $(DIST)/ 2>/dev/null || true
 	@ls -la $(DIST)/minti-pack-$(1)_*.deb
@@ -232,6 +266,7 @@ clean:
 	rm -rf $(MCP_DIR)/dist
 	rm -rf $(CLAND_DIR)/minti-cland $(CLAND_DIR)/minti-cland.exe $(CLAND_DIR)/dist
 	rm -rf $(PM_DIR)/minti-pack-fetch $(PM_DIR)/minti-pack-fetch.exe $(PM_DIR)/dist
+	rm -rf $(PM_DIR)/debian/.gocache $(PM_DIR)/debian/.debhelper $(PM_DIR)/debian/files $(PM_DIR)/debian/minti-pack-fetch $(PM_DIR)/debian/minti-pack-fetch.substvars $(PM_DIR)/debian/debhelper-build-stamp
 	rm -rf $(DIST)
 	find . -type f -name 'minti-runtime' -delete
 	find . -type f -name 'minti-cland' -delete

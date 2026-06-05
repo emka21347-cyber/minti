@@ -174,9 +174,10 @@ func readManifest(p string) (*Manifest, error) {
 		return nil, err
 	}
 	var m Manifest
-	dec := json.NewDecoder(strings.NewReader(string(b)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
+	// Don't DisallowUnknownFields: manifests legitimately carry the
+	// "_comment" idiom for in-file documentation, and future schema
+	// additions shouldn't break older fetchers in the field.
+	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
 	if m.Kind == "" {
