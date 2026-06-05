@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+# debhelper sequence for minti-status. Same pre-built-binary pattern as
+# pack-manager/debian/rules: the top-level Makefile's status-deb target
+# stages the cross-compiled binary at ./minti-status before invoking
+# dpkg-buildpackage, then dh_install reads debian/install and copies it
+# to /usr/bin/.
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Pre-built; nothing to do here.
+
+override_dh_auto_test:
+	# No tests.

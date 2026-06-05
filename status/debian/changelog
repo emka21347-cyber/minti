@@ -1,0 +1,8 @@
+minti-status (0.1.0-M7) unstable; urgency=medium
+
+  * Initial release. Read-only terminal-UI dashboard for MINTI nodes.
+    Surfaces Clan + Runtime + Ollama VRAM + Addons + Harness state on
+    three independent refresh tickers. Cross-compiles to Linux, Windows,
+    and macOS (amd64 + arm64).
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 14:00:00 +0000

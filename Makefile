@@ -20,6 +20,15 @@ PM_PKG        := ./cmd/minti-pack-fetch
 PM_BIN        := $(PM_DIR)/minti-pack-fetch
 PM_BIN_LINUX  := $(PM_DIR)/dist/minti-pack-fetch-linux-amd64
 
+STATUS_DIR              := status
+STATUS_PKG              := ./cmd/minti-status
+STATUS_BIN              := $(STATUS_DIR)/minti-status
+STATUS_BIN_LINUX        := $(STATUS_DIR)/dist/minti-status-linux-amd64
+STATUS_BIN_WINDOWS      := $(STATUS_DIR)/dist/minti-status-windows-amd64.exe
+STATUS_BIN_DARWIN_AMD64 := $(STATUS_DIR)/dist/minti-status-darwin-amd64
+STATUS_BIN_DARWIN_ARM64 := $(STATUS_DIR)/dist/minti-status-darwin-arm64
+STATUS_LDFLAGS          := -X github.com/minti/status/internal/version.Version=$(VERSION)
+
 CLAND_DIR             := cland
 CLAND_PKG             := ./cmd/minti-cland
 CLAND_BIN             := $(CLAND_DIR)/minti-cland
@@ -45,6 +54,7 @@ GOFLAGS_REL   := -trimpath
         mcp mcp-linux mcptest mcptest-linux \
         pack-fetch pack-fetch-linux pack-fetch-deb \
         packs pack-recon pack-hermes3 pack-mistral pack-wiki-simple sign-recon \
+        status status-linux status-windows status-darwin-amd64 status-darwin-arm64 status-all-platforms status-deb \
         install-test test fmt vet tidy clean dist-dir
 
 help:
@@ -71,13 +81,20 @@ help:
 	@echo "  make cland-all-platforms — all four cland binaries"
 	@echo "  make cland-windows-zip   — bundle Windows .zip distribution (NSSM service)"
 	@echo "  make cland-darwin-tarball— bundle macOS .tar.gz distributions (amd64 + arm64, launchd)"
+	@echo "  make status              — build minti-status TUI dashboard (native)"
+	@echo "  make status-linux        — cross-compile minti-status for Linux amd64"
+	@echo "  make status-windows      — cross-compile minti-status for Windows amd64"
+	@echo "  make status-darwin-amd64 — cross-compile minti-status for macOS x86_64"
+	@echo "  make status-darwin-arm64 — cross-compile minti-status for macOS arm64"
+	@echo "  make status-all-platforms — all four minti-status binaries"
+	@echo "  make status-deb          — minti-status_*.deb (binary at /usr/bin/minti-status)"
 	@echo "  make install-test — run install.sh against a fresh Debian VM (TODO)"
 	@echo "  make fmt vet      — gofmt + go vet on all Go modules"
 	@echo "  make tidy         — go mod tidy on all Go modules"
 	@echo "  make test         — go test ./... in all Go modules"
 	@echo "  make clean        — remove build artifacts"
 
-all: runtime mcp cland pack-fetch
+all: runtime mcp cland pack-fetch status
 
 dist-dir:
 	@mkdir -p $(DIST)
@@ -227,6 +244,51 @@ cland-darwin-arm64:
 
 cland-all-platforms: cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64
 
+# ---------- status (M7 — TUI dashboard) ----------
+status: $(STATUS_BIN)
+
+$(STATUS_BIN):
+	cd $(STATUS_DIR) && $(GO) build -ldflags "$(STATUS_LDFLAGS)" -o minti-status $(STATUS_PKG)
+
+status-linux:
+	mkdir -p $(STATUS_DIR)/dist
+	cd $(STATUS_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL) $(STATUS_LDFLAGS)" -o dist/minti-status-linux-amd64 $(STATUS_PKG)
+
+status-windows:
+	mkdir -p $(STATUS_DIR)/dist
+	cd $(STATUS_DIR) && GOOS=windows GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL) $(STATUS_LDFLAGS)" -o dist/minti-status-windows-amd64.exe $(STATUS_PKG)
+
+status-darwin-amd64:
+	mkdir -p $(STATUS_DIR)/dist
+	cd $(STATUS_DIR) && GOOS=darwin GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL) $(STATUS_LDFLAGS)" -o dist/minti-status-darwin-amd64 $(STATUS_PKG)
+
+status-darwin-arm64:
+	mkdir -p $(STATUS_DIR)/dist
+	cd $(STATUS_DIR) && GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL) $(STATUS_LDFLAGS)" -o dist/minti-status-darwin-arm64 $(STATUS_PKG)
+
+status-all-platforms: status-linux status-windows status-darwin-amd64 status-darwin-arm64
+
+# Build minti-status as a .deb. Ships a pre-built binary at /usr/bin/minti-status.
+# Mirrors pack-fetch-deb structure.
+status-deb: dist-dir status-linux
+	@echo ">> build minti-status.deb"
+	@command -v dpkg-buildpackage >/dev/null 2>&1 || { \
+	  echo "ERROR: dpkg-buildpackage not found — run this on a Debian/Ubuntu host."; \
+	  exit 1; \
+	}
+	@cp $(STATUS_DIR)/dist/minti-status-linux-amd64 $(STATUS_DIR)/minti-status
+	@chmod 0755 $(STATUS_DIR)/minti-status
+	@chmod +x $(STATUS_DIR)/debian/rules
+	@chmod -x $(STATUS_DIR)/debian/install      2>/dev/null || true
+	@chmod -x $(STATUS_DIR)/debian/control      2>/dev/null || true
+	@chmod -x $(STATUS_DIR)/debian/changelog    2>/dev/null || true
+	@chmod -x $(STATUS_DIR)/debian/copyright    2>/dev/null || true
+	@chmod -x $(STATUS_DIR)/debian/source/format 2>/dev/null || true
+	@cd $(STATUS_DIR) && dpkg-buildpackage -b -uc -us
+	@mv minti-status_*.deb minti-status_*.buildinfo minti-status_*.changes $(DIST)/ 2>/dev/null || true
+	@rm -f $(STATUS_DIR)/minti-status
+	@ls -la $(DIST)/minti-status_*.deb
+
 # Bundle the Windows NSSM-managed-service distribution.
 # Runs the PowerShell builder; produces dist/minti-cland-windows-amd64-v$VERSION.zip.
 # pwsh.exe is preferred (PS7), falls back to powershell.exe (PS5.1).
@@ -247,7 +309,7 @@ install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
 
 # ---------- Go hygiene ----------
-GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR) $(PM_DIR)
+GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR) $(PM_DIR) $(STATUS_DIR)
 
 fmt:
 	@for m in $(GO_MODULES); do echo ">> gofmt $$m"; cd $$m && $(GO) fmt ./... && cd - >/dev/null; done
@@ -267,6 +329,8 @@ clean:
 	rm -rf $(CLAND_DIR)/minti-cland $(CLAND_DIR)/minti-cland.exe $(CLAND_DIR)/dist
 	rm -rf $(PM_DIR)/minti-pack-fetch $(PM_DIR)/minti-pack-fetch.exe $(PM_DIR)/dist
 	rm -rf $(PM_DIR)/debian/.gocache $(PM_DIR)/debian/.debhelper $(PM_DIR)/debian/files $(PM_DIR)/debian/minti-pack-fetch $(PM_DIR)/debian/minti-pack-fetch.substvars $(PM_DIR)/debian/debhelper-build-stamp
+	rm -rf $(STATUS_DIR)/minti-status $(STATUS_DIR)/minti-status.exe $(STATUS_DIR)/dist
+	rm -rf $(STATUS_DIR)/debian/.debhelper $(STATUS_DIR)/debian/files $(STATUS_DIR)/debian/minti-status $(STATUS_DIR)/debian/minti-status.substvars $(STATUS_DIR)/debian/debhelper-build-stamp
 	rm -rf $(DIST)
 	find . -type f -name 'minti-runtime' -delete
 	find . -type f -name 'minti-cland' -delete

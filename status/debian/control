@@ -1,0 +1,33 @@
+Source: minti-status
+Section: misc
+Priority: optional
+Maintainer: MINTI Project <minti@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minti-status
+Architecture: amd64
+Depends:
+ ${misc:Depends}
+Recommends:
+ minti-cland
+Description: MINTI live terminal-UI status dashboard
+ Continuously-refreshing terminal dashboard for a MINTI node. Surfaces
+ local Clan membership (who is in the Clan, who is Orchestrator, recent
+ failovers), runtime + currently-loaded LLM (via minti-runtime + Ollama
+ /api/ps), installed addon packs, and the configured agent harness
+ (opencode + optional Claude Code preset).
+ .
+ Read-only in v1 (M7) — no mutations from the UI. Three independent
+ refresh tickers (2s / 5s / 30s) keep the dashboard live without blocking
+ the UI on any single probe. Keybinds: q quit, r force refresh, ?/h help.
+ .
+ Run with `minti-status` for the interactive view, or `minti-status --once`
+ to print a single snapshot to stdout (e.g. piping into a journal entry
+ or running under SSH non-TTY). The `--no-color` flag (also via NO_COLOR
+ env) disables ANSI escapes.
+ .
+ Ships a pre-built Go binary (compiled by `make status-linux` on the host
+ or in CI) at /usr/bin/minti-status. Recommends minti-cland because the
+ Clan panel — the headline — needs the cland CLI on PATH to shell out.
