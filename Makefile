@@ -40,8 +40,8 @@ CLAND_BIN_DARWIN_ARM64 := $(CLAND_DIR)/dist/minti-cland-darwin-arm64
 DIST          := dist
 PACKS_DIR     := packs
 PACK_NAMES    := recon hermes3 mistral wiki-simple
-# Pinned to M5-A — bump per-milestone.
-VERSION       := 0.2.0-M5
+# Pinned per-milestone — bump on milestone landing.
+VERSION       := 0.3.0-M7.1
 LDFLAGS       := -X main.version=$(VERSION)
 # Release build flags: strip debug info, omit absolute build paths. ~30%
 # smaller binaries + no leaked /Users/... paths in error messages.

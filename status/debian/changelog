@@ -1,3 +1,15 @@
+minti-status (0.1.0-M7.1) unstable; urgency=medium
+
+  * Clan panel quality: wired through cland's real peers --json schema
+    (reasoning/system scores from latest_ad, OS + GPU + VRAM per member,
+    last_ad as RFC3339 timestamp); synthesised self row at top of the
+    members table; deduped election history (group by term+winner with
+    a ×N repetition count instead of 32 identical rows); Candidates
+    section for mDNS-discovered nodes not yet member-added; parseShow
+    now case-insensitive (cland writes "Role:" / "Member ID:" not lower).
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 15:00:00 +0000
+
 minti-status (0.1.0-M7) unstable; urgency=medium
 
   * Initial release. Read-only terminal-UI dashboard for MINTI nodes.

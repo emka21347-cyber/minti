@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,40 +24,63 @@ import (
 // State is the full Clan snapshot. Empty when no Clan is configured;
 // partially filled when only orchestrator info has been refreshed.
 type State struct {
-	Configured       bool
-	ClanID           string
-	Role             string // "founder" | "member" | "admitted" | ...
-	Pin              string // sha256:hex...
-	SelfMemberID     string
+	Configured   bool
+	ClanID       string
+	Role         string // "founder" | "member" | "admitted" | ...
+	Pin          string // sha256:hex...
+	SelfMemberID string
+	SelfAddress  string // from `minti-cland show` LAN addr line
 
-	Orchestrator     string // member display name or member_id prefix
-	IsSelfOrch       bool
-	Term             int
-	LeaseLeft        time.Duration
+	Orchestrator string // member display name or member_id prefix
+	IsSelfOrch   bool
+	Term         int
+	LeaseLeft    time.Duration
 
-	Members          []Member
-	RecentElections  []ElectionEntry
+	Members         []Member
+	Candidates      []Candidate
+	RecentElections []ElectionEntry // deduped by (term, winner)
 }
 
+// Member is one peer in the live registry — i.e. a node that has been
+// admitted to the Clan AND has advertised capabilities at least once.
+// Self is synthesised separately by the panel; cland's peers --json
+// omits self.
 type Member struct {
 	MemberID       string
-	DisplayName    string // address or short member_id
+	Address        string
+	DiscoveredVia  string // "mdns" | "manual"
+	OS             string // "linux" | "windows" | "darwin"
+	GPU            string // e.g. "NVIDIA GeForce RTX 5090" or ""
+	VRAMGB         float64
+	RAMGB          float64
 	State          string // "active" | "admitted" | "revoked"
 	ReasoningScore int
 	SystemScore    int
-	LastAd         time.Duration
+	LastAd         time.Duration // time.Since(last_ad)
+	HeartbeatSeen  bool
+	Generation     int
 	IsOrchestrator bool
+	IsSelf         bool // synthesised by Probe() before returning
 }
 
+// Candidate is a peer discovered via mDNS / manual peer-add but not yet
+// member-added (no successful capability advertisement received).
+type Candidate struct {
+	Address       string
+	DiscoveredVia string
+	FirstSeen     time.Time
+}
+
+// ElectionEntry is one row in the deduped election history.
 type ElectionEntry struct {
-	Term   int
-	Winner string
-	Reason string
-	At     time.Time
+	Term     int
+	Winner   string
+	Reason   string
+	At       time.Time // most recent firing of this (term, winner)
+	Repeated int       // 1 means seen once; >1 = how many times this exact event fired
 }
 
 // ErrPermissionDenied indicates the CLI ran but couldn't read clan_key.
-// Wraps the original error so callers can still log details.
 type ErrPermissionDenied struct{ Wrapped error }
 
 func (e *ErrPermissionDenied) Error() string {
@@ -64,8 +88,6 @@ func (e *ErrPermissionDenied) Error() string {
 }
 func (e *ErrPermissionDenied) Unwrap() error { return e.Wrapped }
 
-// IsPermissionDenied returns true if err originates from EACCES on
-// clan.json or similar. Used by the TUI to switch to degraded rendering.
 func IsPermissionDenied(err error) bool {
 	if err == nil {
 		return false
@@ -74,9 +96,8 @@ func IsPermissionDenied(err error) bool {
 	return errors.As(err, &pd)
 }
 
-// Probe runs the full set of CLI subcommands (show + orchestrator +
-// peers + election-history). Use ProbeOrchestratorOnly on the fast
-// tick to refresh just the term/lease countdown.
+// Probe runs the full set of CLI subcommands. Use ProbeOrchestratorOnly
+// on the fast tick to refresh just the term/lease countdown.
 func Probe(ctx context.Context) (State, error) {
 	st, err := ProbeOrchestratorOnly(ctx)
 	if err != nil {
@@ -86,13 +107,17 @@ func Probe(ctx context.Context) (State, error) {
 		return st, nil
 	}
 
-	if members, err := readPeers(ctx); err == nil {
+	if members, candidates, err := readPeers(ctx); err == nil {
 		st.Members = members
+		st.Candidates = candidates
 		// Tag the orchestrator inside the member list.
 		for i := range st.Members {
-			if st.Members[i].MemberID == st.SelfMemberID && st.IsSelfOrch {
+			if st.Members[i].MemberID == st.SelfMemberID {
+				st.Members[i].IsSelf = true
+			}
+			if st.IsSelfOrch && st.Members[i].MemberID == st.SelfMemberID {
 				st.Members[i].IsOrchestrator = true
-			} else if !st.IsSelfOrch && st.Members[i].DisplayName == st.Orchestrator {
+			} else if !st.IsSelfOrch && st.Members[i].MemberID == st.Orchestrator {
 				st.Members[i].IsOrchestrator = true
 			}
 		}
@@ -105,8 +130,7 @@ func Probe(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// ProbeOrchestratorOnly: cheap fast-tick refresh. Runs `minti-cland show`
-// + `minti-cland orchestrator --json`. ~30-50 ms each.
+// ProbeOrchestratorOnly: cheap fast-tick refresh.
 func ProbeOrchestratorOnly(ctx context.Context) (State, error) {
 	var st State
 
@@ -125,7 +149,7 @@ func ProbeOrchestratorOnly(ctx context.Context) (State, error) {
 
 	orchOut, err := runCland(ctx, "orchestrator", "--json")
 	if err != nil {
-		return st, nil // orchestrator unknown isn't fatal — Clan exists, no leader yet
+		return st, nil // orchestrator unknown isn't fatal
 	}
 	var orch struct {
 		CurrentOrchestrator string `json:"current_orchestrator"`
@@ -135,10 +159,13 @@ func ProbeOrchestratorOnly(ctx context.Context) (State, error) {
 		IsSelf              bool   `json:"is_self"`
 	}
 	if json.Unmarshal(orchOut, &orch) == nil {
-		st.Orchestrator = shorten(orch.CurrentOrchestrator)
+		st.Orchestrator = orch.CurrentOrchestrator
 		st.IsSelfOrch = orch.IsSelf
 		st.Term = orch.CurrentTerm
-		st.SelfMemberID = orch.Self
+		// Prefer orchestrator's self (full UUID) over parseShow's value.
+		if orch.Self != "" {
+			st.SelfMemberID = orch.Self
+		}
 		if t, err := time.Parse(time.RFC3339, orch.LeaseExpires); err == nil {
 			if d := time.Until(t); d > 0 {
 				st.LeaseLeft = d.Round(time.Second)
@@ -148,7 +175,6 @@ func ProbeOrchestratorOnly(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// runCland exec's minti-cland with the given args, returns stdout (raw).
 func runCland(ctx context.Context, args ...string) ([]byte, error) {
 	bin, err := exec.LookPath("minti-cland")
 	if err != nil {
@@ -159,7 +185,6 @@ func runCland(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		// Append stderr to the error message for diagnosis.
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return stdout.Bytes(), errors.New(msg)
@@ -190,23 +215,30 @@ func isPermDenied(_ []byte, err error) bool {
 		strings.Contains(s, "operation not permitted")
 }
 
-// parseShow extracts clan_id + role + pin from `minti-cland show`'s
-// human-readable output. (No --json on this subcommand at time of
-// writing; cheap regex-grade parse works.)
+// parseShow handles cland's actual output labels (case-insensitive):
+//
+//	Member ID:  a9f3df01-...
+//	Clan ID:    5725d958-...
+//	Role:       founder
+//	Cert pin:   sha256:f6db79...
+//	LAN addr:   192.168.56.102:7777
 func parseShow(out []byte, st *State) {
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
 		switch {
-		case strings.HasPrefix(line, "clan_id:") || strings.HasPrefix(line, "Clan ID"):
+		case strings.HasPrefix(lower, "clan id"), strings.HasPrefix(lower, "clan_id"):
 			st.ClanID = afterColon(line)
-		case strings.HasPrefix(line, "role:"):
-			st.Role = afterColon(line)
-		case strings.HasPrefix(line, "pin:") || strings.HasPrefix(line, "Pin:"):
-			st.Pin = afterColon(line)
-		case strings.HasPrefix(line, "member_id:") || strings.HasPrefix(line, "Member:"):
+		case strings.HasPrefix(lower, "member id"), strings.HasPrefix(lower, "member_id"), strings.HasPrefix(lower, "member:"):
 			if st.SelfMemberID == "" {
 				st.SelfMemberID = afterColon(line)
 			}
+		case strings.HasPrefix(lower, "role"):
+			st.Role = afterColon(line)
+		case strings.HasPrefix(lower, "cert pin"), strings.HasPrefix(lower, "pin"):
+			st.Pin = afterColon(line)
+		case strings.HasPrefix(lower, "lan addr"), strings.HasPrefix(lower, "address"):
+			st.SelfAddress = afterColon(line)
 		}
 	}
 }
@@ -219,45 +251,94 @@ func afterColon(line string) string {
 	return strings.TrimSpace(line[idx+1:])
 }
 
-// readPeers calls `minti-cland peers --json` and translates the response
-// into our flat Member slice. Cland's PeersListResponse has both
-// candidates + members; we surface members + admitted-state candidates.
-func readPeers(ctx context.Context) ([]Member, error) {
-	out, err := runCland(ctx, "peers", "--json")
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Members []struct {
-			MemberID       string  `json:"member_id"`
-			Address        string  `json:"address"`
-			State          string  `json:"state"`
-			ReasoningScore int     `json:"reasoning_score"`
-			SystemScore    int     `json:"system_score"`
-			LastAdAgo      float64 `json:"last_ad_ago_sec"`
-		} `json:"members"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	_ = now
-	members := make([]Member, 0, len(resp.Members))
-	for _, m := range resp.Members {
-		members = append(members, Member{
-			MemberID:       m.MemberID,
-			DisplayName:    m.Address,
-			State:          m.State,
-			ReasoningScore: m.ReasoningScore,
-			SystemScore:    m.SystemScore,
-			LastAd:         time.Duration(m.LastAdAgo * float64(time.Second)),
-		})
-	}
-	return members, nil
+// peersResp matches the real shape of `minti-cland peers --json`. See
+// cland/internal/peers/peers.go for the source of truth; we only pull
+// the fields we render.
+type peersResp struct {
+	Candidates []struct {
+		Address       string `json:"address"`
+		DiscoveredVia string `json:"discovered_via"`
+		FirstSeen     string `json:"first_seen"`
+	} `json:"candidates"`
+	Members []struct {
+		MemberID       string `json:"member_id"`
+		Address        string `json:"address"`
+		DiscoveredVia  string `json:"discovered_via"`
+		LastAd         string `json:"last_ad"`
+		LastSeenAt     string `json:"last_seen_at"`
+		AdGeneration   int    `json:"ad_generation"`
+		HeartbeatSeen  bool   `json:"heartbeat_seen"`
+		LatestAd       struct {
+			OS             string `json:"os"`
+			ReasoningScore int    `json:"reasoning_score"`
+			SystemScore    int    `json:"system_score"`
+			Hardware       struct {
+				GPU    string  `json:"gpu"`
+				RAMGB  float64 `json:"ram_gb"`
+				VRAMGB float64 `json:"vram_gb"`
+			} `json:"hardware"`
+		} `json:"latest_ad"`
+	} `json:"members"`
 }
 
-// readHistory calls `minti-cland election-history --json` and keeps the
-// most recent 3 entries.
+func readPeers(ctx context.Context) ([]Member, []Candidate, error) {
+	out, err := runCland(ctx, "peers", "--json")
+	if err != nil {
+		return nil, nil, err
+	}
+	var resp peersResp
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, nil, err
+	}
+
+	members := make([]Member, 0, len(resp.Members))
+	for _, m := range resp.Members {
+		mm := Member{
+			MemberID:       m.MemberID,
+			Address:        m.Address,
+			DiscoveredVia:  m.DiscoveredVia,
+			OS:             m.LatestAd.OS,
+			GPU:            m.LatestAd.Hardware.GPU,
+			VRAMGB:         m.LatestAd.Hardware.VRAMGB,
+			RAMGB:          m.LatestAd.Hardware.RAMGB,
+			ReasoningScore: m.LatestAd.ReasoningScore,
+			SystemScore:    m.LatestAd.SystemScore,
+			HeartbeatSeen:  m.HeartbeatSeen,
+			Generation:     m.AdGeneration,
+		}
+		// State: cland's wire state isn't in peers --json (it's in
+		// members --json, the roster). Approximate from freshness:
+		// heartbeat_seen + recent ad → "active", else "admitted".
+		if mm.HeartbeatSeen {
+			mm.State = "active"
+		} else {
+			mm.State = "admitted"
+		}
+		if t, err := time.Parse(time.RFC3339Nano, m.LastAd); err == nil {
+			mm.LastAd = time.Since(t).Round(time.Second)
+		}
+		members = append(members, mm)
+	}
+
+	candidates := make([]Candidate, 0, len(resp.Candidates))
+	for _, c := range resp.Candidates {
+		fc := Candidate{
+			Address:       c.Address,
+			DiscoveredVia: c.DiscoveredVia,
+		}
+		if t, err := time.Parse(time.RFC3339Nano, c.FirstSeen); err == nil {
+			fc.FirstSeen = t
+		}
+		candidates = append(candidates, fc)
+	}
+
+	return members, candidates, nil
+}
+
+// readHistory returns the most recent UNIQUE elections (deduped by
+// (term, winner)). Cland fires an election event on every successful
+// heartbeat round, so a stable Clan may have hundreds of entries
+// describing the same actual leadership event. We collapse those.
 func readHistory(ctx context.Context) ([]ElectionEntry, error) {
 	out, err := runCland(ctx, "election-history", "--json")
 	if err != nil {
@@ -274,26 +355,45 @@ func readHistory(ctx context.Context) ([]ElectionEntry, error) {
 	if err := json.Unmarshal(out, &resp); err != nil {
 		return nil, err
 	}
-	if len(resp.Entries) > 3 {
-		resp.Entries = resp.Entries[len(resp.Entries)-3:]
+
+	// Dedupe by (term, winner). Keep the latest At + total repetitions.
+	type key struct {
+		term   int
+		winner string
 	}
-	out2 := make([]ElectionEntry, 0, len(resp.Entries))
+	byKey := map[key]*ElectionEntry{}
+	order := []key{}
 	for _, e := range resp.Entries {
+		k := key{e.Term, e.Winner}
 		t, _ := time.Parse(time.RFC3339, e.At)
-		out2 = append(out2, ElectionEntry{
-			Term:   e.Term,
-			Winner: shorten(e.Winner),
-			Reason: e.Reason,
-			At:     t,
-		})
+		if entry, ok := byKey[k]; ok {
+			entry.Repeated++
+			if t.After(entry.At) {
+				entry.At = t
+				entry.Reason = e.Reason
+			}
+		} else {
+			byKey[k] = &ElectionEntry{
+				Term:     e.Term,
+				Winner:   e.Winner,
+				Reason:   e.Reason,
+				At:       t,
+				Repeated: 1,
+			}
+			order = append(order, k)
+		}
+	}
+
+	// Sort by most recent At descending, take top 3.
+	sort.Slice(order, func(i, j int) bool {
+		return byKey[order[i]].At.After(byKey[order[j]].At)
+	})
+	if len(order) > 3 {
+		order = order[:3]
+	}
+	out2 := make([]ElectionEntry, 0, len(order))
+	for _, k := range order {
+		out2 = append(out2, *byKey[k])
 	}
 	return out2, nil
-}
-
-// shorten a UUID/long member_id to its first 8 chars + "…".
-func shorten(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:8] + "…"
 }
