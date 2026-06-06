@@ -1,0 +1,35 @@
+# MINTI live-build chroot package list
+# Base system
+openssh-server
+curl
+ca-certificates
+gnupg
+zstd
+htop
+tmux
+git
+wget
+less
+jq
+net-tools
+iproute2
+iputils-ping
+dnsutils
+nftables
+
+# Python runtime (minti peer-review scripts)
+python3-minimal
+python3-requests
+
+# Plymouth boot splash
+plymouth
+plymouth-themes
+libplymouth5
+
+# GRUB theme support
+grub-common
+fonts-dejavu-core
+
+# Terminal polish
+bash-completion
+command-not-found

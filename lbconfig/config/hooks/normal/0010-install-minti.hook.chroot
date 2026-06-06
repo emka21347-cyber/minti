@@ -1,0 +1,41 @@
+#!/bin/bash
+# Chroot hook: install Ollama + MINTI, set Plymouth + GRUB theme.
+# Runs inside the Debian Bookworm rootfs during lb build.
+set -euo pipefail
+
+echo "[minti-hook] installing Ollama..."
+curl -fsSL https://ollama.com/install.sh | sh
+
+echo "[minti-hook] running MINTI install script..."
+if [[ -f /tmp/install.sh ]]; then
+    # MINTI_PACK_NO_FETCH=1 skips model pulls — models are pulled on first run
+    MINTI_PACK_NO_FETCH=1 bash /tmp/install.sh --non-interactive
+else
+    echo "[minti-hook] WARNING: /tmp/install.sh not found, skipping MINTI install"
+fi
+
+# ── Plymouth theme ────────────────────────────────────────────────────────────
+PLYMOUTH_DIR=/usr/share/plymouth/themes/minti
+if [[ -d "$PLYMOUTH_DIR" ]]; then
+    echo "[minti-hook] registering Plymouth theme..."
+    update-alternatives --install /usr/share/plymouth/themes/default.plymouth \
+        default.plymouth "$PLYMOUTH_DIR/minti.plymouth" 100
+    update-alternatives --set default.plymouth "$PLYMOUTH_DIR/minti.plymouth"
+    # Rebuild initramfs to embed Plymouth theme
+    update-initramfs -u -k all
+else
+    echo "[minti-hook] WARNING: Plymouth theme dir not found, skipping"
+fi
+
+# ── GRUB theme (for post-install systems) ────────────────────────────────────
+GRUB_THEME=/usr/share/grub/themes/minti/theme.txt
+if [[ -f "$GRUB_THEME" ]]; then
+    echo "[minti-hook] configuring GRUB theme..."
+    sed -i "s|^#*GRUB_THEME=.*|GRUB_THEME=$GRUB_THEME|" /etc/default/grub
+fi
+# Timeout: 10 s countdown before auto-boot
+sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=10|' /etc/default/grub
+# Silent boot (Plymouth handles splash)
+sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"|' /etc/default/grub
+
+echo "[minti-hook] done."

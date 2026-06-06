@@ -1,0 +1,56 @@
+# MINTI GRUB2 theme
+# Palette: mint green #00d787, bright cyan #5fd7ff, deep black #0a0a0a
+# Font: DejaVu Sans Bold 18pt (minti.pf2, generated via grub-mkfont)
+# Background: wallpaper-1920x1080.png (dark, logo + subtle mesh)
+
+# ── global ─────────────────────────────────────────────────────────────────
+title-text: ""
+desktop-image: "background.png"
+desktop-color: "#0a0a0a"
+
+# ── boot menu ───────────────────────────────────────────────────────────────
++ boot_menu {
+    left:   15%
+    top:    30%
+    width:  70%
+    height: 50%
+
+    item-font:           "minti 18"
+    item-color:          "#bcbcbc"
+    selected-item-color: "#00d787"
+    item-height:         40
+    item-padding:        8
+
+    selected-item-pixmap-style: "select_*.png"
+    icon-width:  0
+    icon-height: 0
+
+    scrollbar: false
+}
+
+# ── countdown / timeout bar ─────────────────────────────────────────────────
++ progress_bar {
+    id:              "__timeout__"
+    left:            15%
+    top:             82%
+    width:           70%
+    height:          3
+
+    fg-color:        "#00d787"
+    bg-color:        "#1a1a1a"
+    border-color:    "#1a1a1a"
+    border-width:    0
+    text-color:      "#8a8a8a"
+    font:            "minti 12"
+}
+
+# ── status label (bottom-left: "Use ↑↓ to select…") ───────────────────────
++ label {
+    left:      15%
+    top:       87%
+    width:     70%
+    align:     "left"
+    font:      "minti 12"
+    color:     "#8a8a8a"
+    text:      "Use ↑↓ to select   ⏎ to boot   e to edit   c for console"
+}

@@ -1,0 +1,23 @@
+#!/bin/bash
+# live-build auto config for MINTI Bookworm amd64 iso-hybrid
+set -euo pipefail
+
+lb config \
+  --distribution bookworm \
+  --architectures amd64 \
+  --binary-images iso-hybrid \
+  --bootloaders "grub-pc,grub-efi" \
+  --uefi-secure-boot disable \
+  --debian-installer live \
+  --debian-installer-gui false \
+  --archive-areas "main contrib non-free non-free-firmware" \
+  --apt-recommends false \
+  --apt-indices false \
+  --memtest none \
+  --win32-loader false \
+  --iso-application "MINTI" \
+  --iso-preparer "MINTI Project" \
+  --iso-publisher "MINTI Project" \
+  --iso-volume "MINTI-$(date +%Y%m%d)" \
+  --image-name "minti-bookworm-amd64" \
+  "${@}"

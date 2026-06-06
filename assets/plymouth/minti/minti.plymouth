@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=MINTI
+Description=MINTI boot splash — node mesh fades in, wordmark resolves
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/minti
+ScriptFile=/usr/share/plymouth/themes/minti/minti.script

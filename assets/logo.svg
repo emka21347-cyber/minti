@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 400" width="320" height="400">
+  <defs>
+    <style>
+      .bg   { fill: #0a0a0a; }
+      .edge { stroke: #5fd7ff; stroke-width: 2.5; stroke-linecap: round; fill: none; }
+      .edge-bold { stroke: #5fd7ff; stroke-width: 3.5; stroke-linecap: round; fill: none; }
+      .node { fill: #5fd7ff; }
+      .mint { fill: #00d787; }
+      .grey { fill: #8a8a8a; }
+      .tag  { fill: #8a8a8a; font-family: monospace; font-size: 13px; }
+      .word { font-family: monospace; font-size: 22px; font-weight: bold;
+              letter-spacing: 8px; fill: #00d787; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect class="bg" width="320" height="400"/>
+
+  <!--
+    9-node grid. Columns: x = 80, 160, 240. Rows: y = 60, 130, 200.
+    Corners connect diagonally to the nearest inner node.
+
+    Grid layout (col, row) → (x, y):
+      TL(80,60)   TC(160,60)  TR(240,60)
+      ML(80,130)  MC(160,130) MR(240,130)
+      BL(80,200)  BC(160,200) BR(240,200)
+  -->
+
+  <!-- Horizontal edges -->
+  <line class="edge" x1="80" y1="60"  x2="160" y2="60"/>
+  <line class="edge" x1="160" y1="60"  x2="240" y2="60"/>
+  <line class="edge" x1="80" y1="130" x2="160" y2="130"/>
+  <line class="edge" x1="160" y1="130" x2="240" y2="130"/>
+  <line class="edge" x1="80" y1="200" x2="160" y2="200"/>
+  <line class="edge" x1="160" y1="200" x2="240" y2="200"/>
+
+  <!-- Vertical edges -->
+  <line class="edge" x1="80"  y1="60"  x2="80"  y2="130"/>
+  <line class="edge" x1="80"  y1="130" x2="80"  y2="200"/>
+  <line class="edge" x1="160" y1="60"  x2="160" y2="130"/>
+  <!-- Centre vertical is bold — the ║ in the ASCII art -->
+  <line class="edge-bold" x1="160" y1="130" x2="160" y2="200"/>
+  <line class="edge" x1="240" y1="60"  x2="240" y2="130"/>
+  <line class="edge" x1="240" y1="130" x2="240" y2="200"/>
+
+  <!-- Diagonal extensions (the ╱ ╲ corners of the ASCII art)
+       Top-left:  from TL(80,60)   up-left  to (30, 10)  — but clip to viewBox: (50,30)
+       Top-right: from TR(240,60)  up-right to (290,10)  — clipped: (270,30)
+       Bot-left:  from BL(80,200)  dn-left  to (50,230)
+       Bot-right: from BR(240,200) dn-right to (270,230)
+  -->
+  <line class="edge" x1="80"  y1="60"  x2="44"  y2="24"/>
+  <line class="edge" x1="240" y1="60"  x2="276" y2="24"/>
+  <line class="edge" x1="80"  y1="200" x2="44"  y2="236"/>
+  <line class="edge" x1="240" y1="200" x2="276" y2="236"/>
+
+  <!-- Nodes (circles, drawn on top of edges) -->
+  <!-- Top row -->
+  <circle class="node" cx="80"  cy="60"  r="6"/>
+  <circle class="node" cx="160" cy="60"  r="6"/>
+  <circle class="node" cx="240" cy="60"  r="6"/>
+  <!-- Middle row -->
+  <circle class="node" cx="80"  cy="130" r="6"/>
+  <circle class="node" cx="160" cy="130" r="6"/>
+  <circle class="node" cx="240" cy="130" r="6"/>
+  <!-- Bottom row -->
+  <circle class="node" cx="80"  cy="200" r="6"/>
+  <circle class="node" cx="160" cy="200" r="6"/>
+  <circle class="node" cx="240" cy="200" r="6"/>
+  <!-- Corner extension endpoints -->
+  <circle class="node" cx="44"  cy="24"  r="5"/>
+  <circle class="node" cx="276" cy="24"  r="5"/>
+  <circle class="node" cx="44"  cy="236" r="5"/>
+  <circle class="node" cx="276" cy="236" r="5"/>
+
+  <!-- Wordmark: M I N T I -->
+  <text class="word" x="160" y="295" text-anchor="middle">M I N T I</text>
+
+  <!-- Divider rule -->
+  <line class="grey" x1="90" y1="308" x2="230" y2="308" stroke="#8a8a8a" stroke-width="1"/>
+
+  <!-- Tagline -->
+  <text class="tag" x="160" y="330" text-anchor="middle">Open agents.</text>
+  <text class="tag" x="160" y="350" text-anchor="middle">Open weights.</text>
+  <text class="tag" x="160" y="370" text-anchor="middle">Clan-aware.</text>
+</svg>
