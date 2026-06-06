@@ -91,22 +91,98 @@ func (o *Ollama) Capabilities(ctx context.Context) (Capabilities, error) {
 	return caps, nil
 }
 
+// ollamaMessage mirrors Ollama's message shape, including tool_calls.
+type ollamaMessage struct {
+	Role      string            `json:"role"`
+	Content   string            `json:"content"`
+	ToolCalls []ollamaToolCall  `json:"tool_calls,omitempty"`
+}
+
+type ollamaToolCall struct {
+	Function ollamaToolCallFunction `json:"function"`
+}
+
+type ollamaToolCallFunction struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// ollamaTool mirrors Ollama's tool definition shape.
+type ollamaTool struct {
+	Type     string          `json:"type"` // always "function"
+	Function ollamaToolFunc  `json:"function"`
+}
+
+type ollamaToolFunc struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema
+}
+
 // ollamaChatRequest mirrors Ollama's /api/chat wire format.
 type ollamaChatRequest struct {
 	Model    string                 `json:"model"`
-	Messages []Message              `json:"messages"`
+	Messages []ollamaMessage        `json:"messages"`
+	Tools    []ollamaTool           `json:"tools,omitempty"`
 	Stream   bool                   `json:"stream"`
 	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
 type ollamaChatResponse struct {
-	Model           string  `json:"model"`
-	Message         Message `json:"message"`
-	Done            bool    `json:"done"`
-	DoneReason      string  `json:"done_reason"`
-	TotalDuration   int64   `json:"total_duration"`   // nanoseconds
-	PromptEvalCount int     `json:"prompt_eval_count"`
-	EvalCount       int     `json:"eval_count"`
+	Model           string        `json:"model"`
+	Message         ollamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	DoneReason      string        `json:"done_reason"`
+	TotalDuration   int64         `json:"total_duration"`   // nanoseconds
+	PromptEvalCount int           `json:"prompt_eval_count"`
+	EvalCount       int           `json:"eval_count"`
+}
+
+// toOllamaMessages converts internal Messages to Ollama wire format.
+// role:"tool" messages (tool results) are emitted as role:"tool" with content only.
+func toOllamaMessages(msgs []Message) []ollamaMessage {
+	out := make([]ollamaMessage, 0, len(msgs))
+	for _, m := range msgs {
+		om := ollamaMessage{Role: m.Role, Content: m.Content}
+		for _, tc := range m.ToolCalls {
+			om.ToolCalls = append(om.ToolCalls, ollamaToolCall{
+				Function: ollamaToolCallFunction{Name: tc.Name, Arguments: tc.Input},
+			})
+		}
+		out = append(out, om)
+	}
+	return out
+}
+
+// toOllamaTools converts internal Tool slice to Ollama wire format.
+func toOllamaTools(tools []Tool) []ollamaTool {
+	out := make([]ollamaTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, ollamaTool{
+			Type: "function",
+			Function: ollamaToolFunc{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+	return out
+}
+
+// fromOllamaToolCalls converts Ollama tool_calls to internal ToolCall slice.
+// IDs are synthesised as "<name>_<index>" since Ollama doesn't emit them.
+func fromOllamaToolCalls(calls []ollamaToolCall) []ToolCall {
+	out := make([]ToolCall, 0, len(calls))
+	for i, tc := range calls {
+		id := fmt.Sprintf("%s_%d", tc.Function.Name, i)
+		out = append(out, ToolCall{
+			ID:    id,
+			Name:  tc.Function.Name,
+			Input: tc.Function.Arguments,
+		})
+	}
+	return out
 }
 
 func buildOptions(req ChatRequest) map[string]interface{} {
@@ -129,7 +205,8 @@ func buildOptions(req ChatRequest) map[string]interface{} {
 func (o *Ollama) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	body, err := json.Marshal(ollamaChatRequest{
 		Model:    req.Model,
-		Messages: req.Messages,
+		Messages: toOllamaMessages(req.Messages),
+		Tools:    toOllamaTools(req.Tools),
 		Stream:   false,
 		Options:  buildOptions(req),
 	})
@@ -154,20 +231,26 @@ func (o *Ollama) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	if err := json.NewDecoder(resp.Body).Decode(&oresp); err != nil {
 		return ChatResponse{}, err
 	}
-	return ChatResponse{
+	cr := ChatResponse{
 		Model:            oresp.Model,
 		Content:          oresp.Message.Content,
 		PromptTokens:     oresp.PromptEvalCount,
 		CompletionTokens: oresp.EvalCount,
 		FinishReason:     oresp.DoneReason,
 		DurationSeconds:  float64(oresp.TotalDuration) / 1e9,
-	}, nil
+	}
+	if len(oresp.Message.ToolCalls) > 0 {
+		cr.ToolCalls = fromOllamaToolCalls(oresp.Message.ToolCalls)
+		cr.FinishReason = "tool_use"
+	}
+	return cr, nil
 }
 
 func (o *Ollama) ChatStream(ctx context.Context, req ChatRequest, w StreamWriter) error {
 	body, err := json.Marshal(ollamaChatRequest{
 		Model:    req.Model,
-		Messages: req.Messages,
+		Messages: toOllamaMessages(req.Messages),
+		Tools:    toOllamaTools(req.Tools),
 		Stream:   true,
 		Options:  buildOptions(req),
 	})
@@ -210,6 +293,10 @@ func (o *Ollama) ChatStream(ctx context.Context, req ChatRequest, w StreamWriter
 			chunk.PromptTokens = oresp.PromptEvalCount
 			chunk.CompletionTokens = oresp.EvalCount
 			chunk.DurationSeconds = float64(oresp.TotalDuration) / 1e9
+			if len(oresp.Message.ToolCalls) > 0 {
+				chunk.ToolCalls = fromOllamaToolCalls(oresp.Message.ToolCalls)
+				chunk.FinishReason = "tool_use"
+			}
 		}
 		if err := w.WriteChunk(chunk); err != nil {
 			return err

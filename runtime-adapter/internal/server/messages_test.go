@@ -53,36 +53,61 @@ func (f *fakeBackend) ChatStream(_ context.Context, req backend.ChatRequest, w b
 
 // ---------- translation tests ----------
 
-func TestAnthropicMessageText_String(t *testing.T) {
+func TestAnthropicMessageToInternal_String(t *testing.T) {
 	m := anthropicMessage{Role: "user", Content: json.RawMessage(`"hello there"`)}
-	got, err := anthropicMessageText(m)
+	msgs, err := anthropicMessageToInternal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "hello there" {
-		t.Errorf("got %q", got)
+	if len(msgs) != 1 || msgs[0].Content != "hello there" {
+		t.Errorf("got %+v", msgs)
 	}
 }
 
-func TestAnthropicMessageText_TextBlocks(t *testing.T) {
+func TestAnthropicMessageToInternal_TextBlocks(t *testing.T) {
 	m := anthropicMessage{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"line1"},{"type":"text","text":"line2"}]`)}
-	got, err := anthropicMessageText(m)
+	msgs, err := anthropicMessageToInternal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "line1\nline2" {
-		t.Errorf("got %q", got)
+	if len(msgs) != 1 || msgs[0].Content != "line1\nline2" {
+		t.Errorf("got %+v", msgs)
 	}
 }
 
-func TestAnthropicMessageText_RejectsToolUse(t *testing.T) {
-	m := anthropicMessage{Role: "user", Content: json.RawMessage(`[{"type":"tool_use","id":"x","name":"foo"}]`)}
-	_, err := anthropicMessageText(m)
-	if err == nil {
-		t.Fatal("expected error for tool_use block")
+func TestAnthropicMessageToInternal_ToolUse(t *testing.T) {
+	m := anthropicMessage{Role: "assistant", Content: json.RawMessage(`[{"type":"tool_use","id":"tu_1","name":"get_weather","input":{"city":"Paris"}}]`)}
+	msgs, err := anthropicMessageToInternal(m)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "tool_use") {
-		t.Errorf("error should mention tool_use: %v", err)
+	if len(msgs) != 1 || len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("got %+v", msgs)
+	}
+	if msgs[0].ToolCalls[0].ID != "tu_1" || msgs[0].ToolCalls[0].Name != "get_weather" {
+		t.Errorf("tool call wrong: %+v", msgs[0].ToolCalls[0])
+	}
+}
+
+func TestAnthropicMessageToInternal_ToolResult(t *testing.T) {
+	m := anthropicMessage{Role: "user", Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"tu_1","content":"sunny"}]`)}
+	msgs, err := anthropicMessageToInternal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "tool" || msgs[0].Content != "sunny" || msgs[0].ToolCallID != "tu_1" {
+		t.Errorf("got %+v", msgs)
+	}
+}
+
+func TestAnthropicMessageToInternal_RejectsImage(t *testing.T) {
+	m := anthropicMessage{Role: "user", Content: json.RawMessage(`[{"type":"image","source":{}}]`)}
+	_, err := anthropicMessageToInternal(m)
+	if err == nil {
+		t.Fatal("expected error for image block")
+	}
+	if !strings.Contains(err.Error(), "image") {
+		t.Errorf("error should mention image: %v", err)
 	}
 }
 
@@ -142,8 +167,15 @@ func TestHandleAnthropicMessages_NonStreaming(t *testing.T) {
 	if out.Type != "message" || out.Role != "assistant" {
 		t.Errorf("envelope wrong: %+v", out)
 	}
-	if len(out.Content) != 1 || out.Content[0].Type != "text" || out.Content[0].Text != "Hi!" {
-		t.Errorf("content wrong: %+v", out.Content)
+	if len(out.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d: %+v", len(out.Content), out.Content)
+	}
+	var tb anthropicTextBlock
+	if err := json.Unmarshal(out.Content[0], &tb); err != nil {
+		t.Fatalf("unmarshal content[0]: %v", err)
+	}
+	if tb.Type != "text" || tb.Text != "Hi!" {
+		t.Errorf("content block wrong: %+v", tb)
 	}
 	if out.StopReason != "end_turn" {
 		t.Errorf("stop_reason = %q", out.StopReason)
@@ -174,7 +206,7 @@ func TestHandleAnthropicMessages_ValidationErrors(t *testing.T) {
 	}{
 		{"empty model", `{"messages":[{"role":"user","content":"hi"}]}`},
 		{"empty messages", `{"model":"x","messages":[]}`},
-		{"tool_use block", `{"model":"x","messages":[{"role":"user","content":[{"type":"tool_use"}]}]}`},
+		{"image block", `{"model":"x","messages":[{"role":"user","content":[{"type":"image","source":{}}]}]}`},
 		{"garbage json", `{not json`},
 	}
 	for _, c := range cases {

@@ -62,3 +62,4 @@ cland/windows/nssm/.cache/
 # Temp
 *.tmp
 *.bak
+status/minti-status-linux

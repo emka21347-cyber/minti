@@ -96,8 +96,12 @@ Pass "service is $($svc.Status), start mode $startType"
 
 # Verify no rogue foreground minti-cland.exe is holding the port (the
 # Phase J residue scenario we hit at M5-B verification).
+# Skip processes whose path is empty — non-elevated shells can't read paths
+# of SYSTEM-owned Service processes, so an empty path means "probably the
+# Service" rather than "definitely stray".
+$InstallExe = Join-Path $InstallRoot 'minti-cland.exe'
 $strays = Get-Process -Name minti-cland -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -ne (Join-Path $InstallRoot 'minti-cland.exe') }
+    Where-Object { $_.Path -and ($_.Path -ne $InstallExe) }
 if ($strays) {
     FailHard "stray minti-cland.exe outside the install path: $($strays.Path -join ', ')"
 }
@@ -173,8 +177,9 @@ if ($prog -ne (Join-Path $InstallRoot 'minti-cland.exe')) {
 $profiles = $rule.Profile
 Pass "rule profiles: $profiles, enabled=$($rule.Enabled)"
 
-if ($SkipFirewallToggle) {
-    Skip2 "  toggle test (operator passed -SkipFirewallToggle)"
+if ($SkipFirewallToggle -or -not (Test-Admin)) {
+    $reason = if ($SkipFirewallToggle) { "operator passed -SkipFirewallToggle" } else { "non-elevated session" }
+    Skip2 "  firewall toggle test ($reason)"
 } else {
     Write-Host "    disabling rule -> expect peers to drop"
     Disable-NetFirewallRule -DisplayName 'MINTI cland (Clan TLS)'

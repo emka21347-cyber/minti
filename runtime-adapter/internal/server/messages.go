@@ -27,6 +27,27 @@ import (
 	"github.com/minti/runtime-adapter/internal/backend"
 )
 
+// ---------- Tool-use Anthropic wire types ----------
+
+type anthropicToolUseBlock struct {
+	Type  string          `json:"type"`  // "tool_use"
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+type anthropicToolResultBlock struct {
+	Type      string `json:"type"`       // "tool_result"
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+}
+
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
 // ---------- Anthropic-shaped request / response ----------
 
 type anthropicMessage struct {
@@ -38,6 +59,7 @@ type anthropicMessagesRequest struct {
 	Model       string             `json:"model"`
 	Messages    []anthropicMessage `json:"messages"`
 	System      string             `json:"system,omitempty"`
+	Tools       []anthropicTool    `json:"tools,omitempty"`
 	MaxTokens   *int               `json:"max_tokens,omitempty"`
 	Temperature *float64           `json:"temperature,omitempty"`
 	TopP        *float64           `json:"top_p,omitempty"`
@@ -55,13 +77,13 @@ type anthropicUsage struct {
 }
 
 type anthropicMessagesResponse struct {
-	ID         string               `json:"id"`
-	Type       string               `json:"type"` // "message"
-	Role       string               `json:"role"` // "assistant"
-	Content    []anthropicTextBlock `json:"content"`
-	Model      string               `json:"model"`
-	StopReason string               `json:"stop_reason"` // "end_turn" | "max_tokens" | "stop_sequence"
-	Usage      anthropicUsage       `json:"usage"`
+	ID         string            `json:"id"`
+	Type       string            `json:"type"` // "message"
+	Role       string            `json:"role"` // "assistant"
+	Content    []json.RawMessage `json:"content"`
+	Model      string            `json:"model"`
+	StopReason string            `json:"stop_reason"` // "end_turn" | "max_tokens" | "stop_sequence" | "tool_use"
+	Usage      anthropicUsage    `json:"usage"`
 }
 
 // ---------- Handler ----------
@@ -99,17 +121,24 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		MaxTokens:   req.MaxTokens,
 		Stream:      req.Stream,
 	}
+	for _, t := range req.Tools {
+		internal.Tools = append(internal.Tools, backend.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
 	if req.System != "" {
 		internal.Messages = append(internal.Messages, backend.Message{Role: "system", Content: req.System})
 	}
 	for i, m := range req.Messages {
-		text, err := anthropicMessageText(m)
+		msgs, err := anthropicMessageToInternal(m)
 		if err != nil {
 			anthropicError(w, http.StatusBadRequest, "invalid_request_error",
 				fmt.Sprintf("messages[%d]: %v", i, err))
 			return
 		}
-		internal.Messages = append(internal.Messages, backend.Message{Role: m.Role, Content: text})
+		internal.Messages = append(internal.Messages, msgs...)
 	}
 
 	if req.Stream {
@@ -128,7 +157,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		ID:         newMessageID(),
 		Type:       "message",
 		Role:       "assistant",
-		Content:    []anthropicTextBlock{{Type: "text", Text: resp.Content}},
+		Content:    buildAnthropicContent(resp),
 		Model:      resp.Model,
 		StopReason: anthropicStopReason(resp.FinishReason),
 		Usage: anthropicUsage{
@@ -139,44 +168,103 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, out)
 }
 
-// anthropicMessageText extracts the text body from a content field. Accepts
-// the two shapes Claude Code commonly sends: a bare string or a single-element
-// array of `{type:"text", text:"..."}` blocks. Mixed/tool-use content blocks
-// are rejected with a clear error message (deferred to M3.5+).
-func anthropicMessageText(m anthropicMessage) (string, error) {
+// anthropicMessageToInternal converts an Anthropic message to one or more
+// internal Messages. A user message with tool_result blocks becomes a
+// role:"tool" message per result (Ollama expects separate tool messages).
+// An assistant message with tool_use blocks becomes a Message with ToolCalls.
+func anthropicMessageToInternal(m anthropicMessage) ([]backend.Message, error) {
 	trimmed := strings.TrimSpace(string(m.Content))
 	if len(trimmed) == 0 {
-		return "", nil
+		return []backend.Message{{Role: m.Role}}, nil
 	}
-	// String form: "..."
+	// String form
 	if trimmed[0] == '"' {
 		var s string
 		if err := json.Unmarshal(m.Content, &s); err != nil {
-			return "", fmt.Errorf("invalid string content: %w", err)
+			return nil, fmt.Errorf("invalid string content: %w", err)
 		}
-		return s, nil
+		return []backend.Message{{Role: m.Role, Content: s}}, nil
 	}
-	// Array form: [{type:"text", text:"..."}, ...]
-	if trimmed[0] == '[' {
-		var blocks []map[string]any
-		if err := json.Unmarshal(m.Content, &blocks); err != nil {
-			return "", fmt.Errorf("invalid content blocks: %w", err)
-		}
-		var out strings.Builder
-		for i, b := range blocks {
-			t, _ := b["type"].(string)
-			if t != "text" {
-				return "", fmt.Errorf("content_block[%d] type %q not supported yet (M3 ships text-only; tool_use and image are M3.5+)", i, t)
-			}
-			text, _ := b["text"].(string)
-			if out.Len() > 0 {
-				out.WriteString("\n")
-			}
-			out.WriteString(text)
-		}
-		return out.String(), nil
+	if trimmed[0] != '[' {
+		return nil, fmt.Errorf("content must be a string or array of content blocks")
 	}
-	return "", fmt.Errorf("content must be a string or array of text blocks")
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(m.Content, &rawBlocks); err != nil {
+		return nil, fmt.Errorf("invalid content blocks: %w", err)
+	}
+
+	var textParts []string
+	var toolCalls []backend.ToolCall
+	var toolResults []backend.Message
+
+	for i, raw := range rawBlocks {
+		var typed struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &typed); err != nil {
+			return nil, fmt.Errorf("content_block[%d]: %w", i, err)
+		}
+		switch typed.Type {
+		case "text":
+			var b anthropicTextBlock
+			if err := json.Unmarshal(raw, &b); err != nil {
+				return nil, fmt.Errorf("content_block[%d] text: %w", i, err)
+			}
+			textParts = append(textParts, b.Text)
+		case "tool_use":
+			var b anthropicToolUseBlock
+			if err := json.Unmarshal(raw, &b); err != nil {
+				return nil, fmt.Errorf("content_block[%d] tool_use: %w", i, err)
+			}
+			toolCalls = append(toolCalls, backend.ToolCall{ID: b.ID, Name: b.Name, Input: b.Input})
+		case "tool_result":
+			var b anthropicToolResultBlock
+			if err := json.Unmarshal(raw, &b); err != nil {
+				return nil, fmt.Errorf("content_block[%d] tool_result: %w", i, err)
+			}
+			toolResults = append(toolResults, backend.Message{
+				Role:       "tool",
+				Content:    b.Content,
+				ToolCallID: b.ToolUseID,
+			})
+		default:
+			// image and other block types are not supported
+			return nil, fmt.Errorf("content_block[%d] type %q not supported (M3.5 supports text/tool_use/tool_result)", i, typed.Type)
+		}
+	}
+
+	// tool_result blocks → separate role:"tool" messages (one per result)
+	if len(toolResults) > 0 {
+		return toolResults, nil
+	}
+	// assistant with tool_use blocks
+	msg := backend.Message{Role: m.Role, Content: strings.Join(textParts, "\n"), ToolCalls: toolCalls}
+	return []backend.Message{msg}, nil
+}
+
+// buildAnthropicContent constructs the Anthropic content array from a ChatResponse.
+// Text content becomes a text block; tool calls become tool_use blocks.
+func buildAnthropicContent(resp backend.ChatResponse) []json.RawMessage {
+	var out []json.RawMessage
+	if resp.Content != "" {
+		b, _ := json.Marshal(anthropicTextBlock{Type: "text", Text: resp.Content})
+		out = append(out, b)
+	}
+	for _, tc := range resp.ToolCalls {
+		b, _ := json.Marshal(anthropicToolUseBlock{
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Name,
+			Input: tc.Input,
+		})
+		out = append(out, b)
+	}
+	if len(out) == 0 {
+		// Always return at least one block so the client has valid content
+		b, _ := json.Marshal(anthropicTextBlock{Type: "text", Text: ""})
+		out = append(out, b)
+	}
+	return out
 }
 
 func newMessageID() string {
@@ -318,6 +406,36 @@ func (sw *anthropicStreamWriter) closeStream(c backend.StreamChunk) error {
 		return nil
 	}
 	sw.finished = true
+	// Emit tool_use blocks as additional content blocks before stopping
+	for i, tc := range c.ToolCalls {
+		idx := 1 + i // text block is index 0
+		if err := sw.sendEvent("content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": idx,
+			"content_block": map[string]any{
+				"type":  "tool_use",
+				"id":    tc.ID,
+				"name":  tc.Name,
+				"input": json.RawMessage("{}"),
+			},
+		}); err != nil {
+			return err
+		}
+		inputJSON, _ := json.Marshal(tc.Input)
+		if err := sw.sendEvent("content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": idx,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": string(inputJSON)},
+		}); err != nil {
+			return err
+		}
+		if err := sw.sendEvent("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": idx,
+		}); err != nil {
+			return err
+		}
+	}
 	if err := sw.sendEvent("content_block_stop", map[string]any{
 		"type":  "content_block_stop",
 		"index": 0,
