@@ -3,6 +3,7 @@ package panels
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/minti/status/internal/probes/sysinfo"
 )
@@ -19,6 +20,7 @@ func System(s sysinfo.Info) string {
 		kernel = strings.TrimSpace(kernel + "  " + s.Arch)
 	}
 	b.WriteString(row("Kernel", ifEmpty(kernel, "(n/a)"), lbl, w) + "\n")
+	b.WriteString(row("Uptime", fmtUptime(s.Uptime), lbl, w) + "\n")
 	cpu := s.CPUModel
 	if cpu == "" {
 		cpu = "(n/a)"
@@ -37,4 +39,29 @@ func System(s sysinfo.Info) string {
 	}
 	b.WriteString(row("RAM", ram, lbl, w))
 	return b.String()
+}
+
+// fmtUptime renders a duration as "Xd Yh Zm" (matches `uptime -p` style
+// but tighter — no commas or "up" prefix). Sub-minute durations are
+// shown as seconds so the post-boot transition is observable.
+func fmtUptime(d time.Duration) string {
+	if d <= 0 {
+		return "(n/a)"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	days := int(d / (24 * time.Hour))
+	d -= time.Duration(days) * 24 * time.Hour
+	hours := int(d / time.Hour)
+	d -= time.Duration(hours) * time.Hour
+	mins := int(d / time.Minute)
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	default:
+		return fmt.Sprintf("%dm", mins)
+	}
 }

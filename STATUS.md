@@ -1,6 +1,6 @@
 # MINTI — Project Status
 
-> **Last updated:** 2026-06-06 (M7.3: minti-status docs — README + vhs .tape + static example.txt)
+> **Last updated:** 2026-06-06 (M7.4: minti-status cross-platform sysinfo polish — real CPU + uptime + OS on Windows/macOS/Linux)
 > **Purpose:** Read this *first* when opening a new chat or onboarding to the project. It's the single document that tells you where MINTI is right now and how to pick up work without re-reading history.
 
 ---
@@ -140,6 +140,22 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     2. **debhelper `--with systemd` is deprecated.** Compat 11+ auto-loads the systemd sequence — `dh $@ --with systemd` errors out with "no longer provided". Fix: bare `dh $@`; dh_installsystemd still runs automatically when a `.service` file is present under `lib/systemd/system/`.
     3. **`Description-prereq:` is not a real control field.** dpkg-deb rejected it. Fold prerequisite notes into the regular `Description:` paragraph (used "Requires /usr/local/bin/minti-pack-fetch from the base MINTI install").
   - **Follow-ons for a future M6 commit**: ~~package `minti-pack-fetch` itself as a .deb~~ ✓ landed in M6.1 (2026-06-06); ~~deploy `minti-pack-fetch` from `install.sh`~~ ✓ landed in M6.1; ~~pin Kiwix ZIM SHA-256~~ ✓ landed in M6.1 (wikipedia_en_simple_all_nopic_2026-05.zim, 937 MB); add `minti-pack-hermes3-70b` + `minti-pack-mistral-nemo` + `minti-pack-wiki-en-top` + `minti-pack-wiki-en` follow-on tiers; consider building inside an `lxc-launch debian:13` to dodge vboxsf entirely; chmod -x the systemd .service files in the build-pack copy stage (currently dpkg warns "Configuration file ... is marked executable. Proceeding anyway.").
+
+- **M7.4 done** (2026-06-06, this session): cross-platform sysinfo polish in `minti-status`. M7's day-1 stubs reported `amd64 (Windows)` for CPU model and had no Uptime row on any platform; this commit flesh-fills the data on Windows + macOS (via the platforms' native sysinfo APIs, no shell-outs except a single `sw_vers` on macOS) and adds Linux's missing `/proc/uptime` read.
+  - **Windows** (`sysinfo_windows.go`): CPU model from `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString` via `golang.org/x/sys/windows/registry` (same module already pulled in for GlobalMemoryStatusEx); OS version via `ntdll!RtlGetVersion` with marketing-name semantics (Win10 build ≥22000 → "Windows 11"); uptime via `kernel32!GetTickCount64`. All direct syscalls, zero shell-outs. Tested live on the daily-driver: now reports `Windows 11 (build 26200)` / `Uptime 1h 54m` / `AMD Ryzen 9 9950X3D 16-Core Processor 32t`.
+  - **macOS** (`sysinfo_darwin.go`): CPU model from `sysctl machdep.cpu.brand_string` (works on Intel + Apple Silicon — AS returns "Apple M2 Pro" etc.); OS version from `sw_vers -productVersion` (one fork-exec per medium tick — acceptable per cland's existing `pmset` precedent); uptime decoded from `sysctl kern.boottime` (16-byte struct timeval, first uint64 = boot epoch). RAM-used deliberately left at 0 since macOS doesn't expose a useful "available memory" via sysctl — properly computing it needs `vm_stat` semantics (file cache + compressed + speculative). Deferred to M7.5+ when the panel cares; golden labelled accordingly.
+  - **Linux** (`sysinfo_linux.go`): added `/proc/uptime` read (first float = seconds since boot, rounded to seconds for display). Live VM test renders `Uptime 1d 19h 55m`.
+  - **`sysinfo.Info`** gains `Uptime time.Duration`. Panel adds an Uptime row between Kernel and CPU; renders as `XdYhZm` (or just `Xs` sub-minute, or `(n/a)` when zero — exercised by the new `system_no_uptime` golden).
+  - **Golden tests refreshed**: 18 scenarios now (up from 15). Three new: `system_windows`, `system_darwin`, `system_no_uptime`. Existing `system_linux` updated to include the new row. Test inputs are deterministic structs so the goldens lock per-platform rendering without needing actual platform execution at test time.
+  - **Cross-compile matrix** stays green for linux/amd64, windows/amd64, darwin/amd64, darwin/arm64. .deb path unchanged. VM smoke + host smoke both verified the new fields land cleanly.
+  - **Static `status/docs/example.txt`** re-captured against the live Phase J Clan — now shows the Uptime row (`1d 19h 55m`).
+  - **Versions**: top-level Makefile `VERSION` bumped 0.3.0-M7.1 → 0.3.0-M7.4 so `make status-linux` stamps the right `-X main.version`. status/debian/changelog gains the M7.4 entry.
+
+  Honestly still carried forward:
+  - macOS RAM "used" needs `vm_stat` shell-out to compute properly (Mach's accounting differs from Linux's MemAvailable).
+  - Render the actual `.gif` from the M7.3 .tape (vhs still not installed).
+  - Mutations (pin / rotate-key / peer-add / leave / revoke).
+  - M5-D Phase 4 rerun.
 
 - **M7.3 done** (2026-06-06, this session): docs round-out for `minti-status`. Ships the iteration-tooling deliverable from the M7 plan plus a project-root pointer so future readers can find the dashboard without spelunking commit history.
   - **`status/README.md`** — what it shows (with the live `--once` snippet rendered inline), quickstart (`--once` / `--no-color` / `--refresh`), keybinds table, per-panel reference (probe + cadence + what it surfaces), refresh-tickers model, build matrix, tests + `-update` flag, vhs-rendering recipe, v1 scope guard + explicit out-of-scope list, source-tree map.

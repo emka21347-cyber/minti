@@ -1,0 +1,7 @@
+▎ System ─────────────────────────────────────────
+  OS       Linux Mint 22.3
+  Kernel   x86_64
+  Uptime   (n/a)
+  CPU      Intel Core i5  4t
+  GPU      (no nvidia GPU)
+  RAM      2.1 / 8.0 GiB

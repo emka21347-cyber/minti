@@ -1,0 +1,7 @@
+▎ System ─────────────────────────────────────────
+  OS       macOS 14.5
+  Kernel   arm64
+  Uptime   3d 7h 0m
+  CPU      Apple M2 Pro  12t
+  GPU      (no nvidia GPU)
+  RAM      0.0 / 32.0 GiB

@@ -41,7 +41,7 @@ DIST          := dist
 PACKS_DIR     := packs
 PACK_NAMES    := recon hermes3 mistral wiki-simple
 # Pinned per-milestone — bump on milestone landing.
-VERSION       := 0.3.0-M7.1
+VERSION       := 0.3.0-M7.4
 LDFLAGS       := -X main.version=$(VERSION)
 # Release build flags: strip debug info, omit absolute build paths. ~30%
 # smaller binaries + no leaked /Users/... paths in error messages.

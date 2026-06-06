@@ -1,0 +1,7 @@
+▎ System ─────────────────────────────────────────
+  OS       Windows 11 (build 26200)
+  Kernel   amd64
+  Uptime   1h 54m
+  CPU      AMD Ryzen 9 9950X3D 16-Core Processor  32t
+  GPU      GeForce RTX 5090  31.8 GiB (1.2 used)
+  RAM      23.8 / 61.7 GiB

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ProbeCheap reads only the fast sources (no fork/exec, no >5ms paths).
@@ -37,6 +38,17 @@ func ProbeCheap(ctx context.Context) (Info, error) {
 		fields := strings.Fields(string(la))
 		if len(fields) > 0 {
 			i.Load1, _ = strconv.ParseFloat(fields[0], 64)
+		}
+	}
+
+	// /proc/uptime: first field is seconds since boot (float, with
+	// hundredths-of-second precision). Round to seconds for display.
+	if ub, err := os.ReadFile("/proc/uptime"); err == nil {
+		fields := strings.Fields(string(ub))
+		if len(fields) > 0 {
+			if secs, err := strconv.ParseFloat(fields[0], 64); err == nil {
+				i.Uptime = time.Duration(secs * float64(time.Second)).Round(time.Second)
+			}
 		}
 	}
 

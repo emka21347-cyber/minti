@@ -1,3 +1,15 @@
+minti-status (0.1.0-M7.4) unstable; urgency=medium
+
+  * Cross-platform sysinfo polish: real CPU model + uptime + OS version
+    on Windows (registry / RtlGetVersion / GetTickCount64) and macOS
+    (sysctl machdep.cpu.brand_string / kern.boottime / sw_vers); Linux
+    gains /proc/uptime read so it's no longer the only platform without
+    an Uptime row. New System panel layout: OS / Kernel / Uptime / CPU
+    / GPU / RAM. Three new golden scenarios: system_windows,
+    system_darwin, system_no_uptime. 18 goldens total, all green.
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 16:00:00 +0000
+
 minti-status (0.1.0-M7.1) unstable; urgency=medium
 
   * Clan panel quality: wired through cland's real peers --json schema

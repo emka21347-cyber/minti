@@ -14,13 +14,14 @@ This is real `--once` output from a running MINTI node (the Phase J
 test Clan in our `minti-dev` VM, self-orchestrating at term 3368):
 
 ```text
-┌─ minti-status 0.1.0-M7.1 · runtime 0.1.0-M3 ────── root@minti-VirtualBox  06 Jun 02:10:26  [r 2s] ─┐
+┌─ minti-status 0.1.0-M7.4 · runtime 0.1.0-M3 ────── root@minti-VirtualBox  06 Jun 02:16:51  [r 2s] ─┐
 ▎ System ─────────────────────────────────────────  ▎ Runtime (minti-runtime :7780) ────────────────
   OS       Linux Mint 22.3                            Health     ● healthy  0.1.0-M3
   Kernel   6.17.0-29-generic  x86_64                  Backend    ollama
-  CPU      AMD Ryzen 9 9950X3D  4t   load 0.07        Resident   ★ llama3.2:3b
-  GPU      (no nvidia GPU)                            In VRAM    (none loaded)
-  RAM      1.3 / 7.8 GiB   swap 0.0 / 2.0
+  Uptime   1d 19h 55m                                 Resident   ★ llama3.2:3b
+  CPU      AMD Ryzen 9 9950X3D  4t   load 0.06        In VRAM    (none loaded)
+  GPU      (no nvidia GPU)
+  RAM      1.1 / 7.8 GiB   swap 0.0 / 2.0
 ▎ Clan ─────────────────────────────────────────────────────────────────────────────────────────────
   Clan ID          5725d958…bffe    role=founder    pin=sha256:f6db79289…
   Orchestrator     a9f3df01…30ee ★ (self)    term=3368    lease 2s

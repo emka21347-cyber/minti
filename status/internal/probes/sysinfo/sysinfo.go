@@ -8,6 +8,7 @@ package sysinfo
 
 import (
 	"context"
+	"time"
 )
 
 // Info is the full system snapshot rendered by the System panel.
@@ -15,14 +16,15 @@ type Info struct {
 	// Always populated (cheap).
 	Hostname    string
 	User        string
-	OSPretty    string // e.g. "Debian GNU/Linux 13 (trixie)"
-	Kernel      string // e.g. "6.1.0-21-amd64"
-	Arch        string // GOARCH normalized (amd64, arm64)
+	OSPretty    string        // e.g. "Debian GNU/Linux 13 (trixie)"
+	Kernel      string        // e.g. "6.1.0-21-amd64"
+	Arch        string        // GOARCH normalized (amd64, arm64)
 	Load1       float64
 	RAMUsedGB   float64
 	RAMTotalGB  float64
 	SwapUsedGB  float64
 	SwapTotalGB float64
+	Uptime      time.Duration // since boot
 
 	// Refreshed on slow tick.
 	CPUModel string
