@@ -130,6 +130,63 @@ cp "$REPO/install/install.sh" "$BUILD_DIR/config/includes.chroot/tmp/install.sh"
 mkdir -p "$BUILD_DIR/config/includes.binary/minti-install"
 cp "$REPO/install/install.sh" "$BUILD_DIR/config/includes.binary/minti-install/install.sh"
 
+# ── stage pre-built MINTI binaries into chroot ────────────────────────────────
+# Binaries must already exist (cross-compiled on host or native build).
+# These are copied into /usr/local/bin and /opt/minti/mcp inside the live chroot
+# so minti-fetch, minti-cland, etc. work immediately after live boot.
+log "Staging MINTI binaries..."
+CHROOT_USR="$BUILD_DIR/config/includes.chroot/usr/local/bin"
+CHROOT_MCP="$BUILD_DIR/config/includes.chroot/opt/minti/mcp"
+CHROOT_SVC="$BUILD_DIR/config/includes.chroot/etc/systemd/system"
+mkdir -p "$CHROOT_USR" "$CHROOT_MCP" "$CHROOT_SVC"
+
+# Helper: find the best available binary (native > cross-compiled > skip)
+stage_bin() {
+    local name="$1" dest="$2" candidates=("${@:3}")
+    for src in "${candidates[@]}"; do
+        if [[ -f "$src" ]]; then
+            install -m 0755 "$src" "$dest/$name"
+            log "  $name → $dest/$name"
+            return 0
+        fi
+    done
+    warn "  $name not found (skipping); run 'make ${name/minti-/}-linux' first"
+}
+
+stage_bin minti-runtime     "$CHROOT_USR" \
+    "$REPO/runtime-adapter/minti-runtime" \
+    "$REPO/runtime-adapter/dist/minti-runtime-linux-amd64"
+
+stage_bin minti-cland       "$CHROOT_USR" \
+    "$REPO/cland/minti-cland" \
+    "$REPO/cland/dist/minti-cland-linux-amd64"
+
+stage_bin minti-pack-fetch  "$CHROOT_USR" \
+    "$REPO/pack-manager/minti-pack-fetch" \
+    "$REPO/pack-manager/dist/minti-pack-fetch-linux-amd64"
+
+for mcp in minti-mcp-fs minti-mcp-shell minti-mcp-recon minti-mcp-http minti-mcp-pkg minti-mcp-wiki; do
+    stage_bin "$mcp" "$CHROOT_MCP" \
+        "$REPO/mcp-servers/$mcp" \
+        "$REPO/mcp-servers/dist/${mcp}-linux-amd64"
+done
+
+# Stage systemd units (install.sh in MINTI_CHROOT mode skips service start but
+# the .service files must be present so `systemctl enable` works on first boot)
+for unit in \
+    "$REPO/runtime-adapter/systemd/minti-runtime.service" \
+    "$REPO/cland/systemd/minti-cland.service"; do
+    [[ -f "$unit" ]] && install -m 0644 "$unit" "$CHROOT_SVC/$(basename $unit)" || \
+        warn "  $(basename $unit) not found"
+done
+
+# Stage minti-fetch bash script
+CHROOT_BRANDING="$BUILD_DIR/config/includes.chroot/usr/local/bin"
+if [[ -f "$REPO/branding/minti-fetch" ]]; then
+    install -m 0755 "$REPO/branding/minti-fetch" "$CHROOT_BRANDING/minti-fetch"
+    log "  minti-fetch → $CHROOT_BRANDING/minti-fetch"
+fi
+
 # ── build ─────────────────────────────────────────────────────────────────────
 cd "$BUILD_DIR"
 log "lb clean (preserving chroot cache)..."
