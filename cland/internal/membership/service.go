@@ -79,6 +79,7 @@ type Service struct {
 	id         *identity.Identity
 	listenAddr string
 	invites    *InviteStore
+	knocks     *KnockStore
 	log        *slog.Logger
 	audit      auditlog.Logger
 
@@ -100,6 +101,7 @@ func NewService(store *state.Store, id *identity.Identity, listenAddr string, au
 		id:         id,
 		listenAddr: listenAddr,
 		invites:    NewInviteStore(),
+		knocks:     NewKnockStore(),
 		log:        log,
 		audit:      audit,
 	}
@@ -415,6 +417,9 @@ func (s *Service) StartZombieSweep(ctx context.Context, interval time.Duration) 
 			}
 			if n := s.invites.Sweep(); n > 0 {
 				s.log.Info("invite sweep", "purged_tokens", n)
+			}
+			if n := s.knocks.Sweep(); n > 0 {
+				s.log.Info("knock sweep", "purged_knocks", n)
 			}
 		}
 	}

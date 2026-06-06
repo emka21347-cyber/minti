@@ -25,6 +25,7 @@ func (s *Service) Register(srv *transport.Server) {
 	srv.Handle("GET /clan/members", s.handleMembers)
 	srv.Handle("POST /clan/leave", s.handleLeave)
 	srv.Handle("POST /clan/revoke", s.handleRevoke)
+	s.RegisterKnock(srv)
 }
 
 func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +142,16 @@ func statusForErr(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrInviteTTL):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrKnockNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, ErrKnockExpired):
+		return http.StatusGone
+	case errors.Is(err, ErrKnockNotPending):
+		return http.StatusConflict
+	case errors.Is(err, ErrKnockRateLimit):
+		return http.StatusTooManyRequests
+	case errors.Is(err, ErrKnockClanID):
+		return http.StatusForbidden
 	}
 	return http.StatusBadRequest
 }

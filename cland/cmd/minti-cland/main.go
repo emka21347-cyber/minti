@@ -17,8 +17,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -86,6 +88,14 @@ func main() {
 			err = cmdRotateKey(os.Args[2:])
 		case "show":
 			err = cmdShow(os.Args[2:])
+		case "knock":
+			err = cmdKnock(os.Args[2:])
+		case "knocks":
+			err = cmdKnocks(os.Args[2:])
+		case "knock-accept":
+			err = cmdKnockAccept(os.Args[2:])
+		case "knock-deny":
+			err = cmdKnockDeny(os.Args[2:])
 		case "help", "-h", "--help":
 			printUsage()
 			return
@@ -132,6 +142,12 @@ Usage:
   minti-cland election-history         print recent elections (ring buffer)
   minti-cland rotate-key               rotate the Clan key (Orchestrator only)
   minti-cland show                     print clan_id, pin, LAN address
+  minti-cland knock [flags]            join a Clan without a shared secret (§3.4)
+       --clan-id UUID  --address ip:port  --pin sha256:...
+  minti-cland knocks                   list pending knock requests (operator)
+  minti-cland knock-accept <knock_id>  accept a pending knock (operator)
+  minti-cland knock-deny   <knock_id> [--reason "..."]
+                                       deny a pending knock (operator)
   minti-cland help                     this message
 
 Daemon flags:
@@ -1398,4 +1414,435 @@ func resolveLANAddr(cfg config.Config) (string, error) {
 		addr = found
 	}
 	return fmt.Sprintf("%s:%d", addr, cfg.Listen.Port), nil
+}
+
+// ---------- knock (joiner CLI) ----------
+//
+// Spec §3.4 joiner flow:
+//  1. Generate ephemeral X25519 keypair.
+//  2. Start a temporary plain-HTTP listener for /clan/knock-deliver.
+//  3. POST /clan/knock to the receiver (anonymous, TLS+pin-verified HTTPS).
+//  4. Derive SAS from the KnockResponse. Print and block for y/n.
+//  5. Wait for /clan/knock-deliver on the temp listener.
+//  6. Open ciphertext, persist Clan state.
+//
+// CRITICAL (F3): joiner MUST display SAS and block before processing
+// any incoming /clan/knock-deliver (see spec §3.4 "Mutual SAS confirmation").
+
+func cmdKnock(args []string) error {
+	fs := flag.NewFlagSet("knock", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	clanID := fs.String("clan-id", "", "clan_id of the Clan to join (required)")
+	address := fs.String("address", "", "LAN address of an active member: ip:port (required)")
+	pin := fs.String("pin", "", "sha256:<hex> cert pin of the receiver (required)")
+	listenAddr := fs.String("listen", "", "local address for knock-deliver listener (default: auto-detected IP, random port)")
+	_ = fs.Parse(args)
+
+	if *clanID == "" || *address == "" || *pin == "" {
+		return errors.New("--clan-id, --address, and --pin are required")
+	}
+
+	_, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	existing, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if existing.IsActive() {
+		return fmt.Errorf("already in Clan %s — `leave` first", existing.ClanID)
+	}
+
+	// Generate ephemeral X25519 keypair.
+	joinerPriv, joinerPub, err := membership.GenerateX25519()
+	if err != nil {
+		return err
+	}
+
+	// Start temporary plain-HTTP listener for /clan/knock-deliver.
+	listenOn := *listenAddr
+	if listenOn == "" {
+		listenOn = ":0"
+	}
+	ln, err := net.Listen("tcp", listenOn)
+	if err != nil {
+		return fmt.Errorf("knock: start deliver listener: %w", err)
+	}
+	defer ln.Close()
+
+	// Determine advertised joiner LAN address.
+	joinerLANAddr, err := knockJoinerLANAddr(ln, *listenAddr)
+	if err != nil {
+		return err
+	}
+
+	// Channel for the delivery or denial from the receiver.
+	deliverCh := make(chan membership.KnockDeliverRequest, 1)
+
+	// Block until SAS is confirmed by the user — the deliver handler sets
+	// sasConfirmed to true after the user presses y. Before that, all
+	// /clan/knock-deliver requests are rejected with 503 (spec §3.4 F3).
+	sasConfirmed := false
+	receiverIP := "" // set after KnockResponse, used for source-IP allowlist
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/clan/knock-deliver", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Source-IP allowlist: only accept from receiver_addr's IP (spec §3.4).
+		srcIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if receiverIP != "" && srcIP != receiverIP {
+			http.Error(w, "forbidden: unexpected source IP", http.StatusForbidden)
+			return
+		}
+		if !sasConfirmed {
+			// F3: joiner must confirm SAS before accepting any delivery.
+			http.Error(w, "sas not yet confirmed", http.StatusServiceUnavailable)
+			return
+		}
+		var req membership.KnockDeliverRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		select {
+		case deliverCh <- req:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			// Already delivered once — CAS.
+			http.Error(w, "already delivered", http.StatusConflict)
+		}
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	// POST /clan/knock to receiver (anonymous, TLS+pin-verified).
+	httpCli := transport.NewPinnedHTTPClient(*pin, 30*time.Second)
+	knockReq := membership.KnockRequest{
+		ClanID:             *clanID,
+		JoinerMemberID:     id.MemberID,
+		JoinerPubKeyB64:    id.PubKey,
+		JoinerX25519PubB64: base64.StdEncoding.EncodeToString(joinerPub),
+		JoinerLANAddress:   joinerLANAddr,
+	}
+	body, _ := json.Marshal(knockReq)
+	resp, err := httpCli.Post("https://"+*address+"/clan/knock", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("knock: POST /clan/knock: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("receiver rejected knock (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var knockResp membership.KnockResponse
+	if err := json.NewDecoder(resp.Body).Decode(&knockResp); err != nil {
+		return fmt.Errorf("knock: decode response: %w", err)
+	}
+
+	// Record receiver IP for the source-IP allowlist.
+	receiverHost, _, _ := net.SplitHostPort(*address)
+	receiverIP = receiverHost
+
+	// Decode receiver's X25519 pubkey.
+	recvPub, err := base64.StdEncoding.DecodeString(knockResp.ReceiverX25519PubB64)
+	if err != nil || len(recvPub) != 32 {
+		return errors.New("knock: invalid receiver_x25519_pub_b64")
+	}
+	knockIDRaw, err := membership.DecodeKnockID(knockResp.KnockID)
+	if err != nil {
+		return err
+	}
+
+	// Derive (key, nonce, SAS) — same as receiver side (spec §3.4 crypto).
+	key, nonce, sas, err := membership.DeriveKnockBundle(joinerPriv, recvPub, *clanID, knockIDRaw, joinerPub, recvPub)
+	if err != nil {
+		return err
+	}
+
+	// F3 CRITICAL: display SAS and block for explicit y/n confirmation before
+	// accepting any /clan/knock-deliver (spec §3.4 "Mutual SAS confirmation").
+	fmt.Printf("\nKnock sent. knock_id: %s\n\n", knockResp.KnockID)
+	fmt.Printf("  Confirm code: %s\n\n", sas)
+	fmt.Println("  Show this code to the Clan operator over a side channel (phone, in-person, Signal).")
+	fmt.Println("  The operator sees the same code in their `minti-cland knocks` output.")
+	fmt.Println("  Does it match? [y/n] (5-minute timeout): ")
+
+	sasTimer := time.NewTimer(membership.KnockTTL)
+	defer sasTimer.Stop()
+
+	confirmed := make(chan bool, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := strings.TrimSpace(strings.ToLower(scanner.Text()))
+			if line == "y" || line == "yes" {
+				confirmed <- true
+				return
+			}
+			if line == "n" || line == "no" {
+				confirmed <- false
+				return
+			}
+			fmt.Print("  Enter y or n: ")
+		}
+		confirmed <- false
+	}()
+
+	select {
+	case ok := <-confirmed:
+		if !ok {
+			return errors.New("knock cancelled by user")
+		}
+	case <-sasTimer.C:
+		return errors.New("knock timed out waiting for SAS confirmation (5 min)")
+	}
+
+	// User confirmed y — arm the deliver handler.
+	sasConfirmed = true
+	fmt.Println("\n  SAS confirmed. Waiting for Clan operator to accept...")
+
+	// Wait for delivery with TTL timeout.
+	deliveryTimer := time.NewTimer(membership.KnockTTL)
+	defer deliveryTimer.Stop()
+
+	var deliver membership.KnockDeliverRequest
+	select {
+	case deliver = <-deliverCh:
+	case <-deliveryTimer.C:
+		return errors.New("knock timed out waiting for delivery (5 min)")
+	}
+
+	if deliver.Denied {
+		reason := deliver.Reason
+		if reason == "" {
+			reason = "(no reason given)"
+		}
+		return fmt.Errorf("knock denied by operator: %s", reason)
+	}
+
+	// Open the sealed welcome.
+	ct, err := base64.StdEncoding.DecodeString(deliver.CiphertextB64)
+	if err != nil {
+		return fmt.Errorf("knock: decode ciphertext: %w", err)
+	}
+	welcome, err := membership.OpenKnockWelcome(key, nonce, knockIDRaw, ct)
+	if err != nil {
+		return err
+	}
+	if welcome.ClanID != *clanID {
+		return fmt.Errorf("knock: clan_id mismatch in welcome (got %s)", welcome.ClanID)
+	}
+
+	// Decode and persist Clan state.
+	clanKey, err := base64.StdEncoding.DecodeString(welcome.ClanKeyB64)
+	if err != nil {
+		return fmt.Errorf("knock: decode clan_key: %w", err)
+	}
+	cc, err := crypto.ParseClanCertPEM([]byte(welcome.ClanCertPEM))
+	if err != nil {
+		return fmt.Errorf("knock: parse clan_cert: %w", err)
+	}
+	clan := &state.Clan{
+		ClanID:             welcome.ClanID,
+		ClanCertPEM:        welcome.ClanCertPEM,
+		ClanCertPrivKeyB64: welcome.ClanCertPrivKeyB64,
+		ClanCertPin:        cc.Pin,
+		Role:               "joined",
+		JoinedAt:           time.Now().UTC(),
+		Roster:             welcome.Roster,
+	}
+	clan.SetClanKey(clanKey)
+	if err := store.SaveClan(clan); err != nil {
+		return err
+	}
+	fmt.Printf("\nJoined Clan %s as %s (via knock). %d members in roster.\n", clan.ClanID, id.MemberID, len(clan.Roster))
+	return nil
+}
+
+// knockJoinerLANAddr returns the "ip:port" the receiver can POST /clan/knock-deliver to.
+func knockJoinerLANAddr(ln net.Listener, listenFlag string) (string, error) {
+	port := ln.Addr().(*net.TCPAddr).Port
+	if listenFlag != "" && listenFlag != ":0" {
+		// Caller specified an explicit bind address — use it verbatim (port already bound).
+		host, _, err := net.SplitHostPort(listenFlag)
+		if err != nil {
+			return "", err
+		}
+		if host != "" && host != "0.0.0.0" && host != "::" {
+			return fmt.Sprintf("%s:%d", host, port), nil
+		}
+	}
+	// Auto-detect first non-loopback IPv4.
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("knock: detect LAN IP: %w", err)
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.To4() == nil {
+			continue
+		}
+		return fmt.Sprintf("%s:%d", ipnet.IP.String(), port), nil
+	}
+	return "", errors.New("no non-loopback IPv4 found; pass --listen ip:port explicitly")
+}
+
+// ---------- knocks (operator CLI — list pending knocks) ----------
+
+func cmdKnocks(args []string) error {
+	fs := flag.NewFlagSet("knocks", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/clan/knock-list", nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("knock-list (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		fmt.Println(string(raw))
+		return nil
+	}
+	var out struct {
+		Knocks []membership.PendingKnock `json:"knocks"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if len(out.Knocks) == 0 {
+		fmt.Println("No pending knocks.")
+		return nil
+	}
+	fmt.Printf("%-36s  %-12s  %-10s  %s\n", "KNOCK_ID (hex prefix)", "JOINER", "SAS", "EXPIRES")
+	for _, k := range out.Knocks {
+		short := k.KnockID
+		if len(short) > 12 {
+			short = short[:12] + "…"
+		}
+		joiner := k.JoinerMemberID
+		if len(joiner) > 12 {
+			joiner = joiner[:12] + "…"
+		}
+		fmt.Printf("%-36s  %-12s  %-10s  %s\n",
+			k.KnockID, joiner, k.SAS, k.ExpiresAt.Format(time.RFC3339))
+	}
+	fmt.Println()
+	fmt.Println("Operator: verify the SAS code with the joiner over a side channel, then:")
+	fmt.Println("  minti-cland knock-accept <knock_id>")
+	fmt.Println("  minti-cland knock-deny   <knock_id> [--reason \"...\"]")
+	return nil
+}
+
+// ---------- knock-accept (operator CLI) ----------
+
+func cmdKnockAccept(args []string) error {
+	fs := flag.NewFlagSet("knock-accept", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	_ = fs.Parse(args)
+
+	if len(fs.Args()) == 0 {
+		return errors.New("usage: minti-cland knock-accept <knock_id>")
+	}
+	knockID := fs.Args()[0]
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(membership.KnockAcceptRequest{KnockID: knockID})
+	resp, err := cli.Post(base+"/clan/knock-accept", "application/json", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("knock-accept (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("Knock %s accepted. Sealed welcome delivered to joiner.\n", knockID)
+	return nil
+}
+
+// ---------- knock-deny (operator CLI) ----------
+
+func cmdKnockDeny(args []string) error {
+	fs := flag.NewFlagSet("knock-deny", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	reason := fs.String("reason", "", "optional denial reason shown to the joiner")
+	_ = fs.Parse(args)
+
+	if len(fs.Args()) == 0 {
+		return errors.New("usage: minti-cland knock-deny <knock_id> [--reason \"...\"]")
+	}
+	knockID := fs.Args()[0]
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(membership.KnockDenyRequest{KnockID: knockID, Reason: *reason})
+	resp, err := cli.Post(base+"/clan/knock-deny", "application/json", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("knock-deny (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("Knock %s denied.\n", knockID)
+	return nil
 }
