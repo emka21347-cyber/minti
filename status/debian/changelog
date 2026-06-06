@@ -1,3 +1,20 @@
+minti-status (0.1.0-M7.5) unstable; urgency=medium
+
+  * Stop the live-dashboard flap. Fast/medium tick probes return a
+    State / Info subset that doesn't carry the slow-tick fields
+    (Members + Candidates + RecentElections for clan; CPU + GPU for
+    sysinfo). The previous Update handler wholesale-replaced m.clan /
+    m.sys on every tick, so the panel oscillated between "Members (1)
+    self only" and "Members (3) full roster" every 2s, and CPU/GPU
+    blinked to "(n/a)" between 30s slow ticks. Now Update merges:
+    when the incoming msg's slow fields are empty, preserve them from
+    the prior state.
+  * status/launch.ps1 gains usage notes documenting the wt.exe
+    argument-parsing landmines (semicolons + spaces) that motivated
+    the launcher in the first place.
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 16:30:00 +0000
+
 minti-status (0.1.0-M7.4) unstable; urgency=medium
 
   * Cross-platform sysinfo polish: real CPU model + uptime + OS version

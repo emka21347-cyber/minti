@@ -164,6 +164,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sysInfoMsg:
 		if msg.Err == nil {
+			// Merge slow-tick fields: the medium-tick ProbeCheap returns
+			// an Info without CPUModel/CPUCores/GPU (they're only set by
+			// the slow-tick Probe). Without this merge, every 5s the
+			// fast/medium probe wipes the slow fields and the panel
+			// blinks back to "(n/a)" until the next 30s slow tick.
+			if msg.Info.CPUModel == "" {
+				msg.Info.CPUModel = m.sys.CPUModel
+				msg.Info.CPUCores = m.sys.CPUCores
+			}
+			if msg.Info.GPU == "" {
+				msg.Info.GPU = m.sys.GPU
+			}
 			m.sys = msg.Info
 		} else {
 			m.lastErr = "sysinfo: " + msg.Err.Error()
@@ -185,6 +197,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case clanMsg:
+		// Merge: the fast-tick ProbeOrchestratorOnly returns a State with
+		// only clan/orchestrator/term/lease populated — Members,
+		// Candidates, and RecentElections are empty. Without preserving
+		// the previous full-tick values, the panel blinks between
+		// "Members (1)" (just synthetic self) and "Members (3)" (full
+		// roster) every 2s. We preserve them if the new State doesn't
+		// carry them.
+		if msg.Err == nil {
+			if len(msg.State.Members) == 0 && len(m.clan.Members) > 0 {
+				msg.State.Members = m.clan.Members
+			}
+			if len(msg.State.Candidates) == 0 && len(m.clan.Candidates) > 0 {
+				msg.State.Candidates = m.clan.Candidates
+			}
+			if len(msg.State.RecentElections) == 0 && len(m.clan.RecentElections) > 0 {
+				msg.State.RecentElections = m.clan.RecentElections
+			}
+		}
 		m.clan, m.clanErr = msg.State, msg.Err
 		if msg.Err != nil && !msg.Degraded {
 			m.lastErr = "clan: " + msg.Err.Error()
