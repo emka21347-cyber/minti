@@ -13,6 +13,7 @@ lb config noauto \
   --apt-recommends false \
   --apt-indices false \
   --memtest none \
+  --security false \
   --win32-loader false \
   --iso-application "MINTI" \
   --iso-preparer "MINTI Project" \

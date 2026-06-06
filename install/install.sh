@@ -28,6 +28,17 @@ err()  { printf "%s[MINTI]%s %s\n" "${red}" "${reset}" "ERROR: $*" >&2; }
 
 trap 'err "Failed at line ${LINENO} (last command: ${BASH_COMMAND})"' ERR
 
+# Set MINTI_CHROOT=1 when running inside a live-build chroot to skip
+# service management (systemd is not running; unit files are still installed).
+MINTI_CHROOT="${MINTI_CHROOT:-0}"
+_svc() {
+    if [[ "$MINTI_CHROOT" == "1" ]]; then
+        info "chroot mode: skip systemctl $*"
+        return 0
+    fi
+    systemctl "$@"
+}
+
 # ---------- Preflight ----------
 if [[ "$(id -u)" -ne 0 ]]; then
     err "Must run as root. Re-run with: sudo bash $0"
@@ -170,7 +181,7 @@ if [[ -n "${runtime_bin}" ]]; then
     else
         ok "Preserving existing /etc/minti/runtime.yaml."
     fi
-    systemctl daemon-reload
+    _svc daemon-reload
 
     # Decide whether to restart by comparing the new on-disk binary to what
     # the running process is actually executing. This catches the case where
@@ -189,10 +200,10 @@ if [[ -n "${runtime_bin}" ]]; then
     fi
     if [[ "${should_restart}" == "true" ]]; then
         info "minti-runtime running stale binary — restarting service..."
-        systemctl restart minti-runtime.service
+        _svc restart minti-runtime.service
         runtime_status="restarted with new binary"
     else
-        systemctl enable --now minti-runtime.service
+        _svc enable --now minti-runtime.service
         runtime_status="installed and started"
     fi
     ok "minti-runtime running on 127.0.0.1:7780"
@@ -310,7 +321,7 @@ if [[ -n "${cland_bin}" ]]; then
     else
         ok "Preserving existing /etc/minti/reasoning-scores.yaml."
     fi
-    systemctl daemon-reload
+    _svc daemon-reload
 
     # Same restart-on-stale-binary pattern as minti-runtime above.
     cland_should_restart=false
@@ -325,10 +336,10 @@ if [[ -n "${cland_bin}" ]]; then
     fi
     if [[ "${cland_should_restart}" == "true" ]]; then
         info "minti-cland running stale binary — restarting service..."
-        systemctl restart minti-cland.service
+        _svc restart minti-cland.service
         cland_status="restarted with new binary"
     else
-        systemctl enable --now minti-cland.service
+        _svc enable --now minti-cland.service
         cland_status="installed and started"
     fi
     ok "minti-cland running on 0.0.0.0:7777 (Clan-facing HTTPS)"

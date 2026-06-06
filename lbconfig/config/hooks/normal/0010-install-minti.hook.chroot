@@ -4,12 +4,15 @@
 set -euo pipefail
 
 echo "[minti-hook] installing Ollama..."
-curl -fsSL https://ollama.com/install.sh | sh
+# || true: Ollama installer may fail to start the systemd service in chroot;
+# the binary still lands at /usr/local/bin/ollama which is what matters.
+curl -fsSL https://ollama.com/install.sh | sh || echo "[minti-hook] Ollama install returned non-zero (expected in chroot), continuing"
 
 echo "[minti-hook] running MINTI install script..."
 if [[ -f /tmp/install.sh ]]; then
-    # MINTI_PACK_NO_FETCH=1 skips model pulls — models are pulled on first run
-    MINTI_PACK_NO_FETCH=1 bash /tmp/install.sh --non-interactive
+    # MINTI_CHROOT=1: skip systemctl service-start calls (no systemd in chroot)
+    # MINTI_PACK_NO_FETCH=1: skip model downloads — pulled on first run
+    MINTI_CHROOT=1 MINTI_PACK_NO_FETCH=1 bash /tmp/install.sh
 else
     echo "[minti-hook] WARNING: /tmp/install.sh not found, skipping MINTI install"
 fi
