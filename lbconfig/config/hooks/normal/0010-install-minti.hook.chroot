@@ -3,10 +3,11 @@
 # Runs inside the Debian Bookworm rootfs during lb build.
 set -euo pipefail
 
-echo "[minti-hook] installing Ollama..."
-# || true: Ollama installer may fail to start the systemd service in chroot;
-# the binary still lands at /usr/local/bin/ollama which is what matters.
-curl -fsSL https://ollama.com/install.sh | sh || echo "[minti-hook] Ollama install returned non-zero (expected in chroot), continuing"
+# Ollama install is skipped during ISO chroot build to keep the ISO small
+# (~500 MB savings) and the build fast. Install Ollama on first boot via:
+#   curl -fsSL https://ollama.com/install.sh | sh
+# or via minti-pack-fetch after installing a model pack.
+echo "[minti-hook] Ollama install deferred to first boot (skipping in chroot)"
 
 echo "[minti-hook] running MINTI install script..."
 if [[ -f /tmp/install.sh ]]; then
