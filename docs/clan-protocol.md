@@ -1,8 +1,10 @@
-# Clan Protocol Specification — v0.2
+# Clan Protocol Specification — v0.3
 
 > Status: **Draft**, v1 implementation target.
 > Source of truth for the on-wire behavior of `cland` (Linux) and the cross-platform Clan Agent (Windows / macOS).
 > This document defines the protocol; the PRD ([../../../../.claude/plans/hello-can-we-create-abundant-hopper.md](../../../../.claude/plans/hello-can-we-create-abundant-hopper.md)) defines the product. Where they conflict, the PRD wins on intent and this document wins on wire details.
+>
+> **v0.3 (2026-06-06, M8 Phase 0):** Adds §3.4 *Knock flow (no out-of-band secret)* — a third Clan-joining path alongside invite-token (§3.2) and paste-key (§3.3). Joiner sends an ephemeral X25519 pubkey + Ed25519 identity to a known Clan address; receiver and joiner derive a 20-bit confirm code from a HKDF binding both pubkeys + `clan_id` + `knock_id`; existing Clan operator visually verifies the digits with the joiner over a side channel before pressing accept; the welcome payload is AES-256-GCM-sealed with the ECDH-derived key + `aad=knock_id`. Renumbers existing §3.4 Revocation → §3.5 and §3.5 Self-leave → §3.6.
 >
 > **v0.2 (2026-05-27, M4 Phase 0):** Six additive edits surfaced by a local-LLM peer-review pass on the M4 implementation plan — §3.3 paste-key entropy clarified to 12-word BIP39 + HKDF; §6.4 `recently_failed` defined; §7.1 `target_member` location pinned to token claims + v1 honesty note added; §10 endpoint table gains `/v1/messages`; §12 OQ-2 (manual peer-add fallback) moved from v1.1 into v1 scope. Wire format unchanged where it was already concrete.
 
@@ -106,7 +108,169 @@ For low-friction joining without out-of-band token exchange:
 
 **Trust caveat:** any sniffer in the QR/voice channel sees the Clan Key. Use only over trusted channels (sitting at the same desk, secure messenger).
 
-### 3.4 Revocation
+### 3.4 Knock flow (live in-person / Signal-call onboarding)
+
+For onboarding a new node when the joiner has *no out-of-band secret* — only knowledge of the Clan ID and a reachable LAN address of an active member. Trust is established by an **ephemeral X25519 ECDH** between joiner and receiver plus a **20-bit Short Authentication String (SAS)** — a 6-digit numeric confirm-code — that the existing-Clan operator visually verifies with the joiner over a side channel (phone call, in-person, Signal). Modelled on the Signal pairing flow.
+
+This flow coexists with §3.2 (invite-token) and §3.3 (paste-key). Choose by handoff style:
+
+| Flow | Joiner needs… | Best for |
+|---|---|---|
+| §3.2 Invite-token | Token + LAN address + cert pin (single line) | Asynchronous remote ("paste this in the SSH session you opened on the new box") |
+| §3.3 Paste-key | 12-word BIP39 mnemonic | Trusted-channel one-shot ("here's the phrase, save it somewhere safe") |
+| §3.4 Knock | Clan ID + any active LAN address | Live in-person or Signal-call onboarding ("you're sitting next to me — let's join your laptop now") |
+
+**Wire endpoints.** Two on the **receiver** side (any active Clan member can act as receiver), one on the **joiner** side:
+
+| Endpoint | Side | Auth | Purpose |
+|---|---|---|---|
+| `POST /clan/knock` | Receiver | Anonymous (joiner has no `clan_key` yet) | Initiate the knock; receiver stores it pending operator decision |
+| `GET /clan/knock-list` | Receiver | HMAC (Clan member operator) | TUI / CLI reads pending knocks for display |
+| `POST /clan/knock-accept` | Receiver | HMAC | Operator accept; triggers encrypted delivery to joiner |
+| `POST /clan/knock-deny` | Receiver | HMAC | Operator deny; receiver pings joiner with reason |
+| `POST /clan/knock-deliver` | Joiner | **AES-GCM tag is the auth** (no HMAC; joiner doesn't have `clan_key` yet) | Receiver delivers the sealed welcome blob; joiner opens, persists, becomes `active` |
+
+**Request / response shapes.**
+
+```json
+// → POST /clan/knock  (anonymous)
+{
+  "clan_id":                  "<UUIDv4>",
+  "joiner_member_id":         "<UUIDv4>",
+  "joiner_identity_pub_b64":  "<base64 Ed25519 pubkey>",
+  "joiner_x25519_pub_b64":    "<base64 ephemeral X25519 pubkey>",
+  "joiner_display":           "alice-macbook",
+  "joiner_addr":              "192.168.56.103:7777"
+}
+
+// ← KnockResponse
+{
+  "knock_id":                 "<hex 16 bytes>",
+  "receiver_x25519_pub_b64":  "<base64 receiver's ephemeral X25519 pubkey>",
+  "confirm_code":             "541-829",
+  "ttl_seconds":              300
+}
+```
+
+**Cryptographic core.** Both sides derive the *same* `(key, nonce, confirm_code)` from the same inputs. The receiver computes them when it stores the pending knock; the joiner computes them once it has the `KnockResponse`.
+
+```
+shared    = X25519(my_x25519_priv, peer_x25519_pub)            // 32 bytes
+salt      = "minti-knock-v1"
+info      = clan_id || knock_id || joiner_x25519_pub || receiver_x25519_pub
+kdf       = HKDF-SHA256(IKM=shared, salt=salt, info=info)
+read 48 bytes from kdf into bundle:
+  key           = bundle[0:32]                                  // AES-256 key
+  code_bytes    = bundle[32:36]                                 // 32-bit SAS source
+  nonce         = bundle[36:48]                                 // 12-byte GCM nonce
+sas30           = BE_uint32(code_bytes) mod 1_000_000_000        // 30 bits of entropy → 9 decimal digits
+confirm_code    = sprintf("%04d-%05d",
+                          sas30 / 100_000,
+                          sas30 mod 100_000)                     // displayed "XXXX-XXXXX"
+```
+
+The static salt is namespaced (`"minti-knock-v1"`) so future protocol versions can rotate it. **`clan_id` and `knock_id` are in `info`** — without them, an attacker could precompute `(joiner_pub, receiver_pub) → confirm_code` tables offline; with them, every knock window requires a fresh derivation. The nonce is deterministic but safe: each `(joiner_pub, receiver_pub)` pair derives a unique `key`, so the same nonce never re-encrypts under the same key.
+
+**Sealed welcome.** When the operator accepts, the receiver builds the same `WelcomeResponse` payload it would for §3.3 (clan_id, clan_cert_pem, clan_cert_priv_key_b64, clan_key_b64, roster) and seals it:
+
+```
+plaintext  = json.encode(WelcomeResponse)
+ciphertext = AES-256-GCM_seal(key, nonce, plaintext, aad=knock_id)
+```
+
+```json
+// → POST /clan/knock-deliver  (on the joiner's listener)
+{
+  "knock_id":            "<hex 16 bytes>",
+  "encrypted_blob_b64":  "<base64 ciphertext + GCM tag>"
+}
+```
+
+The joiner looks up `knock_id` in its own pending-knock store (which remembers its ephemeral X25519 private key), derives the same `(key, nonce)`, and `AES-256-GCM_open(…, aad=knock_id)`. **The GCM tag is the receiver-authenticity proof** — only a party that knows `shared` (i.e. holds `receiver_x25519_priv`) can forge a valid tag. No separate signature is required.
+
+**Confirm-code semantics.** 30 bits of SAS (≈10⁹ space, 9-digit code rendered "XXXX-XXXXX") was chosen after the M8 Phase 0 peer-review surfaced a **pubkey-grinding attack** on a smaller 20-bit space: an active MITM who intercepts `knock_id` can generate ephemeral X25519 keypairs offline and run HKDF until they find a pubkey whose derived SAS matches the value the operator's TUI is displaying. With 20 bits, modern hardware finds a collision in milliseconds — well under the 5-minute knock TTL — so 20 bits offers no real protection beyond the human-attention threshold. 30 bits raises the offline grind to ≈10⁹ HKDF iterations (minutes-to-hours of single-thread compute), which is observable in the LAN and won't complete within the TTL. The defence is therefore: (a) `clan_id` + `knock_id` in HKDF info prevents pre-computation across knocks; (b) 30 bits requires per-knock targeted grind that exceeds the TTL; (c) the operator and joiner each independently derive the SAS and verify match over a side channel — **both** sides must visually confirm before any state is applied (see "Mutual SAS confirmation" below).
+
+**Mutual SAS confirmation (CRITICAL).** The protocol's MITM defence collapses if only ONE side checks the SAS. The joiner-side CLI/TUI MUST display the locally derived SAS and BLOCK on explicit user confirmation (`y`/`n`) BEFORE processing any incoming `/clan/knock-deliver`. The flow is:
+
+1. Joiner derives SAS from `KnockResponse`. Prints to terminal: `Show this code to the Clan operator: XXXX-XXXXX. Does it match what they see? [y/n]`.
+2. Joiner blocks on stdin (or TUI keypress) waiting for `y`. On `n` or 5-minute timeout, joiner discards its ephemeral X25519 private key + the pending knock entry, exits.
+3. In parallel, the receiver's operator sees the same SAS in their TUI. They read it aloud / over Signal to the joiner. The joiner-side human compares and presses `y` (or `n`).
+4. After joiner confirms `y`, the joiner enters a state where it will accept exactly one matching `/clan/knock-deliver` from the original `receiver_addr` (see "Delivery allowlist" below).
+5. Operator presses `a` in their TUI. Receiver POSTs `/clan/knock-deliver`.
+6. Joiner verifies source IP, opens GCM blob, persists state, transitions to admitted.
+
+Without step 1-3 on the joiner side, a MITM can substitute pubkeys, derive an attacker-controlled key, deliver an attacker-controlled blob, and the joiner blindly joins the attacker's "Clan". The receiver-operator's SAS check alone is insufficient because the attacker may not need the receiver to accept at all.
+
+**Delivery allowlist (joiner side).** When the joiner POSTs `/clan/knock` to `receiver_addr`, it records that address. The joiner-side `/clan/knock-deliver` handler then refuses any POST whose source IP doesn't match `receiver_addr`'s IP (port may differ — ephemeral source ports on outbound TLS won't match the listener port). This prevents an attacker who scraped a valid `knock_id` from the wire from flooding the joiner with fake delivery attempts, AND prevents an attacker on the same LAN from racing the legitimate receiver to deliver first. Rejected deliveries return 403; the joiner audit-logs them so an operator can spot intrusion attempts after the fact.
+
+**State machine.**
+
+```
+joiner-side                                 receiver-side
+-----------                                 -------------
+(holds clan_id only)
+generate ephemeral X25519
+record receiver_addr for allowlist
+POST /clan/knock  ----------------------->  validate clan_id matches
+                                            generate receiver X25519
+                                            knock_id = rand(16 bytes)
+                                            store PendingKnock{TTL=300s}
+                <-----------------------    return KnockResponse
+derive (key, nonce, code)                   derive (key, nonce, code)
+display "Show this code: 5123-67890"
+              ↕
+[joiner human reads code aloud]
+              ↕
+                                            [operator opens TUI, sees code]
+[joiner human confirms y/n] ←──── side channel (phone/in-person/Signal) ───→ [operator confirms]
+joiner BLOCKS for y/n input
+on `y`: arm /clan/knock-deliver acceptor    [operator presses `a` accept]
+on `n` or timeout: discard ephemeral,       seal welcome with (key,nonce)
+exit
+                <─────────────────────────  POST /clan/knock-deliver
+verify source IP matches receiver_addr
+  (else 403 + audit log)
+open + verify GCM tag (aad=knock_id)
+write clan.json, identity.json
+transition to admitted
+                                            promote roster entry to active
+                                            on first /clan/advertise (§4.2)
+```
+
+**Acceptance authority.** *Any* member whose roster `state` is `active` (§3.1) may accept or deny incoming knocks. The Clan is peer-equal post-Phase H-1; centralisation through the elected Orchestrator is not required for membership decisions. First-write-wins: the joiner's KnockStore deletes the entry under lock on first successful `knock-deliver`; concurrent accepts from multiple members race for the CAS and the losers receive 409.
+
+**Rate limits.** All values v1; tune per operational data later.
+
+| Side | Bucket | Limit |
+|---|---|---|
+| Receiver | per `joiner_addr` (the IP:port in `/clan/knock`) | 10 / 60 s |
+| Receiver | per `clan_id` (all knocks targeting one Clan) | 30 / 60 s |
+| Joiner   | source IP allowlist on `/clan/knock-deliver` | only `receiver_addr` IP accepted; all others 403 |
+| Joiner   | per `knock_id` on `/clan/knock-deliver` | 1 accept; further attempts 409 |
+| Joiner   | per allowed source IP for invalid blobs | 5 / 60 s (defence against a compromised receiver flooding garbage) |
+
+The per-`clan_id` bucket prevents a swarm DoS against the receiver; the joiner's source-IP allowlist (the receiver_addr the joiner *originally targeted* in `/clan/knock`) shrinks the joiner-side attack surface to a single trusted source, eliminating the M8 peer-review concern about flooding `/clan/knock-deliver` with scraped `knock_id`s from third-party IPs.
+
+**Threat model.**
+
+| Attacker capability | Defence | Limit |
+|---|---|---|
+| Passive eavesdrop | TLS + SPKI pin on the knock leg (receiver advertises its existing Clan cert); ECDH ephemeral keys → forward secrecy | Standard |
+| Active MITM swapping pubkeys | 30-bit SAS binds *both* pubkeys + `clan_id` + `knock_id`; **both** operator AND joiner independently verify digits (mutual confirmation) | ≈10⁹ HKDF iterations needed for collision per knock — minutes-to-hours wall-clock, exceeds 5-min TTL |
+| MITM substitutes pubkeys, joiner accepts blindly | Joiner CLI blocks for `y/n` SAS confirmation before processing any `/clan/knock-deliver` (see "Mutual SAS confirmation") | Hard barrier — joiner refuses to apply blob without explicit human confirmation |
+| Attacker scrapes `knock_id`, floods `/clan/knock-deliver` from elsewhere | Joiner allowlists source IP to `receiver_addr` only (see "Delivery allowlist") | Hard barrier — non-receiver IPs get 403 |
+| Replay old `knock-deliver` | `knock_id` is single-use via CAS on joiner | After consume, 409 |
+| Cross-Clan replay | `clan_id` in HKDF info → different keys → GCM tag fails | Cryptographic barrier |
+| Spam knocks (DoS) | Per-`joiner_addr` + per-`clan_id` rate limits | See table |
+| Compromised existing member | Out of scope for §3.4; addressed by revocation (§3.5) | v1 honesty |
+
+**TTL bounds.** Default knock TTL is 5 min (300 s). Min: 60 s. Max: 15 min (900 s). The joiner-side ephemeral private key is held only while the knock is pending; on expiry the joiner discards it. The receiver-side KnockStore sweeper runs every 60 s (same cadence as the InviteStore sweep) and evicts expired knocks.
+
+**Identity persistence.** The joiner uses their pre-existing Ed25519 identity (from `identity.json`, the same one used for §3.2/§3.3 joining). A joiner with a previously revoked identity will appear to the operator with that identity's fingerprint — `JoinerIdentityFingerprint` is the first 8 hex chars of `sha256(joiner_identity_pub)` and is shown in the receiver's TUI. The operator decides whether to accept; the protocol does not auto-block previously revoked identities (operator may have explicit reason to re-admit).
+
+**Trust transferred on accept.** The sealed `WelcomeResponse` includes `clan_cert_priv_key_b64` — the Ed25519 private key that signs the Clan's TLS certificate. Per §2.2 and the v1 unitary-trust model (§10/R1), every Clan member holds this key so any member can serve TLS on the Clan's pinned cert. **A new joiner admitted via §3.4 therefore receives full authority to impersonate the Clan's TLS identity**, identical to admission via §3.2 or §3.3. Operators must treat the SAS confirmation step as the authorisation gate for that authority. v2 plans to replace the unitary-trust model with per-member certificates signed by a rotating CA; until then, every accepted knock grants the joiner the same trust level as any other Clan member.
+
+### 3.5 Revocation
 
 `POST /clan/revoke` `{"member_id": "...", "reason": "..."}`:
 
@@ -117,7 +281,7 @@ For low-friction joining without out-of-band token exchange:
 - In-flight inference requests routed to the revoked member: retried once on another `inference`-capable member.
 - The revoked member is `purged` from rosters after 48h grace (so brief mistakes can be undone manually).
 
-### 3.5 Self-leave
+### 3.6 Self-leave
 
 A member can call `POST /clan/leave` on itself. It signs the leave intent, broadcasts to peers, deletes local Clan secrets, and returns to `unaffiliated`.
 

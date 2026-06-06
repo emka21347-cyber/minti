@@ -1,0 +1,666 @@
+You are reviewing the protocol spec + implementation plan for MINTI M8 — a
+NEW Clan-joining flow ("knock by clan-id"). MINTI's Clan layer currently has
+two joining flows (§3.2 invite-token, §3.3 BIP39 paste-key), both of which
+require the joiner to receive out-of-band auth material BEFORE joining. M8
+adds a third path where the joiner only needs the Clan ID + a reachable LAN
+address; the existing-Clan operator visually verifies a 6-digit SAS code with
+the joiner over a side channel (phone, in-person, Signal) before accepting.
+
+The crypto core: ephemeral X25519 ECDH between joiner and receiver, with the
+shared secret fed through HKDF-SHA256 binding BOTH pubkeys + clan_id +
+knock_id into the info. The output is split into (32-byte AES-256 key,
+4 bytes of SAS material, 12-byte AES-GCM nonce). Receiver seals a
+WelcomeResponse with AES-256-GCM keyed by the HKDF output and aad=knock_id;
+joiner opens with the same key/nonce/aad. The GCM tag is the receiver-
+authenticity proof.
+
+Your job is to find concrete problems, not to be polite. Be willing to say
+"looks good" rather than padding criticism. Be willing to disagree with the
+plan author. Cite spec sections (e.g. "§3.4 confirm-code semantics") or
+plan sections (e.g. "Rate limits") by name so the author can find them.
+
+Look for, in this priority order:
+
+1. **Cryptographic correctness.** Is the HKDF construction sound (salt
+   namespacing, info binding, output split)? Is reusing a deterministic
+   nonce safe given that each (joiner_pub, receiver_pub) pair derives a
+   distinct key? Does the SAS derivation leak information about the key?
+   Is the GCM aad=knock_id binding sufficient, or should the aad also
+   include clan_id / pubkeys?
+
+2. **Authentication of /clan/knock-deliver.** This is the load-bearing
+   weakness. The joiner exposes an anonymous endpoint waiting for a sealed
+   blob. The blob's GCM tag is the only auth. Can an attacker who scraped
+   /clan/knock off the wire forge a tag? They'd need the X25519 ECDH
+   shared secret — which they don't have unless they MITM'd the original
+   /clan/knock leg (in which case the SAS verification step would catch
+   them). Is this reasoning correct, or is there a hole?
+
+3. **Active MITM on /clan/knock.** TLS-with-SPKI-pin protects §3.2/§3.3
+   because the joiner is given the pin out of band. The §3.4 joiner has
+   no pin. The plan says the joiner TOFUs the cert. Is the SAS sufficient
+   defence-in-depth? Could an attacker proxy the entire knock leg,
+   substitute pubkeys, and learn the AES key just by participating?
+
+4. **Confirm-code entropy.** 20 bits ≈ 1M space. With 5-min TTL + human-
+   eyeball verification, an attacker needs ≈500k MITM attempts per knock
+   window to land a collision. Is 20 bits sufficient for v1's trusted-LAN
+   threat model, or should it be 24/30 bits like the original plan-agent
+   review hinted toward?
+
+5. **Joiner-side rate limits.** The /clan/knock-deliver endpoint accepts
+   any (knock_id, encrypted_blob) — anyone can spam it. Per-knock_id CAS
+   limits accepts to 1. Per-source-IP limit is 5/60s for unknown
+   knock_ids. Sufficient against a determined flooder, or do we need an
+   IP-allowlist (only accept knock-deliver from addresses the joiner
+   knock-d?
+
+6. **Race conditions.** Two operators on two different Clan members both
+   press `a` on the same knock — both POST /clan/knock-deliver to the
+   joiner. The joiner's CAS makes the first-write win; the second gets
+   409. But the second operator's receiver still recorded the knock as
+   "accepted" — is there a way to leave the receiver-side state
+   inconsistent (e.g., one receiver thinks it succeeded; the joiner only
+   has the other's payload)?
+
+7. **State persistence after accept.** The joiner persists clan_key +
+   cert_pem + cert_priv_key + roster from the sealed blob. The cert_priv
+   shared via §3.3 / §3.4 means *every* member of the Clan can decrypt
+   inbound TLS to the founder's cert. Is this acceptable for v1's
+   unitary-trust model? (Per spec §10 / R1, yes — but flag if the M8
+   plan implies tighter semantics than it delivers.)
+
+8. **Replay / cross-Clan attacks.** A captured /clan/knock-deliver
+   payload from Clan A — can it be replayed against Clan B's joiner
+   that happens to pick the same knock_id? clan_id is in HKDF info →
+   different key → GCM tag fails. But the joiner sees a 409-or-tag-
+   mismatch error; is that visible enough to detect a cross-Clan attack
+   vs. an honest "wrong knock_id" failure?
+
+9. **TUI integration concerns.** The accept/deny operations happen via
+   minti-status pressing `a`/`d` on highlighted knocks. The plan says
+   the TUI polls /clan/knock-list every 5s. Is 5s an acceptable
+   detection latency for a knock — or should it be the fast 2s tick?
+   What about audit-log writes — does the plan match the existing
+   service.go:121-126 idiom?
+
+10. **What the plan got right and shouldn't change.** Be willing to
+    say so. Padding critique with non-issues wastes the author's time.
+
+Be specific. Quote the spec/plan paragraph you're objecting to. If a
+finding is out-of-scope for M8 v1 (e.g. mDNS auto-discovery), say so
+and move on.
+
+End your review with one short verdict line:
+  VERDICT: ship Phase 0 as-is | ship after addressing items N..M | block on item K
+
+Below are FOUR documents.
+==================================================================
+DOCUMENT 1: Existing membership context — spec §3.1, §3.2, §3.3
+==================================================================
+
+## 3. Membership
+
+### 3.1 States
+
+```
+unaffiliated --(create)--> active (founder)
+unaffiliated --(invite + admit)--> admitted --(handshake)--> active
+admitted --(timeout 24h)--> unaffiliated
+active --(revoke)--> revoked --(48h grace)--> purged
+active --(self-leave)--> unaffiliated
+```
+
+### 3.2 Invite flow (preferred)
+
+1. An `active` member with sufficient authority (v1: any active member) calls `POST /clan/invite` with `{"ttl_seconds": <60..86400>, "as_role": "auto"}`.
+2. Server returns:
+   ```json
+   {
+     "token": "<base64url 32 bytes>",
+     "clan_id": "...", "clan_cert_pin": "sha256:...",
+     "lan_address": "192.168.1.42:7777",
+     "expires_at": "2026-05-21T18:30:00Z"
+   }
+   ```
+3. The candidate (running `cland --join <token>`) calls `POST /clan/join` on the issuer with `{"token": "...", "member_id": "...", "member_pubkey": "..."}`.
+4. Issuer verifies token, then returns `clan_key` (and `clan_cert` for pinning). Token is consumed (single use).
+5. Candidate persists `clan_id`, `clan_key`, pinned `clan_cert`, and transitions to `admitted`, then `active` on first successful capability advertisement.
+
+### 3.3 Paste-key flow (fallback)
+
+For low-friction joining without out-of-band token exchange:
+
+1. An existing member exposes the Clan Key via one of:
+   - **QR code** encoding the full 256-bit `clan_key` directly, OR
+   - **12-word BIP39 mnemonic** encoding a 128-bit derivation seed.
+2. Candidate enters the phrase (or scans the QR), plus the LAN address of any active member.
+3. Candidate connects, advertises identity, and is admitted on the active member's policy.
+
+**Entropy and key derivation.** When the mnemonic path is used, the candidate's `cland` expands the 128-bit BIP39 seed to the full 256-bit `clan_key` via `HKDF-SHA256(seed, salt="minti-clan-key", info="v1")`. The 128-bit seed is sufficient for v1's trusted-LAN threat model — brute-forcing 128 bits is infeasible with current hardware. The QR path uses the full 256 bits directly. v2 mTLS replaces the shared `clan_key` entirely and closes the 128-bit gap.
+
+**Trust caveat:** any sniffer in the QR/voice channel sees the Clan Key. Use only over trusted channels (sitting at the same desk, secure messenger).
+
+
+
+==================================================================
+DOCUMENT 2: NEW spec §3.4 (Knock flow) — the section being reviewed
+==================================================================
+
+### 3.4 Knock flow (live in-person / Signal-call onboarding)
+
+For onboarding a new node when the joiner has *no out-of-band secret* — only knowledge of the Clan ID and a reachable LAN address of an active member. Trust is established by an **ephemeral X25519 ECDH** between joiner and receiver plus a **20-bit Short Authentication String (SAS)** — a 6-digit numeric confirm-code — that the existing-Clan operator visually verifies with the joiner over a side channel (phone call, in-person, Signal). Modelled on the Signal pairing flow.
+
+This flow coexists with §3.2 (invite-token) and §3.3 (paste-key). Choose by handoff style:
+
+| Flow | Joiner needs… | Best for |
+|---|---|---|
+| §3.2 Invite-token | Token + LAN address + cert pin (single line) | Asynchronous remote ("paste this in the SSH session you opened on the new box") |
+| §3.3 Paste-key | 12-word BIP39 mnemonic | Trusted-channel one-shot ("here's the phrase, save it somewhere safe") |
+| §3.4 Knock | Clan ID + any active LAN address | Live in-person or Signal-call onboarding ("you're sitting next to me — let's join your laptop now") |
+
+**Wire endpoints.** Two on the **receiver** side (any active Clan member can act as receiver), one on the **joiner** side:
+
+| Endpoint | Side | Auth | Purpose |
+|---|---|---|---|
+| `POST /clan/knock` | Receiver | Anonymous (joiner has no `clan_key` yet) | Initiate the knock; receiver stores it pending operator decision |
+| `GET /clan/knock-list` | Receiver | HMAC (Clan member operator) | TUI / CLI reads pending knocks for display |
+| `POST /clan/knock-accept` | Receiver | HMAC | Operator accept; triggers encrypted delivery to joiner |
+| `POST /clan/knock-deny` | Receiver | HMAC | Operator deny; receiver pings joiner with reason |
+| `POST /clan/knock-deliver` | Joiner | **AES-GCM tag is the auth** (no HMAC; joiner doesn't have `clan_key` yet) | Receiver delivers the sealed welcome blob; joiner opens, persists, becomes `active` |
+
+**Request / response shapes.**
+
+```json
+// → POST /clan/knock  (anonymous)
+{
+  "clan_id":                  "<UUIDv4>",
+  "joiner_member_id":         "<UUIDv4>",
+  "joiner_identity_pub_b64":  "<base64 Ed25519 pubkey>",
+  "joiner_x25519_pub_b64":    "<base64 ephemeral X25519 pubkey>",
+  "joiner_display":           "alice-macbook",
+  "joiner_addr":              "192.168.56.103:7777"
+}
+
+// ← KnockResponse
+{
+  "knock_id":                 "<hex 16 bytes>",
+  "receiver_x25519_pub_b64":  "<base64 receiver's ephemeral X25519 pubkey>",
+  "confirm_code":             "541-829",
+  "ttl_seconds":              300
+}
+```
+
+**Cryptographic core.** Both sides derive the *same* `(key, nonce, confirm_code)` from the same inputs. The receiver computes them when it stores the pending knock; the joiner computes them once it has the `KnockResponse`.
+
+```
+shared    = X25519(my_x25519_priv, peer_x25519_pub)            // 32 bytes
+salt      = "minti-knock-v1"
+info      = clan_id || knock_id || joiner_x25519_pub || receiver_x25519_pub
+kdf       = HKDF-SHA256(IKM=shared, salt=salt, info=info)
+read 48 bytes from kdf into bundle:
+  key           = bundle[0:32]                                  // AES-256 key
+  code_bytes    = bundle[32:36]                                 // SAS
+  nonce         = bundle[36:48]                                 // 12-byte GCM nonce
+confirm_code    = sprintf("%03d-%03d",
+                          BE_uint32(code_bytes) / 1_000 mod 1_000,
+                          BE_uint32(code_bytes)         mod 1_000)
+```
+
+The static salt is namespaced (`"minti-knock-v1"`) so future protocol versions can rotate it. **`clan_id` and `knock_id` are in `info`** — without them, an attacker could precompute `(joiner_pub, receiver_pub) → confirm_code` tables offline; with them, every knock window requires a fresh derivation. The nonce is deterministic but safe: each `(joiner_pub, receiver_pub)` pair derives a unique `key`, so the same nonce never re-encrypts under the same key.
+
+**Sealed welcome.** When the operator accepts, the receiver builds the same `WelcomeResponse` payload it would for §3.3 (clan_id, clan_cert_pem, clan_cert_priv_key_b64, clan_key_b64, roster) and seals it:
+
+```
+plaintext  = json.encode(WelcomeResponse)
+ciphertext = AES-256-GCM_seal(key, nonce, plaintext, aad=knock_id)
+```
+
+```json
+// → POST /clan/knock-deliver  (on the joiner's listener)
+{
+  "knock_id":            "<hex 16 bytes>",
+  "encrypted_blob_b64":  "<base64 ciphertext + GCM tag>"
+}
+```
+
+The joiner looks up `knock_id` in its own pending-knock store (which remembers its ephemeral X25519 private key), derives the same `(key, nonce)`, and `AES-256-GCM_open(…, aad=knock_id)`. **The GCM tag is the receiver-authenticity proof** — only a party that knows `shared` (i.e. holds `receiver_x25519_priv`) can forge a valid tag. No separate signature is required.
+
+**Confirm-code semantics.** 20 bits of SAS is borderline (Signal uses 60) but acceptable for this flow because: (a) the SAS is only valid for the knock TTL (default 300 s); (b) verification is human-eyeball over a side channel — the operator and joiner read the digits to each other and confirm match before accepting; (c) the LAN-bounded threat model limits an attacker's collision rate to network round-trip speeds. Brute-forcing the SAS during a single knock window requires ≈500,000 MITM attempts on average — orders of magnitude above what's stealthy. If an attacker substitutes pubkeys in transit, the SAS the joiner derives differs from the SAS the receiver displays; the operator catches the mismatch when reading codes with the joiner.
+
+**State machine.**
+
+```
+joiner-side                                 receiver-side
+-----------                                 -------------
+(holds clan_id only)
+generate ephemeral X25519
+POST /clan/knock  ----------------------->  validate clan_id matches
+                                            generate receiver X25519
+                                            knock_id = rand(16 bytes)
+                                            store PendingKnock{TTL=300s}
+                <-----------------------    return KnockResponse
+derive (key, nonce, code)                   derive (key, nonce, code)
+display "Show this code: 541-829"
+listen on joiner_addr for delivery          [operator opens TUI]
+                                            shows pending knock + code
+                                            [operator visually verifies
+                                             "541-829" with joiner]
+                                            [operator presses `a` accept]
+                                            seal welcome with (key,nonce)
+                <----------------------     POST /clan/knock-deliver
+open + verify GCM tag
+write clan.json, identity.json
+transition to admitted
+                                            promote roster entry to active
+                                            on first /clan/advertise (§4.2)
+```
+
+**Acceptance authority.** *Any* member whose roster `state` is `active` (§3.1) may accept or deny incoming knocks. The Clan is peer-equal post-Phase H-1; centralisation through the elected Orchestrator is not required for membership decisions. First-write-wins: the joiner's KnockStore deletes the entry under lock on first successful `knock-deliver`; concurrent accepts from multiple members race for the CAS and the losers receive 409.
+
+**Rate limits.** All values v1; tune per operational data later.
+
+| Side | Bucket | Limit |
+|---|---|---|
+| Receiver | per `joiner_addr` (the IP:port in `/clan/knock`) | 10 / 60 s |
+| Receiver | per `clan_id` (all knocks targeting one Clan) | 30 / 60 s |
+| Joiner   | per `knock_id` on `/clan/knock-deliver` | 1 accept; further attempts 409 |
+| Joiner   | per source IP for unknown `knock_id`s | 5 / 60 s |
+
+The per-`clan_id` bucket prevents a swarm DoS against the receiver; the joiner-side IP bucket frustrates an attacker who scraped `/clan/knock` and tries to pre-seed delivery before the legitimate accept arrives.
+
+**Threat model.**
+
+| Attacker capability | Defence | Limit |
+|---|---|---|
+| Passive eavesdrop | TLS + SPKI pin on the knock leg (receiver advertises its existing Clan cert); ECDH ephemeral keys → forward secrecy | Standard |
+| Active MITM swapping pubkeys | Confirm code binds *both* pubkeys + `clan_id` + `knock_id`; operator visually verifies digits | ≈1/2²⁰ collision per knock-window — observable |
+| Replay old `knock-deliver` | `knock_id` is single-use via CAS on joiner | After consume, 409 |
+| Cross-Clan replay | `clan_id` in HKDF info → different keys → GCM tag fails | Cryptographic barrier |
+| Spam knocks (DoS) | Per-`joiner_addr` + per-`clan_id` rate limits | See table |
+| Compromised existing member | Out of scope for §3.4; addressed by revocation (§3.5) | v1 honesty |
+
+**TTL bounds.** Default knock TTL is 5 min (300 s). Min: 60 s. Max: 15 min (900 s). The joiner-side ephemeral private key is held only while the knock is pending; on expiry the joiner discards it. The receiver-side KnockStore sweeper runs every 60 s (same cadence as the InviteStore sweep) and evicts expired knocks.
+
+**Identity persistence.** The joiner uses their pre-existing Ed25519 identity (from `identity.json`, the same one used for §3.2/§3.3 joining). A joiner with a previously revoked identity will appear to the operator with that identity's fingerprint — `JoinerIdentityFingerprint` is the first 8 hex chars of `sha256(joiner_identity_pub)` and is shown in the receiver's TUI. The operator decides whether to accept; the protocol does not auto-block previously revoked identities (operator may have explicit reason to re-admit).
+
+
+
+==================================================================
+DOCUMENT 3: Existing cland code shapes the M8 plan reuses
+==================================================================
+
+Existing cland code shapes the M8 plan builds on (verbatim from the codebase):
+
+cland/internal/membership/invite.go (M8 reuses this exact pattern for KnockStore):
+  type InviteStore struct {
+    mu     sync.Mutex
+    tokens map[string]*InviteToken
+  }
+  func (s *InviteStore) Put(token *InviteToken) error
+  func (s *InviteStore) Redeem(tokenStr string) (*InviteToken, error)  // CAS + delete-under-lock
+  func (s *InviteStore) Sweep()                                         // TTL eviction
+  TTL bounds: 60s (InviteTTLMin) .. 24h (InviteTTLMax), default 1h.
+  In-memory only; lost on daemon restart.
+
+cland/internal/membership/handlers.go registers all membership endpoints:
+  srv.Handle("POST /clan/invite", s.handleInvite)        // authenticated (HMAC)
+  srv.HandleAnonymous("POST /clan/join", s.handleJoin)   // anonymous (token-based)
+  srv.Handle("POST /clan/welcome", s.handleWelcome)      // authenticated (HMAC from derived clan_key)
+  srv.Handle("GET /clan/members", s.handleMembers)       // authenticated
+  srv.Handle("POST /clan/leave", s.handleLeave)
+  srv.Handle("POST /clan/revoke", s.handleRevoke)
+M8 adds: knock (anon, joiner→receiver), knock-list/accept/deny (HMAC, operator),
+knock-deliver (anon-but-AES-GCM-auth, receiver→joiner).
+
+cland/internal/membership/service.go contains the WelcomeResponse shape M8
+seals into the encrypted blob:
+  type WelcomeResponse struct {
+    ClanID              string         `json:"clan_id"`
+    ClanCertPEM         string         `json:"clan_cert_pem"`
+    ClanCertPrivKeyB64  string         `json:"clan_cert_priv_key_b64"`
+    ClanKeyB64          string         `json:"clan_key_b64"`  // NOT in §3.3's WelcomeResponse — added for knock
+    Roster              []RosterMember `json:"roster"`
+  }
+The §3.3 WelcomeResponse omits ClanKeyB64 because the paste-key joiner already
+derived it from the mnemonic. The §3.4 knock joiner has NO clan_key yet, so it
+must be in the sealed payload.
+
+cland/internal/transport/server.go: Handle(pattern, h) registers behind HMAC
+middleware (auth.go); HandleAnonymous(pattern, h) skips auth. Both go through
+the same TLS server with the founder-cert.
+
+cland/internal/transport/client.go: HTTPS client with SPKI pin enforcement
+(VerifyPeerCertificate + InsecureSkipVerify=true). Used by the joiner-side to
+talk to the receiver. The joiner has NO clan cert pin at knock time and must
+TOFU the cert it receives — this is one of the open design points to validate.
+
+cland/internal/crypto/: KeyProvider returns Current()/Grace() HMAC keys; used
+for HMAC-stamped requests. NOT used by knock (no shared HMAC key at knock time).
+
+cland/internal/bip39/bip39.go and membership/membership.go:
+  DeriveClanKey(seed) = HKDF-SHA256(IKM=seed, salt="minti-clan-key", info="v1") → 32B
+M8 uses the same HKDF-SHA256 primitive but with a DIFFERENT salt
+("minti-knock-v1") and a CONCATENATED info: clan_id ‖ knock_id ‖ joiner_x25519_pub
+‖ receiver_x25519_pub.
+
+cland/internal/peers/peers.go:245-265 (checkRateLimitLocked): sliding-window
+rate limiter (10 events / 60 s default), per-origin-keyed. M8 reuses this exact
+shape for the knock store's per-joiner_addr + per-clan_id buckets.
+
+go.mod confirms golang.org/x/crypto v0.52.0 is vendored:
+  - HKDF (golang.org/x/crypto/hkdf) — already used in membership.go:20
+  - curve25519 (golang.org/x/crypto/curve25519) — NEW for M8
+  - AES-GCM (crypto/aes + crypto/cipher) — stdlib, already available
+No new module deps required.
+
+status/internal/probes/clan/invite.go: M7.6's invite probe (the immediate
+predecessor pattern for the new knocks probe). Shells `minti-cland invite
+--ttl X --json`, parses InviteResponse, pre-renders the join command for
+copy-paste display in the TUI.
+
+status/internal/tui/panels/invite.go: M7.6's invite panel (the immediate
+predecessor pattern for the new knocks panel). Render-or-skip on nil/expired;
+self-clears via tea.Tick scheduled for time.Until(expires).
+
+
+==================================================================
+DOCUMENT 4: M8 implementation plan (we-need-to-plan-async-candle.md)
+==================================================================
+
+# M8: Knock-by-Clan-ID Clan-joining flow
+
+## Context
+
+The existing Clan-joining flows (Phase C-rest) both require the joiner
+to receive out-of-band auth material *before* joining:
+
+1. **Invite-token**: founder pastes `minti-cland join --token X --address Y --pin Z`.
+2. **BIP39 mnemonic**: founder shares the 12-word phrase from `create` once.
+
+In the M7.x session, on seeing M7.6's TUI-mints-invite feature land, the
+user asked: *"can the joiner just knock with the Clan ID, and have an
+existing operator approve it in the TUI?"* — like Signal pairing or a
+firewall knock pattern. The Clan ID is essentially public (mDNS-visible);
+the trust comes from the operator visually verifying the joiner over a
+side channel (phone, in-person, Signal) before pressing accept.
+
+**Outcome**: a third joining flow that coexists with the two existing
+ones. Knock for live in-person/Signal-call joining; mnemonic for
+trusted-channel async handoff; invite-token for asynchronous remote
+("paste this in the SSH session you opened on the new box"). Each
+addresses a different threat / convenience point.
+
+User-confirmed scope:
+- **Any active Clan member can accept** (matches peer-equal trust model
+  post-Phase H-1; first-accept-wins CAS prevents races).
+- **Run the 3-LLM peer-review pass on this design BEFORE writing
+  protocol code** (matches the M4-E/G/H/J + M5 convention; crypto-
+  touching changes always get adversarial review first).
+
+## Recommendation block
+
+| Decision | Choice | Why |
+|---|---|---|
+| **Trust bootstrap** | Ephemeral X25519 ECDH + 6-digit human-verified SAS | Standard pattern (Signal-pairing-light). Defeats MITM as long as operator visually verifies the digits with the joiner over a side channel. Both `golang.org/x/crypto/curve25519` and `hkdf` already vendored in `cland/go.mod`. |
+| **Symmetric cipher** | AES-256-GCM with deterministic nonce + `aad=knock_id` | GCM tag = receiver-authenticity proof; only the holder of the shared secret can forge it. Same primitive family Go stdlib already uses; no new deps. |
+| **HKDF binding** | `info = clan_id ‖ knock_id ‖ joiner_x25519_pub ‖ receiver_x25519_pub` | Critical: per the Plan-agent review, omitting `clan_id`+`knock_id` from `info` lets an attacker precompute pubkey-pair-to-6-digit tables offline. Binding eliminates that. |
+| **Confirm code** | 20-bit numeric SAS rendered "ABC-DEF" | Borderline (Signal uses 60); acceptable for LAN-bounded, TTL-bounded, human-verified flow. Threat model documented inline. |
+| **Acceptors** | Any *active* Clan member | User's choice. Member's `state="active"` (from `state.RosterMember`) is the gate; admitted/revoked can't accept. First-write-wins CAS on the joiner's `KnockStore`. |
+| **Discovery** | Paste-the-address for v1; mDNS in v1.5 | The existing `cland/internal/discovery/` package (grandcat/zeroconf) is reusable but v1's "paste `minti-cland knock --clan-id X --address Y`" matches the existing CLI ergonomics. |
+| **Peer review** | 3-LLM pass via `scripts/m8-peer-review.py` before any code | Driver mirrors the existing `m4-phaseE-review.py` and similar; reviews land at `scripts/m4-reviews/m8-phase0-{deepseek-r1,gemma4,qwen3.6}.md`. Process: write protocol spec → run reviewers → triage findings → fold consensus blockers → only then write Go. |
+| **Code organisation** | New files under `cland/internal/membership/` (not a new package) | Matches the existing `membership/invite.go`, `membership/handlers.go` shape. KnockStore reuses InviteStore's TTL+sweep pattern. |
+
+---
+
+## Protocol surface
+
+### Wire shapes — `cland/internal/membership/knock.go` (new)
+
+```go
+// POST /clan/knock  — anonymous (joiner has no clan_key yet).
+type KnockRequest struct {
+    ClanID            string `json:"clan_id"`              // must match receiver
+    JoinerMemberID    string `json:"joiner_member_id"`     // UUID
+    JoinerIdentityPub string `json:"joiner_identity_pub_b64"` // Ed25519
+    JoinerX25519Pub   string `json:"joiner_x25519_pub_b64"`   // ephemeral
+    JoinerDisplay     string `json:"joiner_display"`       // hostname/label
+    JoinerAddr        string `json:"joiner_addr"`          // <ip>:7777
+}
+type KnockResponse struct {
+    KnockID         string `json:"knock_id"`              // 16 random bytes hex
+    ReceiverX25519  string `json:"receiver_x25519_pub_b64"`
+    ConfirmCode     string `json:"confirm_code"`          // "ABC-DEF" 20-bit
+    TTLSeconds      int    `json:"ttl_seconds"`           // 300 default
+}
+
+// GET /clan/knock-list  — HMAC. Returns pending knocks for TUI display.
+type KnockListResponse struct {
+    Knocks []KnockEntry `json:"knocks"`
+}
+type KnockEntry struct {
+    KnockID, JoinerMemberID, JoinerDisplay, JoinerAddr string
+    JoinerIdentityFingerprint string  // first 8 hex of sha256(identity_pub)
+    ConfirmCode               string
+    ReceivedAt, ExpiresAt     time.Time
+}
+
+// POST /clan/knock-accept  — HMAC. Triggers the encrypted delivery.
+// POST /clan/knock-deny    — HMAC. Marks knock denied; pings joiner.
+type KnockDecisionRequest struct { KnockID string `json:"knock_id"`; Reason string `json:"reason,omitempty"` }
+
+// POST /clan/knock-deliver — anonymous endpoint on the JOINER side.
+// Authenticated by the AES-GCM tag, not by HMAC.
+type KnockDeliverRequest struct {
+    KnockID       string `json:"knock_id"`
+    EncryptedBlob string `json:"encrypted_blob_b64"`  // AES-256-GCM ciphertext+tag
+}
+```
+
+### Cryptographic core (`knock.go`)
+
+Symmetric derivation on BOTH sides — receiver and joiner compute identical
+`(key, nonce, confirmCode)` from the same inputs:
+
+```go
+shared := curve25519.X25519(myPriv, theirPub)         // 32 bytes
+kdf := hkdf.New(sha256.New, shared,
+                []byte("minti-knock-v1"),             // salt (static)
+                concat(clanID, knockID, joinerPub, receiverPub))  // info
+var bundle [32 + 4 + 12]byte                          // 48 bytes
+io.ReadFull(kdf, bundle[:])
+key, codeBytes, nonce := bundle[:32], bundle[32:36], bundle[36:]
+confirmCode := fmt.Sprintf("%03d-%03d",
+    binary.BigEndian.Uint32(codeBytes) % 1_000_000 / 1_000,
+    binary.BigEndian.Uint32(codeBytes) % 1_000)
+```
+
+Receiver seals `WelcomeResponse-equivalent` plaintext:
+```go
+ct := aesgcm(key).Seal(nil, nonce, plaintext, []byte(knockID))  // aad=knockID
+```
+Joiner opens with the same key/nonce/aad. **The AES-GCM tag is the
+receiver-authenticity proof** — no separate signature needed.
+
+### KnockStore — mirror `InviteStore` pattern
+
+```go
+type KnockStore struct {
+    mu      sync.Mutex
+    pending map[string]*PendingKnock  // by knock_id
+}
+type PendingKnock struct {
+    KnockID                                       string
+    JoinerMemberID, JoinerDisplay, JoinerAddr     string
+    JoinerIdentityPub, JoinerX25519Pub            []byte
+    ReceiverX25519Priv, ReceiverX25519Pub         []byte  // discarded on consume
+    ConfirmCode                                   string
+    ReceivedAt, ExpiresAt                         time.Time
+}
+
+func (s *KnockStore) Consume(id string) (*PendingKnock, bool)  // CAS, first-wins
+func (s *KnockStore) Sweep()                                   // TTL eviction, called from main.go ticker
+```
+
+Mirror `invite.go:78-91` exactly for `Consume` (delete-under-lock returning ok flag).
+
+### Rate limits
+
+Receiver-side:
+- Per `JoinerAddr`: 10 knocks / 60s — reuse the sliding window from `peers.go:245-265` (`checkRateLimitLocked`).
+- Per `clan_id`: 30 knocks / 60s — second bucket on the same `KnockStore` to stop a Clan-targeted swarm.
+
+Joiner-side (`/clan/knock-deliver`):
+- Per `knock_id`: hard cap of 1 successful consume (CAS); additional attempts 409.
+- Per remote source IP: 5 attempts / 60s for unknown knock_ids (defense against attacker pre-seeding fake deliveries hoping to hit an honest joiner's pending knock).
+
+---
+
+## TUI integration (`status/`)
+
+Mirrors the M7.6 invite pattern.
+
+- **`status/internal/probes/clan/knocks.go`** — `MintInvite`-shaped probe: `ListKnocks(ctx)` shells `minti-cland knocks --json`, parses `[]KnockEntry`.
+- **`status/internal/tui/panels/knocks.go`** — render-or-skip pattern (returns `""` when no pending knocks). When pending, shows:
+  ```
+  ▎ Pending knocks (1) ─────────────────────────────────────────────────────
+    [a/d]  knock-abc12  display="alice-macbook"  fingerprint=ab12cd34
+           addr=192.168.56.103:7777  code=541-829  expires in 4m 22s
+  ```
+- **`status/internal/tui/app.go`** — new `m.knocks []clan.KnockEntry`; new keybinds `a` (accept highlighted) / `d` (deny highlighted) when `len(knocks) > 0`; up/down navigate when more than one pending. Cmd funcs `cmdAcceptKnock(id)` / `cmdDenyKnock(id)` shell to cland CLI.
+- **Polling**: knocks land on the **medium tick** (5s) since knock TTL is 5 min — sub-5s freshness is unnecessary. Reuse `cmdProbeClanFull`'s timing slot.
+- **Goldens**: `knocks_none` (asserts empty), `knocks_one`, `knocks_three_with_highlight` (3 pending, middle highlighted).
+
+Footer keybind row gains `a accept · d deny` (only when at least one knock is pending; suppress otherwise to avoid clutter).
+
+---
+
+## CLI subcommands (`cland/cmd/minti-cland/main.go`)
+
+Mirror the existing `cmdJoin` + `joinPasteKey`/`joinToken` shape (lines 730–871):
+
+```bash
+# Joiner side:
+minti-cland knock --clan-id <UUID> --address <ip>:7777 [--display "label"] [--ttl 5m]
+  # Generates ephemeral X25519, POSTs /clan/knock, prints the 6-digit code
+  # to the joiner's terminal, blocks waiting for /clan/knock-deliver (own
+  # listener on a temp ephemeral port — or reuse own daemon's 7777 if it's
+  # already up).
+  # On accept: writes clan.json + identity.json, prints "Joined Clan X".
+  # On deny: prints reason, exits 1.
+  # On TTL expiry: prints "knock timed out", exits 2.
+
+# Operator side (HMAC-auth, runs against local daemon):
+minti-cland knocks [--json]                       # list pending
+minti-cland knock-accept <knock-id>               # accept one
+minti-cland knock-deny <knock-id> [--reason "X"]  # deny one
+```
+
+The TUI uses `knocks --json` for polling and `knock-accept` / `knock-deny`
+for the `a`/`d` keybinds.
+
+---
+
+## Threat model (document inline + in commit message)
+
+| Attacker capability | Defence | Limit |
+|---|---|---|
+| Passive eavesdrop on LAN | TLS-with-SPKI-pin on /clan/knock leg; ECDH ephemeral keys → no long-term-key compromise | Standard |
+| Active MITM substituting pubkeys | Confirm-code derived from BOTH pubkeys + `clan_id` + `knock_id` in HKDF info; operator visually verifies digits with joiner | Catches at ≈1/2²⁰ collision (≥500k MITM attempts per knock-window observable) |
+| Replay of old `/clan/knock-deliver` | `knock_id` is single-use via CAS on joiner's KnockStore | After consume, knock_id rejected with 409 |
+| Cross-Clan replay (attacker bridges two Clans) | `clan_id` in HKDF info; mismatched clan_ids → different keys → GCM tag fails | Hard cryptographic barrier |
+| Spam knocks to DoS the Clan | Rate limits per joiner_addr (10/60s) AND per clan_id (30/60s) | Per `peers.go:245-265` pattern |
+| Compromised existing member | Out of scope for M8; addressed by revocation (Phase C-rest + H-2 gossip) | v1 honesty |
+| Brute-force the 6-digit code | 20-bit space + 5-min TTL + visual-verification step | Acceptable for human-eyeball flow; document explicitly |
+
+---
+
+## Critical files for implementation (Phase 2 — after peer-review pass clears)
+
+- `cland/internal/membership/knock.go` (new, ~280 LOC)
+- `cland/internal/membership/knock_handlers.go` (new, ~180 LOC; 5 handlers: knock, knock-list, knock-accept, knock-deny on receiver; knock-deliver on joiner)
+- `cland/internal/membership/knock_test.go` (new, ~350 LOC; matches existing membership_test.go density)
+- `cland/internal/membership/service.go` (additions ~80 LOC for KnockReceive / KnockAccept / KnockDeny / KnockDeliverHandshake helpers)
+- `cland/cmd/minti-cland/main.go` (additions ~250 LOC for 4 new subcommands)
+- `cland/internal/transport/server.go` — no changes; reuse `Handle` + `HandleAnonymous` patterns at lines 22–28
+- `status/internal/probes/clan/knocks.go` (new, ~80 LOC; mirror `invite.go`)
+- `status/internal/tui/panels/knocks.go` (new, ~140 LOC; mirror `invite.go`)
+- `status/internal/tui/app.go` (additions ~60 LOC for `a`/`d`/up/down keybinds + cursor state + 2 new tea.Cmds)
+- `status/internal/tui/panels/testdata/golden/knocks_*.txt` (new, 3 files)
+- `docs/clan-protocol.md` — bump to v0.3, add §6 "Knock-by-Clan-ID flow"
+- `scripts/m8-peer-review.py` (new, mirror `m4-phaseE-review.py`)
+- `scripts/m4-reviews/m8-phase0-*.md` (raw review artefacts, committed alongside)
+
+Reference files to crib patterns from (existing, do NOT modify):
+- `cland/internal/membership/invite.go` — InviteStore CAS pattern (Consume, Sweep, rate-limit windows)
+- `cland/internal/membership/service.go:121-126` — audit log writes idiom
+- `cland/internal/membership/handlers.go:22-28` — handler registration pattern (Handle vs HandleAnonymous)
+- `cland/internal/peers/peers.go:245-265` — `checkRateLimitLocked` sliding window
+- `cland/internal/transport/server.go:121-150` — HMAC auth middleware (no changes; the new HMAC endpoints register the same way)
+- `cland/internal/transport/client.go:52` — SPKI-pin TLS for the joiner-side calls
+- `cland/internal/bip39/bip39.go` — the existing HKDF + BIP39 derivation precedent
+- `status/internal/probes/clan/invite.go` — probe shape to mirror in `knocks.go`
+- `status/internal/tui/panels/invite.go` — panel render-or-skip pattern to mirror
+
+---
+
+## Verification plan
+
+**Phase 0 — peer review (~half-day; gates Phase 1):**
+1. Write `docs/clan-protocol.md` §6 protocol spec (the wire shapes, crypto core, threat model from this plan).
+2. Run `scripts/m8-peer-review.py` against `deepseek-r1:32b`, `gemma4:31b`, `qwen3.6:latest` (all local on the daily-driver's Ollama).
+3. Triage outputs; consensus blockers fold into the spec before any code; document overrides with reasons.
+4. Commit `M8 Phase 0: protocol spec + 3-LLM peer review` (matches M4-E/G/H/J commit style).
+
+**Phase 1 — cland implementation (~1 day):**
+1. KnockStore + Consume CAS + Sweep + rate-limit buckets.
+2. `knock.go` cryptographic core (HKDF derivation, AES-GCM seal/open).
+3. 5 HTTP handlers (knock, knock-list, knock-accept, knock-deny on receiver; knock-deliver on joiner).
+4. 4 CLI subcommands.
+5. Unit tests (~25 cases mirroring the membership_test.go density).
+
+**Phase 2 — TUI integration (~half-day):**
+1. `status/internal/probes/clan/knocks.go` shells the CLI.
+2. `status/internal/tui/panels/knocks.go` renders.
+3. `a` / `d` / up / down keybinds in `app.go`.
+4. 3 new goldens + regenerated footer goldens.
+
+**Phase 3 — end-to-end smoke (~half-day):**
+1. `minti-cland create` on Windows host (founder).
+2. Fresh WSL Debian (clean state, never been in a Clan): `minti-cland knock --clan-id $CLAN --address 192.168.56.1:7777`. Code prints.
+3. minti-status TUI on Windows shows the pending knock with matching code.
+4. Operator visually verifies, presses `a`. Both sides log success.
+5. WSL daemon now in joined state; `minti-cland show` confirms.
+6. Negative path: re-run knock from same WSL → second knock_id; press `d` → joiner sees denial reason.
+7. Negative path: rate-limit test — script 12 knock attempts from same source → first 10 succeed, 11+12 get 429.
+8. MITM smoke: write a tiny Python proxy that intercepts /clan/knock and substitutes pubkeys → verify the displayed codes mismatch on the two ends.
+
+**Acceptance:**
+- All unit tests pass.
+- Cross-compile matrix (linux/windows/darwin) green.
+- TUI smoke clean on the live 3-node Phase J Clan.
+- 3-LLM peer-review consensus blockers all addressed in code.
+- `docs/clan-protocol.md` bumped to v0.3 with the new §6.
+
+---
+
+## Deliberately NOT in M8 (scope-creep guard)
+
+- **mDNS auto-discovery on joiner side** — paste-the-address only. The existing discovery package can power this in v1.5.
+- **Multi-knock batch operations** — accept-all / deny-all from TUI. Per-knock decisions only.
+- **Knock-via-Bluetooth/QR code** — out of scope; mDNS or paste address only.
+- **Persistence of KnockStore across daemon restart** — in-memory only (mirrors InviteStore design). A daemon restart drops pending knocks; joiners time out and retry.
+- **Rate-limit telemetry** — we'll audit-log each knock decision but won't surface "you got rate-limited" details in the TUI.
+- **Identity rotation** — a joiner with a previously revoked Ed25519 identity will be visible to the operator via fingerprint; we don't auto-block them. Operator decides.
+- **Cross-Clan knock forwarding** — joiner targets ONE Clan per knock command.
+
+---
+
+## Time / effort estimate
+
+- **Phase 0** (peer review): ~half day. Mostly: writing the protocol spec, running the 3-LLM driver, triaging output.
+- **Phase 1** (cland code): ~1 day. ~810 LOC across knock.go, handlers, store, CLI, tests.
+- **Phase 2** (TUI): ~half day. ~320 LOC across probe, panel, app.go additions, goldens.
+- **Phase 3** (smoke + commit): ~half day. End-to-end including MITM test.
+
+**Total: ~2.5 days focused.** Commits land as `M8 Phase 0/1/2/3` mirroring M4's phasing. Final commit message starts `M8: knock-by-clan-id Clan-joining flow (Phases 0-3)`.
