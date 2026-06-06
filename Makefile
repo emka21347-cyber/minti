@@ -54,7 +54,7 @@ GOFLAGS_REL   := -trimpath
         mcp mcp-linux mcptest mcptest-linux \
         pack-fetch pack-fetch-linux pack-fetch-deb \
         packs pack-recon pack-hermes3 pack-mistral pack-wiki-simple sign-recon \
-        status status-linux status-windows status-darwin-amd64 status-darwin-arm64 status-all-platforms status-deb \
+        status status-linux status-windows status-darwin-amd64 status-darwin-arm64 status-all-platforms status-deb status-gif \
         install-test test fmt vet tidy clean dist-dir
 
 help:
@@ -267,6 +267,21 @@ status-darwin-arm64:
 	cd $(STATUS_DIR) && GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL) $(STATUS_LDFLAGS)" -o dist/minti-status-darwin-arm64 $(STATUS_PKG)
 
 status-all-platforms: status-linux status-windows status-darwin-amd64 status-darwin-arm64
+
+# Render the README .gif from status/docs/minti-status.tape.
+# Requires `vhs` on PATH (https://github.com/charmbracelet/vhs). vhs in
+# turn needs ttyd + ffmpeg available — install via your package manager
+# or pull the GitHub release. NOT a CI dependency; this is an authoring
+# tool. Output: status/docs/minti-status.gif (gitignored).
+status-gif:
+	@command -v vhs >/dev/null 2>&1 || { \
+	  echo "ERROR: vhs not on PATH."; \
+	  echo "Install from https://github.com/charmbracelet/vhs"; \
+	  echo "  Linux (Debian/Ubuntu): use the GitHub release tarball — apt doesn't ship vhs yet."; \
+	  echo "  macOS: brew install vhs"; \
+	  exit 1; \
+	}
+	vhs $(STATUS_DIR)/docs/minti-status.tape
 
 # Build minti-status as a .deb. Ships a pre-built binary at /usr/bin/minti-status.
 # Mirrors pack-fetch-deb structure.

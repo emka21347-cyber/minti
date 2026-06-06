@@ -1,0 +1,23 @@
+┌─ minti-status 0.1.0-M7.1 · runtime 0.1.0-M3 ────── root@minti-VirtualBox  06 Jun 02:10:26  [r 2s] ─┐
+▎ System ─────────────────────────────────────────              ▎ Runtime (minti-runtime :7780) ──────────────────
+  OS       Linux Mint 22.3                                        Health     ● healthy  0.1.0-M3                  
+  Kernel   6.17.0-29-generic  x86_64                              Backend    ollama                               
+  CPU      AMD Ryzen 9 9950X3D 16-Core Processor  4t   load 0.07  Resident   ★ llama3.2:3b                        
+  GPU      (no nvidia GPU)                                        In VRAM    (none loaded)                        
+  RAM      1.3 / 7.8 GiB   swap 0.0 / 2.0                                                                         
+▎ Clan ─────────────────────────────────────────────────────────────────────────────────────────────
+  Clan ID          5725d958…bffe    role=founder    pin=sha256:f6db79289…                           
+  Orchestrator     a9f3df01…30ee ★ (self)    term=3368    lease 2s                                  
+  Members (4)      member                 os        state     reason  sys     ad
+                  ● 192.168.56.102:7777 (self) ★ linux     founder   —       —       now            
+                  ○ 192.168.56.1:7777      windows   active    50      66      205h ago             
+                  ○ 192.168.56.1:7777      windows   admitted  —       61      173h ago             
+                  ○ 192.168.56.101:7777    linux     active    35      22      173h ago             
+  Candidates (4)   192.168.1.195:7777 (mdns)  10.0.2.15:7777 (mdns)  192.168.56.101:7777 (manual)  192.168.56.1:7777 (manual)
+  Last elections                                                                                    
+                  term 3368  ← a9f3df01…30ee   reason=bootstrap   6s ago  (×32)                     
+▎ Addons (/var/lib/minti/packs) ──────────────────▎ Harness (opencode + claude) ────────────────────                        
+  (no addon packs installed)                        opencode   minti-runtime                                                
+                                                    MCP        minti-fs · minti-http · minti-pkg · minti-recon · minti-shell
+                                                    claude     (not configured)                                             
+└─ q quit  r refresh  ?/h help ──────────────────────────────────────────────────────────────────────┘

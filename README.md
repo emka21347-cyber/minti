@@ -34,17 +34,22 @@ Old hardware that would otherwise be e-waste can join a Clan and contribute comp
 ```
 cland/            — Go daemon: discovery, membership, leader-lease, routing
 runtime-adapter/  — `minti-runtime`: uniform interface over Ollama / llama.cpp / remote APIs
-mcp-servers/      — fs, shell, recon, http, pkg
+mcp-servers/      — fs, shell, recon, http, pkg, wiki
+status/           — `minti-status`: live terminal-UI dashboard (Clan + Runtime + Addons + Harness)
 console/          — GTK tray app (Clan-aware status, Orchestrator, audit log viewer)
-pack-manager/     — CLI in v1, GTK in v1.5+
-packs/            — debian metapackages: recon, webapp, wireless, forensics
-branding/         — wallpapers, themes (light v1; full ISO branding in v1.5)
+pack-manager/     — `minti-pack-fetch`: content fetcher for addon packs (Ollama models, Kiwix ZIMs)
+packs/            — debian metapackages: recon, hermes3, mistral, wiki-simple, …
+branding/         — `minti-fetch` neofetch-style one-shot, wallpapers, themes
 docs/             — Clan Protocol Spec, threat model, quickstart
 install/          — install.sh + apt-repo config + post-install hooks
 ansible/          — convert-existing-host playbooks (alternative to install.sh)
 scripts/          — dev/build/release scripts
 tests/            — integration + protocol conformance tests
 ```
+
+For the live terminal dashboard, see [`status/README.md`](status/README.md)
+— `minti-status` renders Clan membership, currently-loaded LLM, installed
+addon packs, and harness config in one continuously-refreshing screen.
 
 ## Specification
 

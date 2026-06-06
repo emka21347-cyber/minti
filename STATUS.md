@@ -1,6 +1,6 @@
 # MINTI — Project Status
 
-> **Last updated:** 2026-06-06 (M7.2: minti-status golden tests — 15 scenarios locking the panels package)
+> **Last updated:** 2026-06-06 (M7.3: minti-status docs — README + vhs .tape + static example.txt)
 > **Purpose:** Read this *first* when opening a new chat or onboarding to the project. It's the single document that tells you where MINTI is right now and how to pick up work without re-reading history.
 
 ---
@@ -140,6 +140,19 @@ The PRD is the authoritative spec. **Read it before any implementation work:**
     2. **debhelper `--with systemd` is deprecated.** Compat 11+ auto-loads the systemd sequence — `dh $@ --with systemd` errors out with "no longer provided". Fix: bare `dh $@`; dh_installsystemd still runs automatically when a `.service` file is present under `lib/systemd/system/`.
     3. **`Description-prereq:` is not a real control field.** dpkg-deb rejected it. Fold prerequisite notes into the regular `Description:` paragraph (used "Requires /usr/local/bin/minti-pack-fetch from the base MINTI install").
   - **Follow-ons for a future M6 commit**: ~~package `minti-pack-fetch` itself as a .deb~~ ✓ landed in M6.1 (2026-06-06); ~~deploy `minti-pack-fetch` from `install.sh`~~ ✓ landed in M6.1; ~~pin Kiwix ZIM SHA-256~~ ✓ landed in M6.1 (wikipedia_en_simple_all_nopic_2026-05.zim, 937 MB); add `minti-pack-hermes3-70b` + `minti-pack-mistral-nemo` + `minti-pack-wiki-en-top` + `minti-pack-wiki-en` follow-on tiers; consider building inside an `lxc-launch debian:13` to dodge vboxsf entirely; chmod -x the systemd .service files in the build-pack copy stage (currently dpkg warns "Configuration file ... is marked executable. Proceeding anyway.").
+
+- **M7.3 done** (2026-06-06, this session): docs round-out for `minti-status`. Ships the iteration-tooling deliverable from the M7 plan plus a project-root pointer so future readers can find the dashboard without spelunking commit history.
+  - **`status/README.md`** — what it shows (with the live `--once` snippet rendered inline), quickstart (`--once` / `--no-color` / `--refresh`), keybinds table, per-panel reference (probe + cadence + what it surfaces), refresh-tickers model, build matrix, tests + `-update` flag, vhs-rendering recipe, v1 scope guard + explicit out-of-scope list, source-tree map.
+  - **`status/docs/minti-status.tape`** — vhs source for the README .gif. Catppuccin Mocha theme, 1400×760, 13pt JetBrains Mono, 8s capture window (long enough for the fast ticker to fire three times so a reviewer of the .gif can see the refresh badge tick). The .gif itself is gitignored; only the .tape source ships in the tree.
+  - **`status/docs/example.txt`** — committed static `--once` snapshot captured live from the `minti-dev` VM (3.1 KB). Ensures the inline README example stays a real artefact even when vhs isn't installed; CI-friendly. Captured against the same live Phase J Clan 5725d958-… with 4 members visible, self-orchestrator at term=3368, 4 mDNS-discovered candidates, deduped election history showing `(×32)`.
+  - **Makefile `status-gif` target** — calls `vhs status/docs/minti-status.tape`, fails fast with an install hint if vhs isn't on PATH. NOT a CI dep; this is authoring tooling. Linux note: vhs isn't in apt yet, so the message points to the GitHub release.
+  - **`.gitignore`** — `status/docs/*.gif` added so the rendered build artefact never accidentally lands in a commit.
+  - **Project root `README.md`** — `status/` row added to the source-tree layout block + a short paragraph pointing readers at `status/README.md` for the dashboard. Same edit also tightens the layout block to reflect M6-content + M6.1 reality: `mcp-servers/` lists `wiki`, `pack-manager/` mentioned with its real role, `packs/` lists the new addon metapackages, `branding/` mentions `minti-fetch`.
+  - **Verification**: cross-compile still green (no source-tree changes). The `make status-gif` target was wired but NOT actually run this session — vhs isn't installed on the daily-driver and the .gif is non-blocking (the static `example.txt` covers the inline-readme case). Recording the .gif is a 30-second job once vhs lands; the .tape is ready.
+
+  Knowns carried forward:
+  - vhs render itself — needs `apt install` (no Debian package yet, GitHub release tarball) + `ttyd` + `ffmpeg`. Deferred until the next session that touches docs.
+  - Mutations (pin / rotate-key / peer-add / leave), Windows + macOS CPU + uptime, M5-D Phase 4 rerun — all still queued for M7.4+.
 
 - **M7.2 done** (2026-06-06, this session): golden-file tests for `status/internal/tui/panels/`. 15 scenarios cover every panel × the meaningful states it can be in: Clan in 4 (unaffiliated, self-orch, peer-orch, EACCES) + history-dedupe; Runtime in 2 (healthy w/ VRAM, down); System linux; Addons empty + populated; Harness none + opencode-full; Header + Footer (with/without last-err). Each test renders the panel and diffs against `testdata/golden/<name>.txt`; `go test ./... -update` regenerates after a deliberate rendering change. ANSI is stripped before diffing — colours are styling, not structure, and lipgloss colour-output depends on TTY detection that's brittle for goldens.
   - **Determinism fixes** (the prereq): `panels.Clan` gained a `now time.Time` parameter (was using `time.Since(e.At)` inline, wall-clock dep). `selfDisplay` now reads a package-level `selfOS` var that defaults to `runtime.GOOS`; tests pin it to `"linux"` so the goldens match cross-build platform. Single callsite in `tui/layout.go` updated to pass `time.Now()`.

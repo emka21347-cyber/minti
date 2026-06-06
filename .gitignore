@@ -16,6 +16,7 @@ dist/
 /runtime-adapter/minti-runtime
 /pack-manager/minti-pack-fetch
 /status/minti-status
+status/docs/*.gif
 runtime-adapter/dist/
 vendor/
 
