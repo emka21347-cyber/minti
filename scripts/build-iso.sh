@@ -10,7 +10,7 @@
 # Build workdir: build/iso/ (gitignored, created here)
 set -euo pipefail
 
-REPO=$(git rev-parse --show-toplevel)
+REPO=${REPO:-$(git rev-parse --show-toplevel)}
 LBCONFIG="$REPO/lbconfig"    # source-controlled lb config tree
 BUILD_DIR="$REPO/build/iso"  # lb build working dir + ISO output (gitignored)
 ASSETS="$REPO/assets"
