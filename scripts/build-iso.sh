@@ -132,8 +132,8 @@ cp "$REPO/install/install.sh" "$BUILD_DIR/config/includes.binary/minti-install/i
 
 # ── build ─────────────────────────────────────────────────────────────────────
 cd "$BUILD_DIR"
-log "lb clean..."
-lb clean --all 2>&1 | tail -3
+log "lb clean (preserving chroot cache)..."
+lb clean 2>&1 | tail -3
 
 log "lb config..."
 bash auto/config
