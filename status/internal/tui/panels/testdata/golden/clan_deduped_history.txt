@@ -1,0 +1,7 @@
+▎ Clan ─────────────────────────────────────────────────────────────────────────────────────────────
+  Clan ID          5725d958…bffe    role=founder
+  Orchestrator     a9f3df01…30ee ★ (self)    term=3368    lease 5s
+  Members (1)      member                 os        state     reason  sys     ad
+                  ● 192.168.56.102:7777 (self) ★ linux     founder   —       —       now
+  Last elections
+                  term 3368  ← a9f3df01…30ee   reason=bootstrap   4s ago  (×32)

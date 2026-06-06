@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -19,7 +20,7 @@ func layout(m Model) string {
 
 	sys := panels.System(m.sys)
 	rt := panels.Runtime(m.rt, m.vram)
-	cn := panels.Clan(m.clan, m.clanErr)
+	cn := panels.Clan(m.clan, m.clanErr, time.Now())
 	ad := panels.Addons(m.addons)
 	hn := panels.Harness(m.opencode, m.claudecfg)
 

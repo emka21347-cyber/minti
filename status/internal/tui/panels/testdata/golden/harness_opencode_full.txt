@@ -1,0 +1,4 @@
+▎ Harness (opencode + claude) ────────────────────
+  opencode   minti-runtime   model=hermes3:8b
+  MCP        fs · http · pkg · recon · shell · wiki
+  claude     preset present

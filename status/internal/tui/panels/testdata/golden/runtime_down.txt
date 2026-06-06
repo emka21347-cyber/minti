@@ -1,0 +1,5 @@
+▎ Runtime (minti-runtime :7780) ──────────────────
+  Health     ● (not running)
+  Backend    (unknown)
+  Resident   (no models)
+  In VRAM    (none loaded)

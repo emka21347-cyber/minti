@@ -9,8 +9,16 @@ import (
 	"github.com/minti/status/internal/probes/clan"
 )
 
+// selfOS is the OS string used for the synthesised self row. Defaults
+// to runtime.GOOS; tests override to keep goldens deterministic across
+// build platforms.
+var selfOS = runtime.GOOS
+
 // Clan renders the Clan panel — the headline of the dashboard.
-func Clan(st clan.State, probeErr error) string {
+// `now` is the reference time used to compute "time since" for
+// election-history rows; pass time.Now() in production, a fixed value
+// from goldens in tests.
+func Clan(st clan.State, probeErr error, now time.Time) string {
 	const w = fullWidth
 	const lbl = 16
 
@@ -83,7 +91,7 @@ func Clan(st clan.State, probeErr error) string {
 	if len(st.RecentElections) > 0 {
 		b.WriteString(row("Last elections", "", lbl, w) + "\n")
 		for _, e := range st.RecentElections {
-			ago := time.Since(e.At)
+			ago := now.Sub(e.At)
 			repeat := ""
 			if e.Repeated > 1 {
 				repeat = fmt.Sprintf("  (×%d)", e.Repeated)
@@ -142,7 +150,7 @@ func selfDisplay(st clan.State) memberDisplay {
 	return memberDisplay{
 		Bullet: styleGood.Render("●"),
 		Name:   name,
-		OS:     runtime.GOOS, // "linux" | "windows" | "darwin"
+		OS:     selfOS, // overridable via the selfOS var for tests
 		State:  st.Role,
 		Reason: 0, // not surfaced for self in v1
 		Sys:    0,

@@ -1,0 +1,9 @@
+▎ Clan ─────────────────────────────────────────────────────────────────────────────────────────────
+  Clan ID          5725d958…bffe    role=member    pin=sha256:f6db79289…
+  Orchestrator     57056a7f…af8b    term=13    lease 20s
+  Members (3)      member                 os        state     reason  sys     ad
+                  ● 192.168.56.102:7777 (self) linux     member    —       —       now
+                  ● 192.168.56.101:7777 ★  linux     active    78      68      1s ago
+                  ● 192.168.56.1:7777      windows   active    50      66      2s ago
+  Last elections
+                  term 13  ← 57056a7f…af8b   reason=lease-expired   30s ago

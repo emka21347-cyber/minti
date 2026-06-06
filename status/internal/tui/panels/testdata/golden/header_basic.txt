@@ -1,0 +1,1 @@
+┌─ minti-status 0.3.0-M7.1 · runtime 0.1.0-M3 ─────────────── alice@node-3  06 Jun 14:32:01  [r 2s] ─┐

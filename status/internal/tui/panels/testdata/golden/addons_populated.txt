@@ -1,0 +1,4 @@
+▎ Addons (/var/lib/minti/packs) ──────────────────
+  ✓ hermes3   (ollama-model)
+  ✓ mistral   (ollama-model)
+  ✓ wiki-simple   (kiwix-zim)

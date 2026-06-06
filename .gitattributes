@@ -15,6 +15,11 @@ Makefile     text eol=lf
 debian/*     text eol=lf
 .gitattributes text eol=lf
 .gitignore   text eol=lf
+# Golden test files MUST keep LF — go test diffs them byte-for-byte
+# against the package's just-rendered string output, so CRLF on Windows
+# checkout would silently break every assertGolden call. `**/` makes
+# the rule match the testdata dir at any depth in the tree.
+**/testdata/golden/* text eol=lf
 
 # Binary explicit (don't try to diff/merge as text).
 *.png        binary

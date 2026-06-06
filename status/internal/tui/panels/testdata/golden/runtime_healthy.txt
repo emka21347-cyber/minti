@@ -1,0 +1,7 @@
+▎ Runtime (minti-runtime :7780) ──────────────────
+  Health     ● healthy  0.1.0-M3
+  Backend    ollama
+  Resident   ★ hermes3:8b   reasoning=78
+      mistral:7b   reasoning=62
+      llama3.2:3b   reasoning=35
+  In VRAM    hermes3:8b   (4.9 GiB, ttl 4m31s)
