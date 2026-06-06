@@ -69,6 +69,35 @@ type harnessMsg struct {
 	CC harness.ClaudeConfig
 }
 
+type inviteMsg struct {
+	Invite *clan.Invite
+	Err    error
+}
+
+// inviteExpiredMsg fires from a tea.Tick when the active invite's
+// expiry passes — Update clears m.invite so the panel auto-dismisses.
+type inviteExpiredMsg struct{}
+
+// cmdMintInvite shells minti-cland invite --ttl X --json off the UI
+// goroutine and returns the parsed result as a tea.Msg.
+func cmdMintInvite(ttl time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		inv, err := clan.MintInvite(ctx, ttl)
+		return inviteMsg{Invite: inv, Err: err}
+	}
+}
+
+// cmdInviteExpiryWatch returns a tea.Cmd that fires once `d` has
+// elapsed — the Update handler then clears the invite from the panel.
+func cmdInviteExpiryWatch(d time.Duration) tea.Cmd {
+	if d <= 0 {
+		return func() tea.Msg { return inviteExpiredMsg{} }
+	}
+	return tea.Tick(d, func(time.Time) tea.Msg { return inviteExpiredMsg{} })
+}
+
 // probeAll fires every probe once — used at startup + on `r` keypress.
 func probeAll() tea.Cmd {
 	return tea.Batch(

@@ -1,1 +1,1 @@
-└─ q quit  r refresh  ?/h help ────────── last-err: clan: permission denied (sudo for clan details) ─┘
+└─ q quit  r refresh  i invite  ?/h help ─ last-err: clan: permission denied (sudo for clan details) ─┘

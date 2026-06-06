@@ -1,0 +1,3 @@
+▎ Invite (5m TTL · expires in 4m31s) ───────────────────────────────────────────────────────────────
+  Copy + run on    the joining node:
+  minti-cland join --token 0_hwhTZRlsqHlIDwCcCv_U4jaSxtaQE0G9qWdm-XsH4 --address 192.168.56.1:7777 --pin sha256:f6db79289845fe1204d6dc7ae6b62ca848cf9ea9be9f63c938414b1873d43967

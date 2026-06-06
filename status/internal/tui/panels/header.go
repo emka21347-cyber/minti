@@ -76,9 +76,9 @@ func Footer(d FooterData) string {
 	if d.Width <= 0 {
 		d.Width = fullWidth
 	}
-	left := " q quit  r refresh  ?/h help "
+	left := " q quit  r refresh  i invite  ?/h help "
 	if d.Help {
-		left = " q quit · r refresh · ? hide help · Esc/Ctrl+C exit "
+		left = " q quit · r refresh · i mint 5m invite · ? hide help · Esc/Ctrl+C exit "
 	}
 	right := ""
 	if d.LastErr != "" {

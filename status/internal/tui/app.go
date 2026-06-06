@@ -25,6 +25,11 @@ import (
 	"github.com/minti/status/internal/tui/panels"
 )
 
+// inviteTTL is the default lifetime requested when the user presses `i`.
+// Long enough to copy + paste + run, short enough that a screenshot of
+// the dashboard isn't a permanent Clan grant.
+const inviteTTL = 5 * time.Minute
+
 // Options configures a TUI run. Held outside the Model so --once can take
 // a different rendering path without re-instantiating the whole stack.
 type Options struct {
@@ -95,6 +100,7 @@ type Model struct {
 	lastTick    time.Time // for the header's "[r 2.0s]" badge
 	showHelp    bool
 	ready       bool // true once the first round of probes has landed
+	invite      *clan.Invite
 }
 
 func newModel(opts Options) Model {
@@ -136,6 +142,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?", "h":
 			m.showHelp = !m.showHelp
 			return m, nil
+		case "i":
+			// Mint a fresh invite. Replaces any existing one (option
+			// "mint a fresh one, replace" per the M7.6 design).
+			return m, cmdMintInvite(inviteTTL)
 		}
 
 	case tickFastMsg:
@@ -230,6 +240,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case harnessMsg:
 		m.opencode = msg.OC
 		m.claudecfg = msg.CC
+		return m, nil
+
+	case inviteMsg:
+		if msg.Err != nil {
+			m.lastErr = "invite: " + msg.Err.Error()
+			return m, nil
+		}
+		m.invite = msg.Invite
+		// Schedule a one-shot cmd that fires at expiry so we can clear
+		// the panel without waiting for the next user keypress.
+		return m, cmdInviteExpiryWatch(time.Until(msg.Invite.ExpiresAt))
+
+	case inviteExpiredMsg:
+		if m.invite != nil && m.invite.Expired() {
+			m.invite = nil
+		}
 		return m, nil
 	}
 

@@ -1,3 +1,15 @@
+minti-status (0.1.0-M7.6) unstable; urgency=medium
+
+  * First user-initiated mutation in the read-only-v1 TUI: press `i` to
+    mint a 5-minute invite via `minti-cland invite --ttl 5m --json` and
+    surface the copy-pasteable `minti-cland join --token X --address Y
+    --pin Z` line in a new section below Clan. Auto-dismisses on TTL
+    expiry. Press `i` again for a fresh token (replaces, does not
+    extend).
+  * Updated keybinds row: `q quit  r refresh  i invite  ?/h help`.
+
+ -- MINTI Project <minti@localhost>  Sat, 06 Jun 2026 17:00:00 +0000
+
 minti-status (0.1.0-M7.5) unstable; urgency=medium
 
   * Stop the live-dashboard flap. Fast/medium tick probes return a

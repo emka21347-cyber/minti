@@ -18,16 +18,28 @@ import (
 func layout(m Model) string {
 	wide := m.width >= 100
 
+	now := time.Now()
 	sys := panels.System(m.sys)
 	rt := panels.Runtime(m.rt, m.vram)
-	cn := panels.Clan(m.clan, m.clanErr, time.Now())
+	cn := panels.Clan(m.clan, m.clanErr, now)
+	inv := panels.Invite(m.invite, now)
 	ad := panels.Addons(m.addons)
 	hn := panels.Harness(m.opencode, m.claudecfg)
 
+	parts := []string{}
 	if wide {
-		topRow := lipgloss.JoinHorizontal(lipgloss.Top, sys, rt)
-		bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, ad, hn)
-		return strings.Join([]string{topRow, cn, bottomRow}, "\n")
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, sys, rt))
+		parts = append(parts, cn)
+		if inv != "" {
+			parts = append(parts, inv)
+		}
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, ad, hn))
+	} else {
+		parts = append(parts, sys, rt, cn)
+		if inv != "" {
+			parts = append(parts, inv)
+		}
+		parts = append(parts, ad, hn)
 	}
-	return strings.Join([]string{sys, rt, cn, ad, hn}, "\n")
+	return strings.Join(parts, "\n")
 }
