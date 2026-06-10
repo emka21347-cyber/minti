@@ -1,5 +1,13 @@
 # MINTI live-build chroot package list
+# NOTE: init system is forced to systemd via `--initsystem systemd` in
+# auto/config. This old Ubuntu live-build (3.0~a57) defaults LB_INITSYSTEM to
+# sysvinit, which installs live-config-sysvinit + sysvinit-core and evicts
+# systemd-sysv — leaving live-config unwired so the live `user` account is
+# never created and login fails. --initsystem systemd installs
+# live-config-systemd instead and keeps systemd as PID 1.
+
 # Base system
+sudo
 openssh-server
 curl
 ca-certificates
@@ -30,6 +38,23 @@ libplymouth5
 grub-common
 fonts-dejavu-core
 
+# ISO build deps. lb_binary_syslinux installs these into the chroot at the
+# *binary* stage — but by then apt sources are removed, so on a fresh chroot
+# (cold cache) it fails with "Unable to locate package". Pre-install them here
+# during the chroot stage (sources available) so the binary stage finds them.
+# syslinux-utils provides isohybrid for lb_binary_iso.
+syslinux
+syslinux-common
+syslinux-utils
+isolinux
+librsvg2-bin
+genisoimage
+xorriso
+mtools
+dosfstools
+
 # Terminal polish
 bash-completion
 command-not-found
+mawk
+procps

@@ -7,6 +7,7 @@ lb config noauto \
   --architectures amd64 \
   --binary-images iso-hybrid \
   --bootloader syslinux \
+  --initsystem systemd \
   --debian-installer false \
   --archive-areas "main contrib non-free non-free-firmware" \
   --apt-recommends false \
@@ -19,4 +20,5 @@ lb config noauto \
   --iso-application "MINTI" \
   --iso-preparer "MINTI Project" \
   --iso-publisher "MINTI Project" \
+  --bootappend-live "boot=live components plymouth.enable=0 console=tty0 console=ttyS0,115200" \
   --iso-volume "MINTI-$(date +%Y%m%d)"

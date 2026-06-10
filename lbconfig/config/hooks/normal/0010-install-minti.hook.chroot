@@ -1,22 +1,156 @@
 #!/bin/bash
-# Chroot hook: install Ollama + MINTI, set Plymouth + GRUB theme.
+# Chroot hook: fix perms, create live user, set Plymouth + GRUB theme.
 # Runs inside the Debian Bookworm rootfs during lb build.
 set -euo pipefail
 
-# Ollama install is skipped during ISO chroot build to keep the ISO small
-# (~500 MB savings) and the build fast. Install Ollama on first boot via:
-#   curl -fsSL https://ollama.com/install.sh | sh
-# or via minti-pack-fetch after installing a model pack.
-echo "[minti-hook] Ollama install deferred to first boot (skipping in chroot)"
+# ── CRITICAL: normalize directory permissions ────────────────────────────────
+# The ISO build runs with umask 007, so build-iso.sh's `mkdir -p` for the
+# includes.chroot staging dirs (e.g. /usr/local/bin) created their parents
+# (/usr, /usr/local, /usr/share, /opt, ...) as 0770. live-build then applies
+# those perms to the REAL rootfs dirs on includes extraction — leaving /usr at
+# 0770 root:root. Result: non-root users can't traverse /usr, so they can't
+# execute ANY binary or load libc → every `user` login fails and `user` can't
+# run anything. Restore standard world-traversable perms on system dirs.
+echo "[minti-hook] normalizing system directory permissions (fix 0770 /usr)..."
+chmod 0755 / /usr /usr/local /usr/local/bin /usr/local/sbin /usr/share /opt /etc /var /var/lib 2>/dev/null || true
+# Catch any other dir under these trees missing other-read+execute.
+find /usr /opt /etc/systemd -xdev -type d ! -perm -o+rx -exec chmod o+rx {} + 2>/dev/null || true
+# Ensure the user/group databases are world-readable (getpwuid/getpwnam need
+# these; if clobbered, `whoami`, login, and sshd user lookup all EACCES).
+chmod 0644 /etc/passwd /etc/group /etc/nsswitch.conf 2>/dev/null || true
+chmod 0640 /etc/shadow /etc/gshadow 2>/dev/null || true
 
-echo "[minti-hook] running MINTI install script..."
-if [[ -f /tmp/install.sh ]]; then
-    # MINTI_CHROOT=1: skip systemctl service-start calls (no systemd in chroot)
-    # MINTI_PACK_NO_FETCH=1: skip model downloads — pulled on first run
-    MINTI_CHROOT=1 MINTI_PACK_NO_FETCH=1 bash /tmp/install.sh
-else
-    echo "[minti-hook] WARNING: /tmp/install.sh not found, skipping MINTI install"
+# ── live user ─────────────────────────────────────────────────────────────────
+# This ancient Ubuntu live-build (3.0~a57) ships live-config.service but never
+# enables it, so live-config never runs at boot and the default `user` account
+# is never created (login fails). Create it deterministically here, and also
+# enable live-config so its other boot-time setup (hostname, locale, etc.) runs.
+echo "[minti-hook] creating live user (user/live)..."
+if ! id user >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G sudo,audio,video,netdev,plugdev user
 fi
+# Set password to 'live' and guarantee the account is usable (unlocked, no expiry)
+echo 'user:live' | chpasswd
+passwd -u user 2>/dev/null || true
+chage -d 99999 -E -1 -M -1 -I -1 user 2>/dev/null || true
+
+# SSH key for the live user. live-config's 1160-openssh-server disables SSH
+# *password* auth at boot (good security default), but pubkey auth stays on —
+# so injecting an authorized_keys gives reliable key-based login into the live
+# session without weakening the image. (Public key only; the matching private
+# key lives on the build/driver host.)
+echo "[minti-hook] installing authorized_keys for user..."
+install -d -m 0700 -o user -g user /home/user/.ssh
+cat > /home/user/.ssh/authorized_keys <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMzBtVd42RJQswv9cLrUlF63y4PwxNm7y+4J2soNmHc4 minti-vm-driver
+EOF
+chmod 0600 /home/user/.ssh/authorized_keys
+chown user:user /home/user/.ssh/authorized_keys
+# Passwordless sudo for the live session (matches Debian-live convention)
+mkdir -p /etc/sudoers.d
+echo 'user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/live
+chmod 0440 /etc/sudoers.d/live
+
+# MASK live-config entirely. It's package-enabled and runs at boot, where it
+# does two things that break this image: (1) 1160-openssh-server disables SSH
+# password auth, and (2) 0005-nss-systemd adds `systemd` to nsswitch.conf, which
+# errors without logind/dbus (this minimal image has neither) — breaking
+# getpwuid() so `whoami`, console login, and sshd's user lookup (pubkey auth)
+# all fail with "Permission denied". This hook already provisions the user +
+# sudo + ssh key deterministically, so live-config is pure downside here.
+echo "[minti-hook] masking live-config.service..."
+ln -sf /dev/null /etc/systemd/system/live-config.service
+
+# Files-based NSS (no systemd userdb — there's no logind in this image).
+echo "[minti-hook] writing files-based /etc/nsswitch.conf..."
+cat > /etc/nsswitch.conf <<'EOF'
+passwd:         files
+group:          files
+shadow:         files
+gshadow:        files
+hosts:          files dns
+networks:       files
+protocols:      db files
+services:       db files
+ethers:         db files
+rpc:            db files
+netgroup:       nis
+EOF
+
+# Generate SSH host keys now. We masked live-config (which used to generate
+# them), and the chroot openssh-server postinst may skip key-gen under
+# policy-rc.d — without host keys, ssh.service fails to start. ssh-keygen -A
+# creates any missing host keys.
+echo "[minti-hook] generating SSH host keys..."
+ssh-keygen -A 2>&1 | sed 's/^/[minti-hook]   /' || true
+
+# Autologin the live user on the virtual console + serial console. Standard for
+# a live image (Ubuntu/Mint live autologin too) and gives a hands-on MINTI shell
+# with no password. (Earlier this failed only because /usr was 0770 and user
+# couldn't exec the shell — now fixed above.)
+echo "[minti-hook] configuring getty autologin for user..."
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin user --noclear %I $TERM
+EOF
+mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d
+cat > /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin user --keep-baud 115200,57600,38400,9600 %I $TERM
+EOF
+
+# ── PoC demo + diagnostic service (TEMPORARY — remove once login is solved) ───
+# Runs once at boot, writes to the serial console: proves the MINTI tools run in
+# the live environment, and dumps the runtime account state so we can see why
+# interactive login is rejected (suspect: account locked at boot).
+echo "[minti-hook] installing PoC demo/diagnostic service..."
+cat > /usr/local/sbin/minti-poc-demo.sh <<'DEMO'
+#!/bin/bash
+exec > >(tee -a /dev/ttyS0) 2>&1
+echo "==================== MINTI PoC DEMO ===================="
+echo "--- /usr perms ---"; ls -ld /usr /etc; ls -l /etc/passwd | cut -d' ' -f1
+echo "--- whoami as user (nss) ---"; runuser -u user -- whoami 2>&1
+echo "--- sshd active? ---"; systemctl is-active ssh 2>&1; ls /etc/ssh/ssh_host_*_key 2>&1 | tr '\n' ' '; echo
+echo "--- nsswitch passwd ---"; grep '^passwd' /etc/nsswitch.conf
+echo "--- uname / os ---"; uname -srm; grep PRETTY_NAME /etc/os-release
+echo
+echo "### MINTI TOOLS (executed as the live 'user') ###"
+echo "--- minti-fetch ---"; runuser -u user -- env HOME=/home/user USER=user minti-fetch 2>&1
+echo "--- minti-cland show ---"; runuser -u user -- minti-cland show 2>&1
+echo "--- minti-cland orchestrator ---"; runuser -u user -- minti-cland orchestrator 2>&1 | head -4
+echo "--- MCP servers present ---"; ls -1 /opt/minti/mcp/
+echo "==================== END MINTI PoC DEMO ===================="
+DEMO
+chmod 0755 /usr/local/sbin/minti-poc-demo.sh
+cat > /etc/systemd/system/minti-poc-demo.service <<'SVC'
+[Unit]
+Description=MINTI PoC demo + diagnostic (writes to serial console)
+After=multi-user.target network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/minti-poc-demo.sh
+StandardOutput=journal+console
+[Install]
+WantedBy=multi-user.target
+SVC
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/minti-poc-demo.service \
+    /etc/systemd/system/multi-user.target.wants/minti-poc-demo.service
+
+# LEAN BASE: do NOT run install.sh in the chroot. It unconditionally installs
+# Ollama (~1.5 GB) + opencode, ballooning the ISO from ~350 MB to ~1.9 GB —
+# install.sh ignores MINTI_CHROOT/MINTI_PACK_NO_FETCH for those heavy installs.
+# The MINTI binaries (minti-runtime/cland/pack-fetch + 6 MCP servers) are
+# already staged directly into the rootfs via includes.chroot, so the CLI works
+# out of the box. Ollama, opencode, and the model/ZIM blobs ride the first-boot
+# + addon-pack rails (minti-pack-fetch), keeping the base image lean.
+# TODO(next iter): give install.sh a real chroot-aware lean mode, then optionally
+# run a config-only pass here to drop /etc/minti/*.yaml + the minti service user.
+echo "[minti-hook] lean base — Ollama/opencode/models deferred to first boot + packs"
 
 # ── Plymouth theme ────────────────────────────────────────────────────────────
 PLYMOUTH_DIR=/usr/share/plymouth/themes/minti
@@ -31,15 +165,20 @@ else
     echo "[minti-hook] WARNING: Plymouth theme dir not found, skipping"
 fi
 
-# ── GRUB theme (for post-install systems) ────────────────────────────────────
-GRUB_THEME=/usr/share/grub/themes/minti/theme.txt
-if [[ -f "$GRUB_THEME" ]]; then
-    echo "[minti-hook] configuring GRUB theme..."
-    sed -i "s|^#*GRUB_THEME=.*|GRUB_THEME=$GRUB_THEME|" /etc/default/grub
+# ── GRUB theme (for post-install systems only) ───────────────────────────────
+# The live ISO uses syslinux, so grub-pc isn't installed and /etc/default/grub
+# doesn't exist here. These edits only matter if MINTI is later installed to
+# disk with GRUB, so guard the whole block on the file existing.
+if [[ -f /etc/default/grub ]]; then
+    GRUB_THEME=/usr/share/grub/themes/minti/theme.txt
+    if [[ -f "$GRUB_THEME" ]]; then
+        echo "[minti-hook] configuring GRUB theme..."
+        sed -i "s|^#*GRUB_THEME=.*|GRUB_THEME=$GRUB_THEME|" /etc/default/grub
+    fi
+    sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=10|' /etc/default/grub
+    sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"|' /etc/default/grub
+else
+    echo "[minti-hook] /etc/default/grub absent (syslinux live image) — skipping GRUB config"
 fi
-# Timeout: 10 s countdown before auto-boot
-sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=10|' /etc/default/grub
-# Silent boot (Plymouth handles splash)
-sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"|' /etc/default/grub
 
 echo "[minti-hook] done."

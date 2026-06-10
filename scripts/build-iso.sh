@@ -10,6 +10,14 @@
 # Build workdir: build/iso/ (gitignored, created here)
 set -euo pipefail
 
+# Force a sane umask. If the build runs with umask 007 (some shells/sudo envs),
+# `mkdir -p` for the includes.chroot staging dirs creates parents like /usr at
+# 0770, and live-build applies that to the real rootfs — leaving /usr
+# non-traversable by normal users (breaks all non-root exec + login). 022
+# guarantees staged dirs are 0755. (The chroot hook also normalizes perms as a
+# belt-and-braces backstop.)
+umask 022
+
 REPO=${REPO:-$(git rev-parse --show-toplevel)}
 LBCONFIG="$REPO/lbconfig"    # source-controlled lb config tree
 BUILD_DIR="$REPO/build/iso"  # lb build working dir + ISO output (gitignored)
@@ -31,6 +39,7 @@ done
 # ── pre-flight ────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "live-build requires root. Run: sudo bash scripts/build-iso.sh"
 command -v lb >/dev/null 2>&1 || die "live-build not found. Install: apt install live-build"
+[[ -f /usr/lib/ISOLINUX/isolinux.bin ]] || die "isolinux not found. Install: apt install isolinux"
 
 # ── rasterize visual assets (requires inkscape or resvg) ─────────────────────
 if [[ $SKIP_PNG -eq 0 ]]; then
@@ -110,6 +119,13 @@ log "Syncing lbconfig/ → build/iso/..."
 mkdir -p "$BUILD_DIR"
 rsync -a --delete "$LBCONFIG/" "$BUILD_DIR/"
 
+# This live-build (3.0~a57) globs hooks at config/hooks/*.chroot, NOT the modern
+# config/hooks/normal/*.hook.chroot. Flatten our normal hooks so they run.
+if compgen -G "$BUILD_DIR/config/hooks/normal/*.chroot" >/dev/null; then
+    log "Flattening config/hooks/normal/ → config/hooks/ (lb 3.0 convention)..."
+    cp "$BUILD_DIR"/config/hooks/normal/*.chroot "$BUILD_DIR/config/hooks/"
+fi
+
 # ── stage visual assets into chroot includes ──────────────────────────────────
 log "Staging visual assets..."
 
@@ -187,6 +203,69 @@ if [[ -f "$REPO/branding/minti-fetch" ]]; then
     log "  minti-fetch → $CHROOT_BRANDING/minti-fetch"
 fi
 
+# ── fix syslinux/isolinux bootloader template ────────────────────────────────
+# The system-installed live-build template has 2012-era symlinks pointing at
+# /usr/lib/syslinux/{isolinux.bin,vesamenu.c32} — bookworm moved these to
+# /usr/lib/ISOLINUX/ and /usr/lib/syslinux/modules/bios/. Create a local
+# bootloader override with actual files from the host.
+log "Creating isolinux bootloader override..."
+ISOLINUX_DIR="$BUILD_DIR/config/bootloaders/isolinux"
+mkdir -p "$ISOLINUX_DIR"
+
+# Binaries from host (the system lb template has broken 2012-era symlinks)
+cp /usr/lib/ISOLINUX/isolinux.bin                   "$ISOLINUX_DIR/"
+cp /usr/lib/syslinux/modules/bios/vesamenu.c32      "$ISOLINUX_DIR/"
+cp /usr/lib/syslinux/modules/bios/ldlinux.c32       "$ISOLINUX_DIR/"
+cp /usr/lib/syslinux/modules/bios/libcom32.c32      "$ISOLINUX_DIR/"
+cp /usr/lib/syslinux/modules/bios/libutil.c32       "$ISOLINUX_DIR/"
+
+# Config files — written directly (no gfxboot/bootlogo/splash.svg.in,
+# which crash on bookworm because the system template needs `rsvg`)
+cat > "$ISOLINUX_DIR/isolinux.cfg" <<'ISOCFG'
+include menu.cfg
+default vesamenu.c32
+prompt 0
+timeout 50
+ISOCFG
+
+cat > "$ISOLINUX_DIR/menu.cfg" <<'MENUCFG'
+menu hshift 0
+menu width 82
+menu title MINTI Live
+include stdmenu.cfg
+include live.cfg
+MENUCFG
+
+cat > "$ISOLINUX_DIR/stdmenu.cfg" <<'STDCFG'
+menu background #1e1e2e
+menu color title        1;36;44    #ff5fd7ff #00000000 std
+menu color sel          7;37;40    #ff00d787 #ff1e1e2e all
+menu color unsel        37;44      #ffcdd6f4 #ff1e1e2e std
+menu color hotsel       1;7;37;40  #ff00d787 #ff1e1e2e all
+menu color hotkey       1;36;44    #ff5fd7ff #00000000 std
+menu color timeout_msg  37;40      #ffcdd6f4 #ff1e1e2e std
+menu color timeout      1;37;40    #ff00d787 #ff1e1e2e std
+menu color tabmsg       37;40      #ff6c7086 #ff1e1e2e std
+STDCFG
+
+cat > "$ISOLINUX_DIR/live.cfg.in" <<'LIVECFG'
+label live-@FLAVOUR@
+  menu label ^MINTI Live (@FLAVOUR@)
+  menu default
+  linux @KERNEL@
+  initrd @INITRD@
+  append @LB_BOOTAPPEND_LIVE@
+
+label live-@FLAVOUR@-failsafe
+  menu label MINTI Live (@FLAVOUR@ failsafe)
+  linux @KERNEL@
+  initrd @INITRD@
+  append @LB_BOOTAPPEND_FAILSAFE@
+LIVECFG
+
+# Valid empty cpio archive — prevents lb's gfxboot hack from crashing
+cpio --quiet -o < /dev/null > "$ISOLINUX_DIR/bootlogo"
+
 # ── build ─────────────────────────────────────────────────────────────────────
 cd "$BUILD_DIR"
 log "lb clean (preserving chroot cache)..."
@@ -199,7 +278,8 @@ log "lb build (may take 10–30 min)..."
 lb build 2>&1 | tee "$BUILD_DIR/build.log" | grep -E '^\[|^P|[Ee]rror|[Ww]arn' || true
 
 ISO=$(ls "$BUILD_DIR"/minti-bookworm-amd64.hybrid.iso 2>/dev/null \
-    || ls "$BUILD_DIR"/live-image-amd64.hybrid.iso 2>/dev/null || echo "")
+    || ls "$BUILD_DIR"/live-image-amd64.hybrid.iso 2>/dev/null \
+    || ls "$BUILD_DIR"/binary.hybrid.iso 2>/dev/null || echo "")
 if [[ -n "$ISO" && -f "$ISO" ]]; then
     SIZE=$(du -h "$ISO" | cut -f1)
     log "Done. $ISO ($SIZE)"
