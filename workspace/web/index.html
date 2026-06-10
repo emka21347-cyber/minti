@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>MINTI Clan Workspace — mock</title>
+<!-- Reference mock for the Clan Workspace. Locked 2026-06-07.
+     The real frontend (Phase A) self-hosts the font + icons (offline-first);
+     this reference pulls them from CDN for fidelity. Fake data, real interactions. -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css" rel="stylesheet"/>
+<style>
+  :root{
+    --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --bg:#0a0a0a; --surface:#101414; --line:#1e2a2a;
+    --mint:#00d787; --cyan:#5fd7ff; --you:#ececec; --grey:#8a8a8a; --label:#bcbcbc;
+  }
+  html,body{ margin:0; background:#060606; color:#eee; font-family:var(--mono); }
+  body{ display:flex; justify-content:center; padding:24px 12px; min-height:100vh; box-sizing:border-box; }
+  #app{ width:100%; max-width:920px; }
+  .ti{ font-style:normal; }
+  input,select,button{ font-family:var(--mono); }
+  @keyframes mpulse{ 0%{ r:var(--r0); opacity:.7 } 100%{ r:var(--r1); opacity:0 } }
+  @keyframes hbx{ 0%{ r:9; opacity:.4 } 100%{ r:42; opacity:0 } }
+  @keyframes fadein{ from{ opacity:0; transform:translateY(-3px) } to{ opacity:1; transform:none } }
+  .busy{ animation:mpulse 1.3s ease-out infinite } .hbring{ animation:hbx 1.1s ease-out forwards } .fl{ animation:fadein .3s ease-out }
+  ::-webkit-scrollbar{ width:8px; height:8px } ::-webkit-scrollbar-thumb{ background:#222; border-radius:4px }
+  @media (prefers-reduced-motion: reduce){ .busy,.hbring,.fl{ animation:none } }
+</style>
+</head>
+<body>
+<div id="app">
+<div id="mw" style="background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5;">
+  <div style="display:flex; align-items:center; gap:10px; padding:8px 13px; background:#141414; border-bottom:1px solid #242424;">
+    <span style="color:var(--cyan);">&#9626;</span><span style="color:var(--mint); font-weight:500; letter-spacing:2px;">MINTI</span><span style="color:#5a5a5a;">workspace</span><span style="flex:1;"></span>
+    <span style="color:#6a6a6a; font-size:11px;">clan <span style="color:var(--label);">5725d958</span> &middot; founder &middot; term <span style="color:var(--label);">19</span> &middot; lease <span style="color:var(--mint);">6.2s</span></span>
+    <span style="color:var(--mint); font-size:11px;"><i class="ti ti-lock" aria-hidden="true" style="vertical-align:-2px;"></i></span>
+  </div>
+
+  <div style="display:flex; min-height:440px;">
+    <div style="width:46px; background:#0d0d0d; border-right:1px solid #1e1e1e; padding:8px 0; display:flex; flex-direction:column; align-items:center; gap:4px;">
+      <div class="nav" data-p="home" title="Deck" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; background:#16201e; color:var(--mint);"><i class="ti ti-layout-grid" aria-hidden="true" style="font-size:18px;"></i></div>
+      <div class="nav" data-p="knocks" title="Knocks" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey); position:relative;"><i class="ti ti-door-enter" aria-hidden="true" style="font-size:18px;"></i><span id="kb" style="position:absolute; top:-2px; right:-2px; background:var(--mint); color:#003a22; font-size:10px; min-width:14px; height:14px; line-height:14px; border-radius:7px;">2</span></div>
+      <div class="nav" data-p="cook" title="Cookbook" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey);"><i class="ti ti-book-2" aria-hidden="true" style="font-size:18px;"></i></div>
+      <div style="flex:1;"></div><div style="width:8px; height:8px; border-radius:50%; background:var(--mint);"></div>
+    </div>
+
+    <div style="flex:1; min-width:0;">
+      <div class="pane" id="p-home" style="display:flex; height:440px;">
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid #1c1c1c;">
+          <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px;">
+            <i class="ti ti-message-2" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">chat</span><span style="color:#4a4a4a; font-size:11px;">&rarr; minti-b</span>
+            <select style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:1px 5px; margin-left:auto;"><option>hermes3:8b</option><option>mistral:7b</option></select>
+          </div>
+          <div id="log" style="flex:1; overflow-y:auto; padding:11px 12px; font-size:12px; line-height:1.6;">
+            <div style="margin-bottom:11px;"><span style="color:var(--cyan);">you</span><br/><span style="color:#ddd;">who leads the clan and what can it run?</span></div>
+            <div style="margin-bottom:6px;"><span style="color:var(--mint);">hermes3</span> <span style="color:#444;">&middot; minti-b &middot; 41 tok/s</span><br/><span style="color:#ddd;">minti-b holds the lease (term 19) &mdash; it has the RTX 5090, so inference routes there. 4 active peers; the 2G thinkpad pools presence but doesn't infer.</span></div>
+          </div>
+          <div style="display:flex; gap:7px; padding:10px 12px; border-top:1px solid #161616;">
+            <input id="cin" placeholder="ask the clan&hellip;" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:12px; height:32px; padding:0 8px;"/>
+            <button id="csend" style="background:var(--mint); color:#003a22; border:none; padding:0 13px; border-radius:6px; cursor:pointer; font-size:12px;">send</button>
+          </div>
+        </div>
+
+        <div id="meshcol" style="flex:1; min-width:0; display:flex; flex-direction:column;">
+          <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px;">
+            <i class="ti ti-affiliate" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">mesh</span>
+            <span style="width:6px; height:6px; border-radius:50%; background:var(--mint);"></span><span style="color:#5a5a5a; font-size:11px;">4 active</span>
+            <button id="mcol" title="collapse" aria-label="collapse mesh" style="margin-left:auto; background:transparent; border:none; color:#6a6a6a; cursor:pointer; padding:2px 4px; font-size:16px;"><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+          </div>
+          <div style="padding:6px 12px 0;">
+            <svg id="mesh" viewBox="0 0 200 200" width="100%" style="max-width:158px; display:block; margin:0 auto;" role="img" aria-label="Self-centered Clan mesh with live traffic"></svg>
+            <div id="det" style="background:var(--surface); border:1px solid var(--line); border-radius:7px; padding:7px 10px; font-size:10.5px; margin-top:4px;"></div>
+          </div>
+          <div style="margin:8px 12px 4px; display:flex; align-items:center; gap:6px; border-top:1px solid #1a1a1a; padding-top:7px;">
+            <span class="busy2" style="width:6px; height:6px; border-radius:50%; background:var(--mint);"></span><span style="font-size:11px; color:var(--grey);">live activity</span>
+          </div>
+          <div id="feed" style="flex:1; overflow-y:auto; padding:0 12px 10px; font-size:11px; line-height:1.75;"></div>
+        </div>
+
+        <div id="meshspine" style="display:none; width:30px; border-left:1px solid #1c1c1c; cursor:pointer; flex-direction:column; align-items:center; padding-top:11px; gap:9px;" title="show mesh" aria-label="expand mesh">
+          <i class="ti ti-chevron-left" aria-hidden="true" style="font-size:16px; color:#6a6a6a;"></i><i class="ti ti-affiliate" aria-hidden="true" style="font-size:16px; color:var(--cyan);"></i>
+          <span style="writing-mode:vertical-rl; font-size:11px; letter-spacing:2px; color:#5a5a5a;">mesh &middot; live</span><span style="width:7px; height:7px; border-radius:50%; background:var(--mint);"></span>
+        </div>
+      </div>
+
+      <div class="pane" id="p-knocks" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
+        <div style="font-size:14px; margin-bottom:10px;">Pending knocks</div><div id="klist"></div>
+        <div style="margin-top:12px; border-top:1px solid #1c1c1c; padding-top:11px;">
+          <button id="mint" style="background:var(--mint); color:#003a22; border:none; padding:7px 13px; border-radius:6px; cursor:pointer; font-size:12px;"><i class="ti ti-plus" aria-hidden="true" style="vertical-align:-2px;"></i> mint 5-min invite</button>
+          <div id="ibox" style="display:none; margin-top:9px; background:var(--surface); border:1px solid var(--line); border-radius:7px; padding:10px; font-size:11px;"><div style="color:var(--grey); margin-bottom:5px;">expires in <span style="color:var(--mint);">4:58</span></div><code style="display:block; color:var(--cyan); background:var(--bg); padding:7px; border-radius:5px; font-size:10.5px; word-break:break-all;">minti-cland join --token aF3k&hellip;9Zx --address 192.168.56.101 --pin sha256:7e2b&hellip;</code></div>
+        </div>
+      </div>
+      <div class="pane" id="p-cook" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
+        <div style="font-size:14px;">Cookbook</div><div style="color:#5a5a5a; font-size:11px; margin-bottom:11px;">this node: 2.1G ram &middot; cpu-only</div><div id="clist"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<p style="font-family:var(--mono); font-size:11px; color:#5a5a5a; margin:8px 2px 0;">MINTI Clan Workspace &mdash; locked reference mock. Mesh + live activity share the right column. Send a chat, click a node, collapse the mesh, open knocks/cookbook.</p>
+</div>
+
+<script>
+(function(){
+  var mw=document.getElementById('mw'), svg=document.getElementById('mesh'), NS='http://www.w3.org/2000/svg', feed=document.getElementById('feed'), det=document.getElementById('det');
+  function el(t,a){ var e=document.createElementNS(NS,t); for(var k in a)e.setAttribute(k,a[k]); return e; }
+  var P={ self:{x:100,y:100,r:10}, orch:{x:100,y:32,r:9}, vmc:{x:158,y:66,r:8}, vmd:{x:158,y:134,r:8}, tp:{x:100,y:168,r:8}, c1:{x:42,y:134,r:6}, c2:{x:42,y:66,r:6} };
+  var INFO={ self:{n:'minti-a (this node)',c:'#ececec',b:'192.168.56.101 &middot; linux &middot; cpu-only &middot; r35'}, orch:{n:'♔ minti-b',c:'#00d787',b:'192.168.56.102 &middot; linux &middot; RTX 5090 32G &middot; r50'}, vmc:{n:'minti-c',c:'#5fd7ff',b:'192.168.56.103 &middot; windows &middot; RTX 3060 12G &middot; r44'}, vmd:{n:'minti-d',c:'#5fd7ff',b:'192.168.56.104 &middot; darwin &middot; M2 &middot; r41'}, tp:{n:'thinkpad-x230',c:'#5fd7ff',b:'192.168.56.150 &middot; linux &middot; 2G &middot; pools presence'}, c1:{n:'candidate',c:'#8a8a8a',b:'192.168.56.180 &middot; awaiting peer-add'}, c2:{n:'candidate',c:'#8a8a8a',b:'192.168.56.181 &middot; awaiting peer-add'} };
+  function spoke(a,b,col,w){ svg.appendChild(el('line',{x1:P[a].x,y1:P[a].y,x2:P[b].x,y2:P[b].y,stroke:col,'stroke-width':w})); }
+  ['orch','vmc','vmd','tp'].forEach(function(k){ spoke('self',k,'#1f5e6e',1.4); });
+  spoke('self','c1','#22343a',1); spoke('self','c2','#22343a',1);
+  ['vmc','vmd','tp'].forEach(function(k){ spoke('orch',k,'#11262c',0.8); });
+  var halo=el('circle',{cx:100,cy:100,r:15,fill:'none',stroke:'#00d787','stroke-width':2}); svg.appendChild(halo);
+  var busy=el('circle',{cx:P.vmc.x,cy:P.vmc.y,r:8,fill:'none',stroke:'#5fd7ff','stroke-width':1.5,class:'busy'}); busy.style.setProperty('--r0',8); busy.style.setProperty('--r1',15); svg.appendChild(busy);
+  var crown=el('text',{x:100,y:19,fill:'#00d787','font-size':12,'text-anchor':'middle'}); crown.textContent='♔'; svg.appendChild(crown);
+  function node(k){ var p=P[k],i=INFO[k]; var g=el('g',{class:'nd','data-id':k}); g.style.cursor='pointer';
+    if(k==='c1'||k==='c2') g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:'#0a0a0a',stroke:'#3a4a50','stroke-width':2,'stroke-dasharray':'2 2'}));
+    else if(k==='self'){ g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:'#ececec'})); g.appendChild(el('circle',{cx:p.x,cy:p.y,r:4.5,fill:'#0a0a0a'})); }
+    else g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:k==='orch'?'#00d787':'#5fd7ff'}));
+    g.addEventListener('click',function(){ halo.setAttribute('cx',p.x); halo.setAttribute('cy',p.y); halo.setAttribute('r',p.r+5); det.innerHTML='<span style="color:'+i.c+'">'+i.n+'</span><br/><span style="color:#8a8a8a">'+i.b+'</span>'; });
+    svg.appendChild(g); }
+  ['orch','vmc','vmd','tp','c1','c2','self'].forEach(node);
+  det.innerHTML='<span style="color:#ececec">minti-a (this node)</span><br/><span style="color:#8a8a8a">192.168.56.101 &middot; linux &middot; cpu-only &middot; r35</span>';
+
+  var flows=[];
+  function mk(a,b,col){ var d=el('circle',{r:2.4,fill:col}); svg.appendChild(d); flows.push({d:d,sx:P[a].x,sy:P[a].y,dx:P[b].x,dy:P[b].y,t:Math.random(),sp:0.007+Math.random()*0.006}); }
+  mk('self','orch','#7fe3ff'); mk('orch','self','#00d787'); mk('vmc','orch','#7fe3ff'); mk('orch','vmd','#00d787'); mk('tp','orch','#7fe3ff');
+  var gos={d:(function(){var g=el('circle',{r:2,fill:'#7a7a7a'}); svg.appendChild(g); return g;})(),sx:P.vmc.x,sy:P.vmc.y,dx:P.vmd.x,dy:P.vmd.y,t:0,sp:0.004};
+  function step(o){ o.t+=o.sp; if(o.t>=1)o.t=0; var x=o.sx+(o.dx-o.sx)*o.t,y=o.sy+(o.dy-o.sy)*o.t; o.d.setAttribute('cx',x); o.d.setAttribute('cy',y); o.d.setAttribute('opacity',o.t<0.12?o.t*8:(o.t>0.88?(1-o.t)*8:1)); }
+  (function frame(){ flows.forEach(step); step(gos); requestAnimationFrame(frame); })();
+  setInterval(function(){ var r=el('circle',{cx:P.orch.x,cy:P.orch.y,r:9,fill:'none',stroke:'#00d787','stroke-width':1.3,class:'hbring'}); svg.appendChild(r); r.addEventListener('animationend',function(){ if(r.parentNode)r.parentNode.removeChild(r); }); push('mint','♔ heartbeat &middot; term 19'); },2000);
+
+  var EV=[['cyan','minti-c &rarr; orch: embed batch'],['mint','orch &rarr; you: reply 412 tok'],['cyan','you &rarr; orch: /v1/messages'],['grey','minti-c &harr; vmd: revocation gossip'],['mint','orch &rarr; minti-d: dispatch vision'],['blue','knock from 192.168.56.190'],['mint','election settled &middot; 3/4 quorum'],['cyan','thinkpad: presence ping']];
+  var COL={cyan:'#7fe3ff',mint:'#00d787',grey:'#7a7a7a',blue:'#5fd7ff'};
+  function push(type,msg){ var c=COL[type]||'#8a8a8a'; var d=document.createElement('div'); d.className='fl'; d.innerHTML='<span style="color:'+c+';">&bull;</span> <span style="color:#bcbcbc;">'+msg+'</span>'; feed.insertBefore(d,feed.firstChild); while(feed.children.length>14) feed.removeChild(feed.lastChild); }
+  for(var i=0;i<5;i++){ var e=EV[i]; push(e[0],e[1]); }
+  setInterval(function(){ var e=EV[Math.floor(Math.random()*EV.length)]; push(e[0],e[1]); },1400);
+
+  var meshcol=document.getElementById('meshcol'), spine=document.getElementById('meshspine');
+  document.getElementById('mcol').addEventListener('click',function(){ meshcol.style.display='none'; spine.style.display='flex'; });
+  spine.addEventListener('click',function(){ meshcol.style.display='flex'; spine.style.display='none'; });
+  var PN={home:'p-home',knocks:'p-knocks',cook:'p-cook'};
+  mw.querySelectorAll('.nav').forEach(function(n){ n.addEventListener('click',function(){ mw.querySelectorAll('.nav').forEach(function(x){ x.style.background='transparent'; x.style.color='#8a8a8a'; }); n.style.background='#16201e'; n.style.color='#00d787'; Object.keys(PN).forEach(function(key){ document.getElementById(PN[key]).style.display='none'; }); var t=document.getElementById(PN[n.getAttribute('data-p')]); t.style.display=(n.getAttribute('data-p')==='home')?'flex':'block'; }); });
+
+  var K=[{id:'k1',w:'192.168.56.190',sas:'4731-82905'},{id:'k2',w:'192.168.56.191',sas:'1208-44617'}];
+  function rK(){ var h=''; if(!K.length)h='<div style="color:#5a5a5a; font-size:12px;">no pending knocks.</div>'; K.forEach(function(k){ h+='<div id="x-'+k.id+'" style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="color:#eee; margin-bottom:3px;"><i class="ti ti-door-enter" aria-hidden="true" style="color:#5fd7ff; vertical-align:-2px;"></i> from <span style="color:#bcbcbc;">'+k.w+'</span></div><div style="color:#8a8a8a;">verify SAS:</div><div style="color:#00d787; font-size:17px; letter-spacing:3px; margin:5px 0;">'+k.sas+'</div><button class="ac" data-k="'+k.id+'" style="background:#00d787; color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">matches &rarr; accept</button> <button class="dn" data-k="'+k.id+'" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">deny</button></div>'; }); document.getElementById('klist').innerHTML=h; document.querySelectorAll('.ac').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),1); }); }); document.querySelectorAll('.dn').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),0); }); }); }
+  function rs(id,ok){ document.getElementById('x-'+id).innerHTML=ok?'<div style="color:#00d787;"><i class="ti ti-check" aria-hidden="true"></i> accepted &mdash; roster updated.</div>':'<div style="color:#c06;"><i class="ti ti-x" aria-hidden="true"></i> denied.</div>'; if(ok)push('blue','knock accepted &middot; roster +1'); K=K.filter(function(k){return k.id!==id;}); var b=document.getElementById('kb'); if(K.length)b.textContent=K.length; else b.style.display='none'; }
+  rK(); document.getElementById('mint').addEventListener('click',function(){ document.getElementById('ibox').style.display='block'; });
+
+  var log=document.getElementById('log'), cin=document.getElementById('cin');
+  function reply(){ var txt='Routing to minti-b (lease holder) — hermes3:8b on the 5090. The thinkpad pools presence; the orchestrator answers.'; var d=document.createElement('div'); d.style.marginBottom='6px'; d.innerHTML='<span style="color:#00d787;">hermes3</span> <span style="color:#444;">&middot; minti-b &middot; streaming&hellip;</span><br/><span class="st" style="color:#ddd;"></span>'; log.appendChild(d); var s=d.querySelector('.st'),i=0,t=setInterval(function(){ s.textContent=txt.slice(0,i); i+=3; log.scrollTop=log.scrollHeight; if(i>txt.length)clearInterval(t); },22); }
+  function snd(){ var q=cin.value.trim(); if(!q)return; var u=document.createElement('div'); u.style.marginBottom='11px'; u.innerHTML='<span style="color:#5fd7ff;">you</span><br/><span style="color:#ddd;"></span>'; u.querySelector('span:last-child').textContent=q; log.appendChild(u); cin.value=''; log.scrollTop=log.scrollHeight; push('cyan','you &rarr; orch: /v1/messages'); setTimeout(reply,250); }
+  document.getElementById('csend').addEventListener('click',snd); cin.addEventListener('keydown',function(e){ if(e.key==='Enter')snd(); });
+
+  var PK=[{n:'minti-pack-hermes3',d:'Hermes 3 &middot; 8B &middot; ~5G',f:'needs 6G &mdash; won\'t fit on this 2.1G node',ok:0},{n:'minti-pack-mistral',d:'Mistral &middot; 7B &middot; ~4.4G',f:'fits on a peer with 8G+ vram',ok:1},{n:'minti-pack-wiki-simple',d:'Simple Wikipedia &middot; 937M',f:'fits &mdash; disk only',ok:1}];
+  function rC(){ var h=''; PK.forEach(function(p,i){ h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+p.n+'</span><span style="flex:1;"></span>'+(p.ok?'<button class="in" data-i="'+i+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button>':'<span style="color:#a55; font-size:11px;"><i class="ti ti-alert-triangle" aria-hidden="true"></i> won\'t fit</span>')+'</div><div style="color:#8a8a8a; margin-top:3px;">'+p.d+'</div><div style="color:'+(p.ok?'#5a5a5a':'#a55')+'; font-size:11px;">'+p.f+'</div><div class="pg" data-i="'+i+'" style="display:none; height:5px; background:#0a0a0a; border-radius:3px; margin-top:7px; overflow:hidden;"><div style="height:100%; width:0; background:#00d787;"></div></div></div>'; }); document.getElementById('clist').innerHTML=h; document.querySelectorAll('.in').forEach(function(b){ b.addEventListener('click',function(){ var bar=document.querySelector('.pg[data-i="'+b.getAttribute('data-i')+'"]'); bar.style.display='block'; var f=bar.firstChild,w=0; b.disabled=true; b.textContent='fetching&hellip;'; var t=setInterval(function(){ w+=4; f.style.width=Math.min(w,100)+'%'; if(w>=100){ clearInterval(t); b.textContent='installed'; b.style.background='#1a3a2a'; b.style.color='#5fd7ff'; push('mint','pack installed &middot; minti-pack-mistral'); } },85); }); }); }
+  rC();
+})();
+</script>
+</body>
+</html>
