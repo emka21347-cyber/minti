@@ -94,12 +94,15 @@ the internet, phased so the site never points at vapor:
 | **D4** | Door A — Calamares installer + firmware re-enable on the ISO | The big OS-track item. Needs the build VM (minti-dev-2) powered on — operator-gated. Can trail D3's launch; the site copy already covers that honestly. |
 
 **Operator (user) decisions/actions this milestone needs — none block D0–D2:**
-1. A Vercel account (free) when D3 is ready to deploy — the page is built and
-   previewed locally first.
-2. An artifact host for the big files (GitHub Releases or Cloudflare R2, both
-   free) — user has no GitHub account as of 2026-05-21; creating one (or a
-   Cloudflare account) is a 10-minute user step before anything can be
-   publicly downloadable.
+1. ~~Vercel account~~ **VERIFIED 2026-06-11**: Vercel CLI authed as
+   `emka21347-2077` on the daily-driver. D3 deploy is unblocked.
+2. ~~Artifact host~~ **VERIFIED 2026-06-11**: GitHub `emka21347-cyber` authed
+   via gh CLI (scopes repo+workflow) → **GitHub Releases is the default
+   artifact host.** One real decision REMAINS: the MINTI source repo is
+   local-only with no remote (user's choice). Releases must attach to SOME
+   public GitHub repo — either publish the source repo, or create a small
+   public `minti-releases` repo that holds only artifacts + checksums while
+   the source stays private. Ask the user at D3, not before.
 3. Booting the build VM for D4 when that phase starts.
 
 Commits: `Dist D<N>: <what>`, one per phase, same verification + honest
@@ -126,8 +129,10 @@ Read FIRST, in order:
 1. docs/plans/distribution-roadmap.md — the contract: tracks, locked decisions
    (Calamares; firmware re-enable is a HARD requirement; two products A+B),
    the 2026-06-11 resequencing + browser reality check, the D0..D4 phase
-   table, and the operator-decision list (Vercel account, artifact host,
-   build-VM boot for D4 — none block D0–D2).
+   table, and the operator list (Vercel `emka21347-2077` + GitHub
+   `emka21347-cyber` both VERIFIED authed on the daily-driver; the one open
+   decision — publish the source repo vs a separate public minti-releases
+   artifacts repo — is asked at D3; build-VM boot gates D4 only).
 2. STATUS.md — TL;DR + the M5-B/M5-C entries (the Windows NSSM installer and
    macOS launchd work you are wrapping) + the M9/ISO entries (door A state).
 3. docs/brand.md + workspace/mock/index.html — the locked visual language the
