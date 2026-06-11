@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -35,6 +36,7 @@ func (h *Handler) Register(srv *transport.Server) {
 	srv.Handle("GET /clan/memory/digest", h.handleDigest)
 	srv.Handle("POST /clan/memory/node", h.handleNode)
 	srv.Handle("POST /clan/memory/edge", h.handleEdge)
+	srv.Handle("POST /clan/memory/import", h.handleImport)
 }
 
 func (h *Handler) origin(r *http.Request) string {
@@ -105,6 +107,78 @@ func (h *Handler) handleEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, EdgeResponse{Added: added})
+}
+
+// ImportRequest is the body of POST /clan/memory/import (spec §13.10).
+type ImportRequest struct {
+	Blueprint *Blueprint `json:"blueprint"`
+	Mode      string     `json:"mode"` // "merge" (default) | "replace"
+}
+
+// ImportResponse is the body of a successful import.
+type ImportResponse struct {
+	Changed bool   `json:"changed"`
+	Digest  string `json:"digest"`
+}
+
+func (h *Handler) handleImport(w http.ResponseWriter, r *http.Request) {
+	var req ImportRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxFetchBytes+1)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	origin := h.origin(r)
+	if origin == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no authenticated sender"})
+		return
+	}
+	if err := ValidateBlueprint(req.Blueprint); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// Spec §13.6 / §13.10 (M0 review F4): "replace" is a destructive
+	// primitive and v1 HMAC under a SHARED key cannot prove which member
+	// sent a request — so replace is refused unless the TCP peer is this
+	// machine itself (loopback or one of our own interface addresses; the
+	// CLI dials the configured listen address, which may be a LAN IP).
+	if req.Mode == "replace" && !requestFromSelf(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "mode \"replace\" is loopback-only (spec §13.6); remote members may merge",
+		})
+		return
+	}
+	changed, err := h.Svc.ImportGraph(MarkImported(req.Blueprint.Graph), req.Mode, origin)
+	if err != nil {
+		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ImportResponse{Changed: changed, Digest: h.Svc.Digest()})
+}
+
+// requestFromSelf reports whether the request's TCP source address belongs
+// to this machine (loopback or any local interface IP).
+func requestFromSelf(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // statusFor maps service errors to HTTP: caps → 409 (spec §13.6), anything

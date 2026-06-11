@@ -135,6 +135,7 @@ func printUsage() {
 Usage:
   minti-cland                          daemon mode (default)
   minti-cland create [flags]           found a new Clan; prints paste-key
+       --from-blueprint f.json         inherit a Clan Blueprint's memory (§13.10)
   minti-cland invite [--ttl 1h]        mint a single-use join token
   minti-cland join [flags]             join an existing Clan
        --mnemonic "..." --address ip:port --pin sha256:...
@@ -158,6 +159,8 @@ Usage:
        archive <id>
        digest
        research start "<title>" | research close <id> | research list
+       export [--out f] [--session id] [--strip-authors]
+       import <blueprint.json> [--replace]
        (all take --json)
   minti-cland scribe                   print the current Scribe (spec §13.8)
   minti-cland pin-scribe [--self|--clear]
@@ -748,6 +751,7 @@ func cmdCreate(args []string) error {
 	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	addressFlag := fs.String("address", "", "LAN address joiners should reach us at (default: auto-detected)")
+	fromBlueprint := fs.String("from-blueprint", "", "seed the new Clan's memory graph from a Clan Blueprint file (spec §13.10)")
 	jsonOut := fs.Bool("json", false, "output the paste-key as a single JSON line")
 	_ = fs.Parse(args)
 
@@ -763,6 +767,16 @@ func cmdCreate(args []string) error {
 		return fmt.Errorf("this member is already in Clan %s (role=%s) — use `leave` first", existing.ClanID, existing.Role)
 	}
 
+	// Validate the blueprint BEFORE founding — a corrupt file must not leave
+	// a half-created Clan behind.
+	var bp *memory.Blueprint
+	if *fromBlueprint != "" {
+		bp, err = readBlueprintFile(*fromBlueprint)
+		if err != nil {
+			return fmt.Errorf("blueprint rejected: %w", err)
+		}
+	}
+
 	addr := *addressFlag
 	if addr == "" {
 		resolved, err := resolveLANAddr(cfg)
@@ -775,6 +789,21 @@ func cmdCreate(args []string) error {
 	pk, err := membership.Create(store, id, addr)
 	if err != nil {
 		return err
+	}
+
+	// Spec §13.10 import-at-create: seed memory.json with the inherited
+	// graph, provenance source flipped to "import" (rev/updated_at intact so
+	// re-imports stay idempotent). The graph gossips to joiners like any
+	// other state.
+	if bp != nil {
+		seeded := memory.MarkImported(bp.Graph)
+		if err := store.SaveMemory(seeded); err != nil {
+			return fmt.Errorf("clan created but memory seeding failed: %w", err)
+		}
+		if !*jsonOut {
+			fmt.Printf("Memory inherited from blueprint: %d nodes, %d edges (source: %s)\n\n",
+				len(seeded.Nodes), len(seeded.Edges), bp.SourceClan[:16]+"…")
+		}
 	}
 
 	if *jsonOut {

@@ -238,6 +238,50 @@ func TestApplyRemoteIdempotentAndConvergent(t *testing.T) {
 	}
 }
 
+func TestImportGraphMergeVsReplace(t *testing.T) {
+	local := Node{Type: "fact", Title: "local knowledge"}
+	imported := graph([]Node{node("00000000-0000-4000-8000-0000000000bb", 1, "2026-06-11T10:00:00Z")}, nil)
+
+	// Merge mode: union — the local node survives.
+	svcM, _ := newTestService(t)
+	if _, err := svcM.AddOrUpdateNode("o", local, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := svcM.ImportGraph(MarkImported(imported), "merge", "cli")
+	if err != nil || !changed {
+		t.Fatalf("merge import: changed=%v err=%v", changed, err)
+	}
+	if snap := svcM.Snapshot(); len(snap.Nodes) != 2 {
+		t.Fatalf("merge must union: %d nodes, want 2", len(snap.Nodes))
+	}
+	// Idempotent re-import (MarkImported preserves rev/updated_at).
+	changed, err = svcM.ImportGraph(MarkImported(imported), "merge", "cli")
+	if err != nil || changed {
+		t.Fatalf("re-import must be a no-op: changed=%v err=%v", changed, err)
+	}
+
+	// Replace mode: local node gone.
+	svcR, _ := newTestService(t)
+	if _, err := svcR.AddOrUpdateNode("o", local, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svcR.ImportGraph(MarkImported(imported), "replace", "cli"); err != nil {
+		t.Fatal(err)
+	}
+	snap := svcR.Snapshot()
+	if len(snap.Nodes) != 1 || snap.Nodes[0].ID != "00000000-0000-4000-8000-0000000000bb" {
+		t.Fatalf("replace must discard local graph, got %d nodes", len(snap.Nodes))
+	}
+	if snap.Nodes[0].Provenance.Source != "import" {
+		t.Fatal("imported nodes must carry source=import")
+	}
+
+	// Unknown mode rejected.
+	if _, err := svcM.ImportGraph(imported, "overwrite", "cli"); err == nil {
+		t.Fatal("unknown mode must error")
+	}
+}
+
 func TestReplaceSwapsGraph(t *testing.T) {
 	svc, _ := newTestService(t)
 	if _, err := svc.AddOrUpdateNode("o", Node{Type: "fact", Title: "old world"}, time.Now()); err != nil {

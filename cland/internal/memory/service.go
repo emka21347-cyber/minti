@@ -266,6 +266,43 @@ func (s *Service) ApplyRemote(remote *Graph, from string) (changed bool, err err
 	return true, nil
 }
 
+// ImportGraph applies an already-validated blueprint graph (spec §13.10).
+// mode "merge" is the §13.4 union (safe, idempotent, gossips for free);
+// mode "replace" is destructive and the CALLER enforces the loopback-only
+// restriction before getting here. The graph should already be MarkImported.
+func (s *Service) ImportGraph(g *Graph, mode, from string) (changed bool, err error) {
+	switch mode {
+	case "", "merge":
+		s.mu.Lock()
+		prev := s.digest
+		merged := Merge(s.g, g)
+		mergedDigest := Digest(merged)
+		if mergedDigest == prev {
+			s.mu.Unlock()
+			return false, nil
+		}
+		s.g = merged
+		for _, n := range merged.Nodes {
+			if n.UpdatedAt.After(s.maxUpdated) {
+				s.maxUpdated = n.UpdatedAt
+			}
+		}
+		err := s.persistLocked()
+		if err == nil {
+			s.auditEvent("memory.import", from, map[string]any{
+				"mode": "merge", "prev_digest": prev, "new_digest": s.digest,
+				"nodes": len(merged.Nodes), "edges": len(merged.Edges),
+			})
+		}
+		s.mu.Unlock()
+		return true, err
+	case "replace":
+		return true, s.Replace(g, from)
+	default:
+		return false, fmt.Errorf("memory: unknown import mode %q", mode)
+	}
+}
+
 // Replace swaps the entire graph (loopback-only import --replace, §13.10).
 // Destructive by contract; the caller enforces the loopback restriction.
 func (s *Service) Replace(g *Graph, from string) error {

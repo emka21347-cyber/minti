@@ -151,9 +151,154 @@ func cmdMemory(args []string) error {
 		return cmdMemoryDigest(args[1:])
 	case "research":
 		return cmdMemoryResearch(args[1:])
+	case "export":
+		return cmdMemoryExport(args[1:])
+	case "import":
+		return cmdMemoryImport(args[1:])
 	default:
 		return fmt.Errorf("unknown memory subcommand %q", args[0])
 	}
+}
+
+// ---------- export / import (Clan Blueprint, spec §13.10) ----------
+
+func cmdMemoryExport(args []string) error {
+	fs := flag.NewFlagSet("memory export", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	outF := fs.String("out", "", "output file (default minti-blueprint-<date>.json)")
+	sessionF := fs.String("session", "", "export only one research session (id or prefix)")
+	stripF := fs.Bool("strip-authors", false, "pseudonymize member identities (member-1..N)")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	g, err := fetchMemoryGraph(cli, base)
+	if err != nil {
+		return err
+	}
+
+	sessionID := *sessionF
+	if sessionID != "" {
+		if sessionID, err = resolveNodeID(g, sessionID); err != nil {
+			return err
+		}
+	}
+
+	bp, err := memory.ExportBlueprint(g, clan.ClanID, sessionID, *stripF, time.Now())
+	if err != nil {
+		return err
+	}
+
+	out := *outF
+	if out == "" {
+		out = "minti-blueprint-" + time.Now().Format("2006-01-02") + ".json"
+	}
+	data, err := json.MarshalIndent(bp, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, data, 0o600); err != nil {
+		return err
+	}
+
+	// Spec §13.11: no silent export — distillates may carry chat content.
+	fmt.Println("WARNING: the blueprint may contain distilled chat content and member")
+	fmt.Println("activity. Treat the file as sensitive; share deliberately.")
+	if !*stripF {
+		fmt.Println("(member ids are included verbatim — use --strip-authors to pseudonymize)")
+	}
+	fmt.Println()
+	fmt.Printf("Blueprint written: %s\n", out)
+	fmt.Printf("  nodes=%d edges=%d proposed=%d archived=%d\n",
+		bp.Stats.Nodes, bp.Stats.Edges, bp.Stats.Proposed, bp.Stats.Archived)
+	fmt.Printf("  checksum=%s\n", bp.ChecksumSHA256[:16]+"…")
+	fmt.Println()
+	fmt.Println("A fresh Clan can inherit it at creation:")
+	fmt.Printf("  minti-cland create --from-blueprint %s\n", out)
+	return nil
+}
+
+func cmdMemoryImport(args []string) error {
+	fs := flag.NewFlagSet("memory import", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	replaceF := fs.Bool("replace", false, "DESTRUCTIVE: discard the local graph before importing")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+	pos, err := splitPositionals(fs, 1)
+	if err != nil || len(pos) == 0 {
+		return errors.New("usage: minti-cland memory import <blueprint.json> [--replace]")
+	}
+
+	bp, err := readBlueprintFile(pos[0])
+	if err != nil {
+		return err
+	}
+
+	cli, base, err := memoryDaemon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	mode := "merge"
+	if *replaceF {
+		mode = "replace"
+	}
+	body, _ := json.Marshal(memory.ImportRequest{Blueprint: bp, Mode: mode})
+	resp, err := cli.Post(base+"/clan/memory/import", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("memory import (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		fmt.Println(strings.TrimSpace(string(raw)))
+		return nil
+	}
+	var ir memory.ImportResponse
+	_ = json.Unmarshal(raw, &ir)
+	if ir.Changed {
+		fmt.Printf("Imported (%s): graph digest now %s…\n", mode, ir.Digest[:16])
+		if mode == "merge" {
+			fmt.Println("The merged graph gossips to the whole Clan automatically.")
+		}
+	} else {
+		fmt.Println("Import was a no-op — the graph already contained everything.")
+	}
+	return nil
+}
+
+// readBlueprintFile loads + client-side-validates a blueprint so the user
+// gets a clear error before anything touches the daemon.
+func readBlueprintFile(path string) (*memory.Blueprint, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var bp memory.Blueprint
+	if err := json.Unmarshal(data, &bp); err != nil {
+		return nil, fmt.Errorf("not a blueprint JSON file: %w", err)
+	}
+	if err := memory.ValidateBlueprint(&bp); err != nil {
+		return nil, err
+	}
+	return &bp, nil
 }
 
 func cmdMemoryList(args []string) error {
