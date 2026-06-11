@@ -31,7 +31,7 @@
 </head>
 <body>
 <div id="app">
-<div id="mw" style="background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5;">
+<div id="mw" style="position:relative; background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5;">
   <div style="display:flex; align-items:center; gap:10px; padding:8px 13px; background:#141414; border-bottom:1px solid #242424;">
     <span style="color:var(--cyan);">&#9626;</span><span style="color:var(--mint); font-weight:500; letter-spacing:2px;">MINTI</span><span style="color:#5a5a5a;">workspace</span><span style="flex:1;"></span>
     <span style="color:#6a6a6a; font-size:11px;">clan <span style="color:var(--label);">5725d958</span> &middot; founder &middot; term <span style="color:var(--label);">19</span> &middot; lease <span style="color:var(--mint);">6.2s</span></span>
@@ -43,6 +43,7 @@
       <div class="nav" data-p="home" title="Deck" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; background:#16201e; color:var(--mint);"><i class="ti ti-layout-grid" aria-hidden="true" style="font-size:18px;"></i></div>
       <div class="nav" data-p="knocks" title="Knocks" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey); position:relative;"><i class="ti ti-door-enter" aria-hidden="true" style="font-size:18px;"></i><span id="kb" style="position:absolute; top:-2px; right:-2px; background:var(--mint); color:#003a22; font-size:10px; min-width:14px; height:14px; line-height:14px; border-radius:7px;">2</span></div>
       <div class="nav" data-p="cook" title="Cookbook" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey);"><i class="ti ti-book-2" aria-hidden="true" style="font-size:18px;"></i></div>
+      <div class="nav" data-p="memory" title="Clan Memory" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey); position:relative;"><i class="ti ti-topology-star-3" aria-hidden="true" style="font-size:18px;"></i><span id="memb" style="display:none; position:absolute; top:-2px; right:-2px; background:var(--cyan); color:#00303a; font-size:10px; min-width:14px; height:14px; line-height:14px; border-radius:7px;"></span></div>
       <div style="flex:1;"></div><div style="width:8px; height:8px; border-radius:50%; background:var(--mint);"></div>
     </div>
 
@@ -95,6 +96,63 @@
       <div class="pane" id="p-cook" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
         <div style="font-size:14px;">Cookbook</div><div style="color:#5a5a5a; font-size:11px; margin-bottom:11px;">this node: 2.1G ram &middot; cpu-only</div><div id="clist"></div>
       </div>
+
+      <!-- Memory M5: the Clan Memory graph (spec §13) -->
+      <div class="pane" id="p-memory" style="display:none; height:440px; flex-direction:column;">
+        <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
+          <i class="ti ti-topology-star-3" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">memory</span>
+          <span id="mem-src" style="color:#5a5a5a; font-size:11px;">loading&hellip;</span>
+          <span id="mem-scribe" style="color:#5a5a5a; font-size:11px;"></span>
+          <span style="flex:1;"></span>
+          <button id="mem-add" class="membtn" style="background:var(--mint); color:#003a22; border:none; padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-plus" aria-hidden="true"></i> add</button>
+          <button id="mem-export" class="membtn" style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> export</button>
+          <label class="membtn" style="background:var(--surface); color:var(--label); border:1px solid var(--line); padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-upload" aria-hidden="true"></i> import<input id="mem-import" type="file" accept=".json,application/json" style="display:none;"/></label>
+        </div>
+        <div id="mem-chips" style="padding:6px 12px 4px; display:flex; gap:5px; flex-wrap:wrap; border-bottom:1px solid #121212;"></div>
+        <div style="flex:1; min-height:0; display:flex;">
+          <svg id="memsvg" viewBox="0 0 560 320" style="flex:1; min-width:0; display:block;" role="img" aria-label="Clan memory graph"></svg>
+          <div style="width:212px; border-left:1px solid #1c1c1c; display:flex; flex-direction:column; min-height:0;">
+            <div id="mem-det" style="background:var(--surface); border-bottom:1px solid var(--line); padding:8px 10px; font-size:10.5px; min-height:74px;"><span style="color:#5a5a5a;">click a node</span></div>
+            <div style="padding:6px 10px 2px; display:flex; align-items:center; gap:6px;"><i class="ti ti-feather" aria-hidden="true" style="color:var(--cyan); font-size:13px;"></i><span style="font-size:11px; color:var(--grey);">proposed by the scribe</span></div>
+            <div id="mem-review" style="flex:1; overflow-y:auto; padding:4px 10px 10px; font-size:10.5px;"></div>
+          </div>
+        </div>
+        <div id="mem-note" style="padding:4px 12px 7px; color:#5a5a5a; font-size:10.5px; border-top:1px solid #121212;"></div>
+      </div>
+
+      <!-- export privacy confirm (spec §13.11: no silent export) -->
+      <div id="mem-expmodal" style="display:none; position:absolute; inset:0; background:rgba(4,6,6,.82); z-index:9; align-items:center; justify-content:center;">
+        <div style="background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:15px 17px; width:330px; font-size:12px;">
+          <div style="color:var(--mint); margin-bottom:7px;"><i class="ti ti-shield-lock" aria-hidden="true"></i> export clan memory?</div>
+          <div style="color:var(--label); line-height:1.55; margin-bottom:9px;">The blueprint may contain <span style="color:#eee;">distilled chat content</span> and member activity. Treat the file as sensitive; share deliberately.</div>
+          <label style="display:flex; gap:7px; align-items:center; color:var(--label); margin-bottom:6px; cursor:pointer;"><input id="mem-strip" type="checkbox"/> pseudonymize member ids (--strip-authors)</label>
+          <div style="display:flex; gap:7px; align-items:center; color:var(--label); margin-bottom:11px;"><span>session:</span><select id="mem-expsess" style="flex:1; background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:2px 5px;"><option value="">full graph</option></select></div>
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button id="mem-expcancel" style="background:transparent; color:var(--grey); border:1px solid #2a2a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">cancel</button>
+            <button id="mem-expgo" style="background:var(--mint); color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">download</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- add-node form -->
+      <div id="mem-addmodal" style="display:none; position:absolute; inset:0; background:rgba(4,6,6,.82); z-index:9; align-items:center; justify-content:center;">
+        <div style="background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:15px 17px; width:330px; font-size:12px;">
+          <div style="color:var(--mint); margin-bottom:9px;"><i class="ti ti-plus" aria-hidden="true"></i> add memory</div>
+          <div style="display:flex; gap:7px; margin-bottom:7px;">
+            <select id="mem-ntype" style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:3px 5px;">
+              <option>finding</option><option>fact</option><option>decision</option><option>skill</option><option>artifact</option><option>research_session</option>
+            </select>
+            <select id="mem-nsess" style="flex:1; background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:3px 5px;"><option value="">no session</option></select>
+          </div>
+          <input id="mem-ntitle" placeholder="title (required)" style="width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:12px; height:30px; padding:0 8px; margin-bottom:7px;"/>
+          <textarea id="mem-nbody" placeholder="body (markdown, optional)" rows="3" style="width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:11px; padding:6px 8px; margin-bottom:7px; resize:vertical;"></textarea>
+          <input id="mem-ntags" placeholder="tags, comma,separated" style="width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:11px; height:28px; padding:0 8px; margin-bottom:11px;"/>
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button id="mem-addcancel" style="background:transparent; color:var(--grey); border:1px solid #2a2a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">cancel</button>
+            <button id="mem-addgo" style="background:var(--mint); color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">add</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -140,8 +198,8 @@
   var meshcol=document.getElementById('meshcol'), spine=document.getElementById('meshspine');
   document.getElementById('mcol').addEventListener('click',function(){ meshcol.style.display='none'; spine.style.display='flex'; });
   spine.addEventListener('click',function(){ meshcol.style.display='flex'; spine.style.display='none'; });
-  var PN={home:'p-home',knocks:'p-knocks',cook:'p-cook'};
-  mw.querySelectorAll('.nav').forEach(function(n){ n.addEventListener('click',function(){ mw.querySelectorAll('.nav').forEach(function(x){ x.style.background='transparent'; x.style.color='#8a8a8a'; }); n.style.background='#16201e'; n.style.color='#00d787'; Object.keys(PN).forEach(function(key){ document.getElementById(PN[key]).style.display='none'; }); var t=document.getElementById(PN[n.getAttribute('data-p')]); t.style.display=(n.getAttribute('data-p')==='home')?'flex':'block'; }); });
+  var PN={home:'p-home',knocks:'p-knocks',cook:'p-cook',memory:'p-memory'};
+  mw.querySelectorAll('.nav').forEach(function(n){ n.addEventListener('click',function(){ mw.querySelectorAll('.nav').forEach(function(x){ x.style.background='transparent'; x.style.color='#8a8a8a'; }); n.style.background='#16201e'; n.style.color='#00d787'; Object.keys(PN).forEach(function(key){ document.getElementById(PN[key]).style.display='none'; }); var p=n.getAttribute('data-p'); var t=document.getElementById(PN[p]); t.style.display=(p==='home'||p==='memory')?'flex':'block'; if(p==='memory'&&window.__memShow) window.__memShow(); }); });
 
   var K=[{id:'k1',w:'192.168.56.190',sas:'4731-82905'},{id:'k2',w:'192.168.56.191',sas:'1208-44617'}];
   function rK(){ var h=''; if(!K.length)h='<div style="color:#5a5a5a; font-size:12px;">no pending knocks.</div>'; K.forEach(function(k){ h+='<div id="x-'+k.id+'" style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="color:#eee; margin-bottom:3px;"><i class="ti ti-door-enter" aria-hidden="true" style="color:#5fd7ff; vertical-align:-2px;"></i> from <span style="color:#bcbcbc;">'+k.w+'</span></div><div style="color:#8a8a8a;">verify SAS:</div><div style="color:#00d787; font-size:17px; letter-spacing:3px; margin:5px 0;">'+k.sas+'</div><button class="ac" data-k="'+k.id+'" style="background:#00d787; color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">matches &rarr; accept</button> <button class="dn" data-k="'+k.id+'" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">deny</button></div>'; }); document.getElementById('klist').innerHTML=h; document.querySelectorAll('.ac').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),1); }); }); document.querySelectorAll('.dn').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),0); }); }); }
@@ -156,6 +214,296 @@
   var PK=[{n:'minti-pack-hermes3',d:'Hermes 3 &middot; 8B &middot; ~5G',f:'needs 6G &mdash; won\'t fit on this 2.1G node',ok:0},{n:'minti-pack-mistral',d:'Mistral &middot; 7B &middot; ~4.4G',f:'fits on a peer with 8G+ vram',ok:1},{n:'minti-pack-wiki-simple',d:'Simple Wikipedia &middot; 937M',f:'fits &mdash; disk only',ok:1}];
   function rC(){ var h=''; PK.forEach(function(p,i){ h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+p.n+'</span><span style="flex:1;"></span>'+(p.ok?'<button class="in" data-i="'+i+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button>':'<span style="color:#a55; font-size:11px;"><i class="ti ti-alert-triangle" aria-hidden="true"></i> won\'t fit</span>')+'</div><div style="color:#8a8a8a; margin-top:3px;">'+p.d+'</div><div style="color:'+(p.ok?'#5a5a5a':'#a55')+'; font-size:11px;">'+p.f+'</div><div class="pg" data-i="'+i+'" style="display:none; height:5px; background:#0a0a0a; border-radius:3px; margin-top:7px; overflow:hidden;"><div style="height:100%; width:0; background:#00d787;"></div></div></div>'; }); document.getElementById('clist').innerHTML=h; document.querySelectorAll('.in').forEach(function(b){ b.addEventListener('click',function(){ var bar=document.querySelector('.pg[data-i="'+b.getAttribute('data-i')+'"]'); bar.style.display='block'; var f=bar.firstChild,w=0; b.disabled=true; b.textContent='fetching&hellip;'; var t=setInterval(function(){ w+=4; f.style.width=Math.min(w,100)+'%'; if(w>=100){ clearInterval(t); b.textContent='installed'; b.style.background='#1a3a2a'; b.style.color='#5fd7ff'; push('mint','pack installed &middot; minti-pack-mistral'); } },85); }); }); }
   rC();
+})();
+</script>
+<script>
+// ===== Memory M5: Clan Memory graph pane (spec §13) =====
+(function(){
+  var NS='http://www.w3.org/2000/svg';
+  var svg=document.getElementById('memsvg'), det=document.getElementById('mem-det');
+  var W=560, H=320, RENDER_CAP=250;
+
+  // ---- force layout (Tier-3 first pass, qwen3.6; T2-trimmed) ----
+  function forceLayout(nodes, edges, width, height, opts) {
+    var i, j, n, iter;
+    var nodeMap={}, validEdges=[], result={};
+    if(!opts) opts={};
+    var iterations=opts.iterations!==undefined?opts.iterations:300;
+    var repulsion=opts.repulsion!==undefined?opts.repulsion:1800;
+    var spring=opts.spring!==undefined?opts.spring:0.06;
+    var springLen=opts.springLen!==undefined?opts.springLen:46;
+    var gravity=opts.gravity!==undefined?opts.gravity:0.05;
+    n=nodes.length;
+    var cx=width/2, cy=height/2;
+    var ids=new Array(n), xArr=new Array(n), yArr=new Array(n), vxArr=new Array(n), vyArr=new Array(n);
+    for(i=0;i<n;i++){
+      ids[i]=nodes[i].id; nodeMap[ids[i]]=i;
+      var angle=i*2.399963229728653, radius=8*Math.sqrt(i+1);   // deterministic golden spiral
+      xArr[i]=cx+radius*Math.cos(angle); yArr[i]=cy+radius*Math.sin(angle);
+      vxArr[i]=0; vyArr[i]=0;
+    }
+    for(i=0;i<edges.length;i++){
+      var fi=nodeMap[edges[i].from], ti=nodeMap[edges[i].to];
+      if(fi!==undefined&&ti!==undefined) validEdges.push({from:fi,to:ti}); // dangling edges legal (§13.4)
+    }
+    var dx,dy,distSq,force,invDist,fx,fy;
+    for(iter=0;iter<iterations;iter++){
+      var temp=1-(iter/iterations)*0.9;
+      for(i=0;i<n;i++){ vxArr[i]=0; vyArr[i]=0; }
+      for(i=0;i<n;i++) for(j=i+1;j<n;j++){
+        dx=xArr[i]-xArr[j]; dy=yArr[i]-yArr[j];
+        if(dx===0&&dy===0){ dx=0.01*(i-j); dy=0.013; }
+        distSq=dx*dx+dy*dy; if(distSq<0.0001) distSq=0.0001;
+        force=repulsion/distSq; invDist=1/Math.sqrt(distSq);
+        fx=dx*invDist*force; fy=dy*invDist*force;
+        vxArr[i]+=fx; vyArr[i]+=fy; vxArr[j]-=fx; vyArr[j]-=fy;
+      }
+      for(i=0;i<validEdges.length;i++){
+        var ve=validEdges[i];
+        dx=xArr[ve.to]-xArr[ve.from]; dy=yArr[ve.to]-yArr[ve.from];
+        distSq=dx*dx+dy*dy; if(distSq<0.0001) distSq=0.0001;
+        var dist=Math.sqrt(distSq);
+        force=spring*(dist-springLen); invDist=1/dist;
+        fx=dx*invDist*force; fy=dy*invDist*force;
+        vxArr[ve.from]+=fx; vyArr[ve.from]+=fy; vxArr[ve.to]-=fx; vyArr[ve.to]-=fy;
+      }
+      for(i=0;i<n;i++){ vxArr[i]+=(cx-xArr[i])*gravity*0.1; vyArr[i]+=(cy-yArr[i])*gravity*0.1; }
+      var damp=0.85*temp;
+      for(i=0;i<n;i++){
+        xArr[i]+=vxArr[i]*damp; yArr[i]+=vyArr[i]*damp;
+        if(xArr[i]<16)xArr[i]=16; else if(xArr[i]>width-16)xArr[i]=width-16;
+        if(yArr[i]<16)yArr[i]=16; else if(yArr[i]>height-16)yArr[i]=height-16;
+      }
+    }
+    for(i=0;i<n;i++) result[ids[i]]={x:xArr[i],y:yArr[i]};
+    return result;
+  }
+
+  // ---- state ----
+  var G={nodes:[],edges:[]}, digest='', scribe='', source='', filt={type:'',status:'',session:''}, linkFrom=null, shown=false;
+
+  function el(t,a){ var e=document.createElementNS(NS,t); for(var k in a)e.setAttribute(k,a[k]); return e; }
+  function note(msg,col){ var n=document.getElementById('mem-note'); n.textContent=msg; n.style.color=col||'#5a5a5a'; }
+  function esc(s){ var d=document.createElement('span'); d.textContent=s==null?'':String(s); return d.innerHTML; }
+
+  // type → visual (brand: mint reserved for single-focus, cyan for enumerables)
+  var STYLE={
+    research_session:{fill:'#00d787',r:11},
+    decision:{fill:'#00d787',r:7},
+    finding:{fill:'#5fd7ff',r:7}, fact:{fill:'#5fd7ff',r:6},
+    skill:{fill:'#ececec',r:6}, artifact:{fill:'#ececec',r:6},
+    event:{fill:'#5a5a5a',r:4.5}, member:{fill:'#0a0a0a',r:7}
+  };
+
+  function api(path,opts){ return fetch(path,opts).then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||('http '+r.status)); return j; }); }); }
+
+  function fetchGraph(){
+    return api('/api/memory').then(function(m){
+      G={nodes:m.nodes||[],edges:m.edges||[]}; digest=m.digest||''; scribe=m.scribe||''; source=m.source||'';
+      document.getElementById('mem-src').textContent=source+' · '+G.nodes.length+' nodes · '+G.edges.length+' edges';
+      document.getElementById('mem-scribe').innerHTML=scribe?('<i class="ti ti-feather" aria-hidden="true" style="color:var(--cyan);"></i> scribe: '+esc(String(scribe).slice(0,12))):'no scribe';
+      var prop=G.nodes.filter(function(n){return n.status==='proposed';}).length;
+      var badge=document.getElementById('memb');
+      if(prop>0){ badge.textContent=prop; badge.style.display='block'; } else badge.style.display='none';
+      render();
+    }).catch(function(e){ note('memory fetch failed: '+e.message,'#c06'); });
+  }
+
+  function pollDigest(){
+    api('/api/memory/digest').then(function(d){
+      if(d.digest&&d.digest!==digest) fetchGraph();
+    }).catch(function(){ /* daemon away; next poll retries */ });
+  }
+
+  // ---- chips ----
+  function chips(){
+    var box=document.getElementById('mem-chips'); box.innerHTML='';
+    function chip(label,active,on){
+      var c=document.createElement('span');
+      c.textContent=label;
+      c.style.cssText='cursor:pointer; border-radius:9px; padding:1px 8px; font-size:10.5px; border:1px solid '+(active?'#00d787':'#243030')+'; color:'+(active?'#00d787':'#8a8a8a')+';';
+      c.addEventListener('click',on); box.appendChild(c);
+    }
+    chip('all',!filt.type&&!filt.status&&!filt.session,function(){ filt={type:'',status:'',session:''}; render(); });
+    ['finding','decision','fact','skill','event','member'].forEach(function(t){
+      chip(t,filt.type===t,function(){ filt.type=(filt.type===t?'':t); render(); });
+    });
+    chip('proposed',filt.status==='proposed',function(){ filt.status=(filt.status==='proposed'?'':'proposed'); render(); });
+    chip('archived',filt.status==='archived',function(){ filt.status=(filt.status==='archived'?'':'archived'); render(); });
+    G.nodes.filter(function(n){return n.type==='research_session';}).forEach(function(s){
+      chip('◦ '+s.title.slice(0,18),filt.session===s.id,function(){ filt.session=(filt.session===s.id?'':s.id); render(); });
+    });
+  }
+
+  // ---- render (layout once, then FROZEN — no rAF loop, CPU idle after settle) ----
+  function render(){
+    chips();
+    var vis=G.nodes.filter(function(n){
+      if(filt.type&&n.type!==filt.type) return false;
+      if(filt.status&&n.status!==filt.status) return false;
+      if(!filt.status&&n.status==='archived') return false; // tombstones hidden unless asked
+      if(filt.session&&n.session_id!==filt.session&&n.id!==filt.session) return false;
+      return true;
+    });
+    vis.sort(function(a,b){ return a.updated_at<b.updated_at?1:-1; });
+    var capped=vis.length>RENDER_CAP;
+    if(capped) vis=vis.slice(0,RENDER_CAP);
+    var keep={}; vis.forEach(function(n){ keep[n.id]=true; });
+    var ve=G.edges.filter(function(e){ return keep[e.from]&&keep[e.to]; });
+
+    var deg={}; ve.forEach(function(e){ deg[e.from]=(deg[e.from]||0)+1; deg[e.to]=(deg[e.to]||0)+1; });
+    var pos=forceLayout(vis,ve,W,H,{iterations:Math.min(300,80+vis.length*2)});
+
+    svg.innerHTML='';
+    ve.forEach(function(e){
+      var a=pos[e.from], b=pos[e.to]; if(!a||!b) return;
+      svg.appendChild(el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,
+        stroke:e.relation==='contributes_to'?'#1f5e6e':'#222e2e','stroke-width':e.relation==='contributes_to'?1.3:1}));
+    });
+    vis.forEach(function(n){
+      var p=pos[n.id]; if(!p) return;
+      var st=STYLE[n.type]||STYLE.fact;
+      var r=st.r+Math.min(5,(deg[n.id]||0));
+      var g=el('g',{class:'fl','data-id':n.id}); g.style.cursor='pointer';
+      if(n.type==='member'){
+        g.appendChild(el('circle',{cx:p.x,cy:p.y,r:r,fill:'#0a0a0a',stroke:'#5fd7ff','stroke-width':1.6,'stroke-dasharray':'3 2'}));
+      } else {
+        var opac=(n.status==='archived')?0.35:(n.status==='proposed'?0.55:1);
+        g.appendChild(el('circle',{cx:p.x,cy:p.y,r:r,fill:st.fill,'fill-opacity':opac}));
+        if(n.status==='proposed') g.appendChild(el('circle',{cx:p.x,cy:p.y,r:r+2.5,fill:'none',stroke:st.fill,'stroke-width':0.8,'stroke-dasharray':'2 3'}));
+        if(n.status==='superseded') g.appendChild(el('line',{x1:p.x-r,y1:p.y+r,x2:p.x+r,y2:p.y-r,stroke:'#0a0a0a','stroke-width':1.4}));
+      }
+      if(n.provenance&&(n.provenance.source==='scribe'||n.provenance.source==='distill')){
+        var q=el('text',{x:p.x+r*0.7,y:p.y-r*0.7,'font-size':8,fill:'#5fd7ff'}); q.textContent='✎'; g.appendChild(q);
+      }
+      g.addEventListener('click',function(){ onNode(n,p,r); });
+      svg.appendChild(g);
+    });
+    note((capped?'showing the '+RENDER_CAP+' most recent (cap) · ':'')+
+         (source==='demo'?'demo graph — install minti-cland + join a Clan for live memory':'digest '+String(digest).slice(0,12)+'…'));
+    reviewLane();
+    fillSessionSelects();
+  }
+
+  // ---- inspector ----
+  var halo=null;
+  function onNode(n,p,r){
+    if(linkFrom&&linkFrom.id!==n.id){
+      api('/api/memory/edge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from:linkFrom.id,to:n.id,relation:'relates'})})
+        .then(function(){ note('linked '+linkFrom.title.slice(0,20)+' → '+n.title.slice(0,20),'#00d787'); linkFrom=null; fetchGraph(); })
+        .catch(function(e){ note('link failed: '+e.message,'#c06'); linkFrom=null; });
+      return;
+    }
+    if(halo&&halo.parentNode) halo.parentNode.removeChild(halo);
+    halo=el('circle',{cx:p.x,cy:p.y,r:r+4,fill:'none',stroke:'#00d787','stroke-width':1.6});
+    svg.appendChild(halo);
+    var auth=n.provenance?(n.provenance.author_member_id||'?'):'?';
+    var src=n.provenance?n.provenance.source:'?';
+    var html='<div style="color:#eee; margin-bottom:2px;">'+esc(n.title)+'</div>'+
+      '<div style="color:#8a8a8a;">'+esc(n.type)+' · '+esc(n.status)+' · rev '+esc(n.rev)+'</div>'+
+      '<div style="color:#8a8a8a;">by '+esc(String(auth).slice(0,12))+' ('+esc(src)+')</div>'+
+      (n.tags&&n.tags.length?'<div style="color:#5fd7ff;">#'+n.tags.map(esc).join(' #')+'</div>':'')+
+      (n.body?'<div style="color:#bcbcbc; margin-top:4px; max-height:54px; overflow-y:auto;">'+esc(n.body)+'</div>':'')+
+      '<div style="margin-top:6px; display:flex; gap:5px; flex-wrap:wrap;">';
+    if(n.status==='proposed'){
+      html+='<button data-act="promote" style="background:#00d787; color:#003a22; border:none; padding:2px 8px; border-radius:5px; cursor:pointer; font-size:10px;">promote</button>'+
+            '<button data-act="dismiss" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:2px 8px; border-radius:5px; cursor:pointer; font-size:10px;">dismiss</button>';
+    } else if(n.status!=='archived'){
+      html+='<button data-act="archive" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:2px 8px; border-radius:5px; cursor:pointer; font-size:10px;">archive</button>';
+    }
+    html+='<button data-act="link" style="background:transparent; color:#5fd7ff; border:1px solid #1f3a44; padding:2px 8px; border-radius:5px; cursor:pointer; font-size:10px;">link…</button></div>';
+    det.innerHTML=html;
+    det.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click',function(){ nodeAction(b.getAttribute('data-act'),n); });
+    });
+  }
+
+  function nodeAction(act,n){
+    if(act==='link'){ linkFrom=n; note('link mode: click the target node','#5fd7ff'); return; }
+    if(act==='archive'||act==='dismiss'){
+      api('/api/memory/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:n.id})})
+        .then(function(){ note((act==='dismiss'?'dismissed':'archived')+' — tombstone gossips to the Clan','#00d787'); fetchGraph(); })
+        .catch(function(e){ note(act+' failed: '+e.message,'#c06'); });
+      return;
+    }
+    if(act==='promote'){
+      var up={id:n.id,type:n.type,title:n.title,body:n.body||'',tags:n.tags||[],session_id:n.session_id||'',status:'active'};
+      api('/api/memory/node',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(up)})
+        .then(function(){ note('promoted — now active Clan memory','#00d787'); fetchGraph(); })
+        .catch(function(e){ note('promote failed: '+e.message,'#c06'); });
+    }
+  }
+
+  // ---- proposed-review lane ----
+  function reviewLane(){
+    var lane=document.getElementById('mem-review'); lane.innerHTML='';
+    var props=G.nodes.filter(function(n){ return n.status==='proposed'; });
+    if(!props.length){ lane.innerHTML='<span style="color:#3a4a4a;">nothing pending — the scribe is quiet</span>'; return; }
+    props.forEach(function(n){
+      var d=document.createElement('div');
+      d.className='fl';
+      d.style.cssText='border:1px solid #1e2a2a; border-radius:6px; padding:5px 7px; margin-bottom:5px;';
+      d.innerHTML='<div style="color:#ddd; margin-bottom:3px;">'+esc(n.title.slice(0,64))+'</div>'+
+        '<button data-a="p" style="background:#00d787; color:#003a22; border:none; padding:1px 7px; border-radius:4px; cursor:pointer; font-size:10px;">✓</button> '+
+        '<button data-a="d" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:1px 7px; border-radius:4px; cursor:pointer; font-size:10px;">✕</button>';
+      d.querySelector('[data-a="p"]').addEventListener('click',function(){ nodeAction('promote',n); });
+      d.querySelector('[data-a="d"]').addEventListener('click',function(){ nodeAction('dismiss',n); });
+      lane.appendChild(d);
+    });
+  }
+
+  // ---- add / export / import ----
+  function fillSessionSelects(){
+    ['mem-nsess','mem-expsess'].forEach(function(id){
+      var sel=document.getElementById(id);
+      var keep=sel.value;
+      sel.innerHTML='<option value="">'+(id==='mem-nsess'?'no session':'full graph')+'</option>';
+      G.nodes.filter(function(n){ return n.type==='research_session'&&n.status!=='archived'; }).forEach(function(s){
+        var o=document.createElement('option'); o.value=s.id; o.textContent=s.title.slice(0,34); sel.appendChild(o);
+      });
+      sel.value=keep;
+    });
+  }
+  document.getElementById('mem-add').addEventListener('click',function(){ document.getElementById('mem-addmodal').style.display='flex'; });
+  document.getElementById('mem-addcancel').addEventListener('click',function(){ document.getElementById('mem-addmodal').style.display='none'; });
+  document.getElementById('mem-addgo').addEventListener('click',function(){
+    var title=document.getElementById('mem-ntitle').value.trim();
+    if(!title){ note('title required','#c06'); return; }
+    var tags=document.getElementById('mem-ntags').value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+    var n={type:document.getElementById('mem-ntype').value,title:title,
+           body:document.getElementById('mem-nbody').value,tags:tags,
+           session_id:document.getElementById('mem-nsess').value,status:'active'};
+    api('/api/memory/node',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(n)})
+      .then(function(){ document.getElementById('mem-addmodal').style.display='none';
+        document.getElementById('mem-ntitle').value=''; document.getElementById('mem-nbody').value=''; document.getElementById('mem-ntags').value='';
+        note('added — gossips to the Clan within a heartbeat','#00d787'); fetchGraph(); })
+      .catch(function(e){ note('add failed: '+e.message,'#c06'); });
+  });
+  document.getElementById('mem-export').addEventListener('click',function(){ document.getElementById('mem-expmodal').style.display='flex'; });
+  document.getElementById('mem-expcancel').addEventListener('click',function(){ document.getElementById('mem-expmodal').style.display='none'; });
+  document.getElementById('mem-expgo').addEventListener('click',function(){
+    var q=[];
+    var sess=document.getElementById('mem-expsess').value; if(sess) q.push('session='+encodeURIComponent(sess));
+    if(document.getElementById('mem-strip').checked) q.push('strip=1');
+    document.getElementById('mem-expmodal').style.display='none';
+    window.location='/api/memory/blueprint'+(q.length?'?'+q.join('&'):'');
+  });
+  document.getElementById('mem-import').addEventListener('change',function(ev){
+    var f=ev.target.files[0]; if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      api('/api/memory/import',{method:'POST',headers:{'Content-Type':'application/json'},body:rd.result})
+        .then(function(r){ note(r.changed?'imported — merged graph gossips Clan-wide':'import was a no-op (already known)','#00d787'); fetchGraph(); })
+        .catch(function(e){ note('import rejected: '+e.message,'#c06'); });
+      ev.target.value='';
+    };
+    rd.readAsText(f);
+  });
+
+  // ---- boot: fetch on first show; poll the cheap digest every 5 s ----
+  window.__memShow=function(){ if(!shown){ shown=true; fetchGraph(); } };
+  fetchGraph();
+  setInterval(pollDigest,5000);
 })();
 </script>
 </body>
