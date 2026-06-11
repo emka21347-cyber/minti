@@ -390,7 +390,7 @@ A peer ignores a heartbeat if `term < current_term`, or if the sender is not the
 |---|---|---|---|
 | `revocations_digest` | Phase H-2 | sha256 of sorted revoked member_ids | fetch `GET /clan/revocations`, merge (§3.5) |
 | `roster_digest` | Phase H-3 | sha256 of sorted `(member_id, state)` tuples | fetch roster, merge state transitions |
-| `memory_digest` | §13 | content-versioned graph digest (§13.5) | fetch `GET /clan/memory`, merge (§13.4) |
+| `memory_digest` | §13 | content-versioned graph digest (§13.5); also returned in the heartbeat **response** so follower edits flow back (§13.5 response leg) | fetch `GET /clan/memory`, merge (§13.4) |
 | `scribe` | §13 | Orchestrator's current Scribe selection (member_id) | peers adopt it (§13.8) |
 
 ### 5.4 Election flow
@@ -761,7 +761,7 @@ Node lines sorted, then edge lines sorted, concatenated in that order, LF-joined
 
 **Digest cost discipline.** The digest is **cached** in the daemon's memory service and recomputed only on mutation or merge. The election engine reads it through an injected `MemoryDigest func() string` and MUST NOT reload or re-hash `memory.json` on the 2 s heartbeat path. Emitted from both heartbeat sites (steady-state heartbeats and election announcements), `omitempty`. Wire cost of all three digest passengers together is ~192 bytes per heartbeat (three sha256 hex strings) — negligible even on 1–2 GB boxes.
 
-**Sync flow** (mirrors §3.5 / Phase H-2 exactly):
+**Sync flow** (mirrors §3.5 / Phase H-2, plus the response leg):
 
 1. Heartbeat arrives carrying `memory_digest` ≠ local digest.
 2. Per-peer in-flight dedup (concurrent heartbeats from the same sender trigger at most one fetch).
@@ -770,7 +770,9 @@ Node lines sorted, then edge lines sorted, concatenated in that order, LF-joined
 5. `Merge` (§13.4) into the local graph; persist + recompute cached digest **only if the digest changed**; audit-log the application.
 6. Fetch errors preserve local state untouched (next heartbeat retries).
 
-Eventual consistency bound: any edit reaches every connected member within one heartbeat round (~2 s) plus one fetch; partitioned members converge on the union when the partition heals — same guarantee as revocations.
+**The response leg (follower → Orchestrator).** Heartbeats flow one way — Orchestrator → peers — so a digest only in the *request* would let follower edits reach nobody (the §3.5 revocations passenger quietly has this asymmetry; tolerable for revocations, fatal for a research graph where *every* member contributes). Therefore the **heartbeat response** carries the receiver's own `memory_digest` alongside the §5.4 accept fields; the Orchestrator compares each ack's digest against its own and runs the same fetch-and-merge (steps 2–6) against that follower on mismatch. Follower edits reach the Orchestrator within one heartbeat round; they reach every other member on the following round's request leg.
+
+Eventual consistency bound: an Orchestrator edit reaches every connected member within one heartbeat round (~2 s) plus one fetch; a follower edit within two rounds (~4 s) plus two fetches; partitioned members converge on the union when the partition heals — same guarantee as revocations.
 
 ### 13.6 Write endpoints & authority
 

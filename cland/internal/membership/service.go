@@ -83,7 +83,25 @@ type Service struct {
 	log        *slog.Logger
 	audit      auditlog.Logger
 
+	// OnEvent is the Memory M2 hook (spec §13.7.1): fired after a membership
+	// transition persists, with kind "member_joined" / "member_revoked" and
+	// the affected member id. main.go wires it to the memory service's
+	// system-event writer. Set BEFORE Register (handlers read it once traffic
+	// flows); nil = no-op. Self-leave deliberately has no event: the leaver's
+	// write would die with its local state and no survivor observes a §3.6
+	// leave in v1.
+	OnEvent func(kind, memberID string)
+
 	mu sync.Mutex // serialises Clan-state mutations
+}
+
+// fireEvent invokes OnEvent when set. Best-effort by design — the hook must
+// never block or fail a membership flow (the memory service logs its own
+// errors).
+func (s *Service) fireEvent(kind, memberID string) {
+	if s.OnEvent != nil {
+		s.OnEvent(kind, memberID)
+	}
 }
 
 // ZombieMaxAge is the §3.1 24h timeout for stuck `admitted` members.
@@ -177,6 +195,7 @@ func (s *Service) RedeemInvite(req JoinRequest) (*JoinResponse, error) {
 		Server: "minti-cland", Tool: "membership.join_token", Decision: "allow",
 		Args: map[string]any{"member_id": req.MemberID, "issued_by": tok.IssuedBy},
 	})
+	s.fireEvent("member_joined", req.MemberID)
 	return &JoinResponse{
 		ClanID:             clan.ClanID,
 		ClanKeyB64:         clan.ClanKeyB64,
@@ -218,6 +237,7 @@ func (s *Service) Welcome(req WelcomeRequest) (*WelcomeResponse, error) {
 		Server: "minti-cland", Tool: "membership.welcome", Decision: "allow",
 		Args: map[string]any{"member_id": req.MemberID},
 	})
+	s.fireEvent("member_joined", req.MemberID)
 	return &WelcomeResponse{
 		ClanID:             clan.ClanID,
 		ClanCertPEM:        clan.ClanCertPEM,
@@ -311,6 +331,7 @@ func (s *Service) Revoke(memberID, reason, revoker string) error {
 		Server: "minti-cland", Tool: "membership.revoke", Decision: "allow",
 		Args: map[string]any{"member_id": memberID, "revoked_by": revoker, "reason": reason},
 	})
+	s.fireEvent("member_revoked", memberID)
 	return nil
 }
 

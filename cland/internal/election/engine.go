@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -60,6 +61,24 @@ type EngineOpts struct {
 	// never receives a heartbeat (it only sends), so the normal advertise-
 	// receive promotion path doesn't reach it. Optional; nil = no-op.
 	OnSelfElected func()
+
+	// OnElectionWon fires after a quorum-committed election win (NOT the
+	// per-tick self-renew). Memory M2 wires it to write the spec §13.7.1
+	// failover system event (the caller filters reason != bootstrap — the
+	// engine stays policy-free). Optional; nil = no-op.
+	OnElectionWon func(term uint64, reason string)
+
+	// MemoryDigest returns the spec §13.5 cached memory-graph digest for the
+	// heartbeat passenger. MUST be cheap (the memory service caches it;
+	// recomputed only on mutation) — this runs on the 2 s heartbeat path.
+	// Optional; nil = passenger omitted (pre-§13 compatibility).
+	MemoryDigest func() string
+
+	// OnHeartbeatAck fires (in its own goroutine) for every decoded 200
+	// heartbeat response — the §13.5 response leg. The caller wires it to
+	// the memory syncer so follower edits flow back to the Orchestrator.
+	// Optional; nil = responses are closed undecoded as before.
+	OnHeartbeatAck func(peerID string, ack HeartbeatAck)
 
 	// Cadence — typically cfg.Election. Defaults applied via DefaultIfZero.
 	HeartbeatInterval time.Duration
@@ -244,6 +263,9 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 		RevocationsDigest: revDigest,
 		RosterDigest:      rosterDigest,
 	}
+	if e.opts.MemoryDigest != nil {
+		hb.MemoryDigest = e.opts.MemoryDigest() // cached read — never re-hashes (§13.5)
+	}
 	body, err := json.Marshal(hb)
 	if err != nil {
 		e.opts.Log.Error("election: marshal heartbeat", "err", err)
@@ -267,7 +289,7 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 			e.opts.Log.Debug("election: heartbeat POST failed", "peer", m.MemberID, "err", err)
 			continue
 		}
-		_ = resp.Body.Close()
+		e.handleAckResponse(m.MemberID, resp)
 		e.heartbeatsSent.Add(1)
 	}
 	// Renew our own local lease (we're alive and emitting) — gives consumers
@@ -322,6 +344,9 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		RevocationsDigest: revDigest,
 		RosterDigest:      clan.RosterDigest(),
 	}
+	if e.opts.MemoryDigest != nil {
+		hb.MemoryDigest = e.opts.MemoryDigest()
+	}
 	body, _ := json.Marshal(hb)
 	_, members := e.opts.Registry.Snapshot()
 	for _, m := range members {
@@ -337,7 +362,7 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		if resp.StatusCode == http.StatusOK {
 			accepts++
 		}
-		_ = resp.Body.Close()
+		e.handleAckResponse(m.MemberID, resp)
 	}
 
 	if accepts >= quorum {
@@ -353,6 +378,9 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		// never receive an /clan/advertise from ourselves.
 		if e.opts.OnSelfElected != nil {
 			e.opts.OnSelfElected()
+		}
+		if e.opts.OnElectionWon != nil {
+			e.opts.OnElectionWon(newTerm, reason)
 		}
 		e.opts.Log.Info("election won",
 			"term", newTerm, "accepts", accepts, "quorum", quorum, "reason", reason)
@@ -551,6 +579,24 @@ func (e *Engine) OnHeartbeatReceived(hb Heartbeat, senderID string, now time.Tim
 		}
 	}
 	return res, nil
+}
+
+// handleAckResponse decodes a 200 heartbeat ack and fires OnHeartbeatAck in
+// its own goroutine (§13.5 response leg). Always closes the body. Non-200s
+// and decode failures are silently dropped — the ack leg is best-effort and
+// must never disturb heartbeat cadence.
+func (e *Engine) handleAckResponse(peerID string, resp *http.Response) {
+	if e.opts.OnHeartbeatAck == nil || resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return
+	}
+	var ack HeartbeatAck
+	err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&ack)
+	_ = resp.Body.Close()
+	if err != nil {
+		return
+	}
+	go e.opts.OnHeartbeatAck(peerID, ack)
 }
 
 // backoff is the R7 split-brain backoff: 50-150 ms uniform random.

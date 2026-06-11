@@ -293,6 +293,22 @@ func (s *Service) Replace(g *Graph, from string) error {
 	return nil
 }
 
+// RecordSystemEvent writes (or LWW-refreshes) a spec §13.7.1 system node:
+// deterministic id so every observer mints the same node and the gossip
+// union dedups; source "system"; type "event". Best-effort — callers log
+// and continue on error (a full graph must never break membership flows).
+func (s *Service) RecordSystemEvent(kind, subject, qualifier, title string, now time.Time) error {
+	n := Node{
+		ID:         DeterministicEventID(s.clanID, kind, subject, qualifier),
+		Type:       "event",
+		Title:      title,
+		Status:     "active",
+		Provenance: Provenance{Source: "system"},
+	}
+	_, err := s.AddOrUpdateNode(s.selfID, n, now)
+	return err
+}
+
 // checkSizeLocked enforces the 2 MiB serialized cap on a candidate write.
 // Caller holds s.mu.
 func (s *Service) checkSizeLocked(nodes []Node, edges []Edge) error {

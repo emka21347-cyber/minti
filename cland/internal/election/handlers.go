@@ -24,6 +24,13 @@ type RosterSyncer interface {
 	MaybeSync(ctx context.Context, senderID, theirDigest string) bool
 }
 
+// MemorySyncer is the Memory M2 third passenger (spec §13.5): on memory
+// digest mismatch, fetch GET /clan/memory from the sender and merge. Same
+// shape as the other two; optional-nil and independent of them.
+type MemorySyncer interface {
+	MaybeSync(ctx context.Context, senderID, theirDigest string) bool
+}
+
 // Handlers bundles the four Phase E endpoints:
 //
 //   POST /clan/heartbeat        — Orchestrator → peers (anti-spoof + term gate
@@ -41,6 +48,22 @@ type Handlers struct {
 	Bump   func() // optional; called after /clan/pin succeeds to propagate the new pin
 	RevocationsSync RevocationsSyncer // optional; Phase H-2
 	RosterSync      RosterSyncer      // optional; Phase H-3
+	MemorySync      MemorySyncer      // optional; Memory M2 (spec §13.5)
+
+	// MemoryDigest returns the local cached graph digest for the §13.5
+	// response leg: heartbeats only flow Orchestrator→peers, so the RESPONSE
+	// carries the receiver's digest back — otherwise follower edits would
+	// never reach the Orchestrator. Optional; nil = field omitted.
+	MemoryDigest func() string
+}
+
+// HeartbeatAck is the body of a 200 response to POST /clan/heartbeat.
+// Exported so the engine can decode it for the §13.5 response leg.
+type HeartbeatAck struct {
+	Accepted     bool   `json:"accepted"`
+	TermChanged  bool   `json:"term_changed"`
+	OrchChanged  bool   `json:"orch_changed"`
+	MemoryDigest string `json:"memory_digest,omitempty"`
 }
 
 func (h *Handlers) Register(srv *transport.Server) {
@@ -100,11 +123,20 @@ func (h *Handlers) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if h.RosterSync != nil && hb.RosterDigest != "" {
 		_ = h.RosterSync.MaybeSync(context.Background(), sender, hb.RosterDigest)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"accepted":     res.Accepted,
-		"term_changed": res.TermChanged,
-		"orch_changed": res.OrchChanged,
-	})
+	if h.MemorySync != nil && hb.MemoryDigest != "" {
+		_ = h.MemorySync.MaybeSync(context.Background(), sender, hb.MemoryDigest)
+	}
+	ack := HeartbeatAck{
+		Accepted:    res.Accepted,
+		TermChanged: res.TermChanged,
+		OrchChanged: res.OrchChanged,
+	}
+	if h.MemoryDigest != nil {
+		// §13.5 response leg: tell the Orchestrator what OUR graph looks
+		// like so follower edits flow upstream. Cached read — no I/O.
+		ack.MemoryDigest = h.MemoryDigest()
+	}
+	writeJSON(w, http.StatusOK, ack)
 }
 
 // ---------- GET /clan/orchestrator ----------

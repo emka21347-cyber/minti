@@ -268,7 +268,31 @@ func runDaemon(args []string) error {
 		lanAddr = fmt.Sprintf("%s:%d", cfg.Listen.Address, cfg.Listen.Port)
 	}
 
+	// ----- Memory M1/M2: Clan Memory graph (spec §13) -----
+	memSvc, err := memory.NewService(memory.ServiceOpts{
+		Store:  store,
+		SelfID: id.MemberID,
+		ClanID: clan.ClanID,
+		Audit:  audit,
+		Log:    log,
+	})
+	if err != nil {
+		return fmt.Errorf("memory: %w", err)
+	}
+	(&memory.Handler{Svc: memSvc, Log: log}).Register(srv)
+	log.Info("clan memory enabled",
+		"digest", memSvc.Digest()[:12],
+		"endpoints", "/clan/memory{,/digest,/node,/edge}")
+
 	membSvc := membership.NewService(store, id, lanAddr, audit, log)
+	// Memory M2 (spec §13.7.1): membership transitions become system nodes in
+	// the gossiped graph. Set before Register so no handler can fire first.
+	membSvc.OnEvent = func(kind, memberID string) {
+		title := fmt.Sprintf("%s: %s", kind, shortID(memberID))
+		if err := memSvc.RecordSystemEvent(kind, memberID, "", title, time.Now()); err != nil {
+			log.Warn("memory: system event write failed", "kind", kind, "err", err)
+		}
+	}
 	membSvc.Register(srv)
 
 	// Zombie sweep + invite sweep ticker.
@@ -371,6 +395,27 @@ func runDaemon(args []string) error {
 	log.Info("advertise + discovery loops running",
 		"interval", cfg.Advertise.Interval, "rubric_path", cfg.Discovery.RubricPath)
 
+	// Memory M2: gossip syncer — third heartbeat passenger + response leg
+	// (spec §13.5). Created before the engine so both the ack callback and
+	// the heartbeat handler can share it.
+	memSyncer, err := memory.NewSyncer(memory.SyncerOpts{
+		Service: memSvc,
+		Fetcher: advClient,
+		LookupAddr: func(memberID string) string {
+			_, members := registry.Snapshot()
+			for _, m := range members {
+				if m.MemberID == memberID {
+					return m.Address
+				}
+			}
+			return ""
+		},
+		Log: log,
+	})
+	if err != nil {
+		return fmt.Errorf("memory syncer: %w", err)
+	}
+
 	// ----- Phase E: leader-lease election -----
 	electionState := election.NewState(id.MemberID, clan.CurrentTerm, clan.CurrentOrchestrator, cfg.Election.HistorySize)
 	localSelfFn := func() election.LocalCandidate {
@@ -437,6 +482,25 @@ func runDaemon(args []string) error {
 			// for us since we only emit heartbeats, not receive them).
 			_ = membSvc.PromoteToActive(id.MemberID)
 		},
+		// Memory M2: cached digest as the third heartbeat passenger (§13.5)
+		// + the response leg (follower edits flow back via the ack digest)
+		// + failover milestones as system nodes (§13.7.1; bootstrap wins are
+		// steady-state noise and deliberately skipped).
+		MemoryDigest: memSvc.Digest,
+		OnHeartbeatAck: func(peerID string, ack election.HeartbeatAck) {
+			if ack.MemoryDigest != "" {
+				_ = memSyncer.MaybeSync(context.Background(), peerID, ack.MemoryDigest)
+			}
+		},
+		OnElectionWon: func(term uint64, reason string) {
+			if reason == election.ReasonBootstrap {
+				return
+			}
+			title := fmt.Sprintf("election failover: term %d won by %s (%s)", term, shortID(id.MemberID), reason)
+			if err := memSvc.RecordSystemEvent("election_failover", id.MemberID, fmt.Sprintf("term-%d", term), title, time.Now()); err != nil {
+				log.Warn("memory: failover event write failed", "err", err)
+			}
+		},
 		HeartbeatInterval: cfg.Election.HeartbeatInterval,
 		LeaseDuration:     cfg.Election.LeaseDuration,
 		FailoverGrace:     cfg.Election.FailoverGrace,
@@ -491,28 +555,14 @@ func runDaemon(args []string) error {
 	}
 	(&rostersync.Handler{Store: store, Log: log}).Register(srv)
 
-	// ----- Memory M1: Clan Memory graph (spec §13) -----
-	memSvc, err := memory.NewService(memory.ServiceOpts{
-		Store:  store,
-		SelfID: id.MemberID,
-		ClanID: clan.ClanID,
-		Audit:  audit,
-		Log:    log,
-	})
-	if err != nil {
-		return fmt.Errorf("memory: %w", err)
-	}
-	(&memory.Handler{Svc: memSvc, Log: log}).Register(srv)
-	log.Info("clan memory enabled",
-		"digest", memSvc.Digest()[:12],
-		"endpoints", "/clan/memory{,/digest,/node,/edge}")
-
 	(&election.Handlers{
 		Engine:          electionEng,
 		Store:           store,
 		Bump:            advSvc.Bump,
 		RevocationsSync: revSyncer,
 		RosterSync:      rosterSyncer,
+		MemorySync:      memSyncer,
+		MemoryDigest:    memSvc.Digest, // §13.5 response leg
 	}).Register(srv)
 	electionCtx, electionCancel := context.WithCancel(context.Background())
 	defer electionCancel()

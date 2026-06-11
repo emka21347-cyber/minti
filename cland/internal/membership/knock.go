@@ -492,6 +492,7 @@ func (s *Service) KnockAccept(knockID, actingMemberID string) error {
 		Server: "minti-cland", Tool: "membership.knock_accept", Decision: "allow",
 		Args: map[string]any{"knock_id": knockID, "joiner": pk.JoinerMemberID, "accepted_by": actingMemberID},
 	})
+	s.fireEvent("member_joined", pk.JoinerMemberID)
 	s.log.Info("knock accepted, joiner admitted", "knock_id", knockID, "joiner", pk.JoinerMemberID)
 	return nil
 }
