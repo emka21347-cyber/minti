@@ -1,6 +1,6 @@
 [Plymouth Theme]
 Name=MINTI
-Description=MINTI boot splash — node mesh fades in, wordmark resolves
+Description=MINTI boot splash — the quadrant mark resolves, wordmark fades in
 ModuleName=script
 
 [script]

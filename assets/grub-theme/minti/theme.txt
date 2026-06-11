@@ -1,7 +1,8 @@
 # MINTI GRUB2 theme
 # Palette: mint green #00d787, bright cyan #5fd7ff, deep black #0a0a0a
 # Font: DejaVu Sans Bold 18pt (minti.pf2, generated via grub-mkfont)
-# Background: wallpaper-1920x1080.png (dark, logo + subtle mesh)
+# Background: background.png (dark, ▚ quadrant mark — rasterized at build
+# time from assets/wallpaper-3840x2160.svg)
 
 # ── global ─────────────────────────────────────────────────────────────────
 title-text: ""

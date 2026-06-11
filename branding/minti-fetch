@@ -125,21 +125,20 @@ if command -v minti-cland >/dev/null 2>&1; then
     esac
 fi
 
-# ---------- logo lines (12 rows) ----------
+# ---------- logo lines (the ▚ quadrant mark, 12 rows) ----------
 logo=(
-"${node}       ●───●───●${reset}"
-"${node}      ╱ │   │   ╲${reset}"
-"${node}     ●──┼───●───┼──●${reset}"
-"${node}     │  │   ║   │  │${reset}"
-"${node}     ●──┼───●───┼──●${reset}"
-"${node}      ╲ │   │   ╱${reset}"
-"${node}       ●───●───●${reset}"
+"${node}██████${reset}"
+"${node}██████${reset}"
+"${node}██████${reset}"
+"${node}      ██████${reset}"
+"${node}      ██████${reset}"
+"${node}      ██████${reset}"
 ""
-"       ${bold}${mint}M I N T I${reset}"
-"       ${rule}─────────${reset}"
-"       ${dim}Open agents.${reset}"
-"       ${dim}Open weights.${reset}"
-"       ${dim}Clan-aware.${reset}"
+" ${bold}${mint}M I N T I${reset}"
+" ${rule}─────────${reset}"
+" ${dim}Open agents.${reset}"
+" ${dim}Open weights.${reset}"
+" ${dim}Clan-aware.${reset}"
 )
 
 # ---------- info lines (paired by index with logo) ----------
@@ -163,7 +162,7 @@ info=(
 # ---------- render side-by-side ----------
 # Pad logo lines to a fixed visible width so info aligns. We strip ANSI
 # escapes, then count UTF-8 CHARACTERS (wc -m) not bytes — the logo uses
-# box-drawing glyphs (●, ─, │, ╲, ╱) that are multi-byte but 1-column.
+# block glyphs (█, ─) that are multi-byte but 1-column.
 visible_len() {
     # shellcheck disable=SC2001
     local stripped
@@ -180,7 +179,7 @@ pad_to() {
     printf '%s%*s' "$s" "$pad" ''
 }
 
-LOGO_WIDTH=24
+LOGO_WIDTH=14
 rows=${#logo[@]}
 [[ ${#info[@]} -gt $rows ]] && rows=${#info[@]}
 
