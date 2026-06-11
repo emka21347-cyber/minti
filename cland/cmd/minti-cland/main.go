@@ -613,6 +613,33 @@ func runDaemon(args []string) error {
 		"history_size", cfg.Election.HistorySize,
 	)
 
+	// ----- Memory M6: scribe distillation duty (spec §13.9) -----
+	// The loop runs on every member but distills ONLY while we hold the
+	// scribe role (§13.8) — election decides, the closure gates per tick.
+	scribeSvc, err := memory.NewScribe(memory.ScribeOpts{
+		Service: memSvc,
+		SelfID:  id.MemberID,
+		ClanID:  clan.ClanID,
+		IsScribe: func() bool {
+			return electionState.CurrentScribe() == id.MemberID
+		},
+		RuntimeBase: cfg.Runtime.BaseURL,
+		PickModel: func(pctx context.Context) string {
+			caps, _ := runtimeClient.Get(pctx)
+			return memory.SmallestResidentModel(caps.ResidentModels())
+		},
+		ChatDir:   memory.DefaultChatDir(clan.ClanID),
+		AuditPath: apath,
+		Audit:     audit,
+		Log:       log,
+	})
+	if err != nil {
+		return fmt.Errorf("scribe: %w", err)
+	}
+	scribeCtx, scribeCancel := context.WithCancel(context.Background())
+	defer scribeCancel()
+	go scribeSvc.Run(scribeCtx)
+
 	// ----- Phase F: routing layer -----
 	routerSvc, err := router.NewRouter(router.Opts{
 		SelfID:         id.MemberID,
