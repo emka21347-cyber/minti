@@ -1,0 +1,166 @@
+Produce ONE complete static HTML file (index.html) and NOTHING else — no
+markdown, no commentary, no code fences. It is the download/landing page
+for MINTI. Follow this spec EXACTLY; where exact copy is given in
+"quotes", reproduce it verbatim.
+
+HARD CONSTRAINTS
+- Single file. All CSS in one <style> block in <head>. ZERO JavaScript.
+- No external resources of any kind (no CDN fonts, no icon fonts, no
+  analytics, no remote images). The ONLY referenced asset is the local
+  file assets/logo.svg.
+- Semantic HTML5 (header/main/section/article/footer, h1..h3, tables for
+  tabular data). Valid, accessible (alt text, aria-label on the two door
+  links, lang="en").
+- Monospace everywhere: font-family: ui-monospace, "JetBrains Mono",
+  "Cascadia Mono", Consolas, Menlo, monospace;
+- Dark theme ONLY, these exact custom properties on :root:
+    --bg:#0a0a0a; --surface:#101414; --line:#1e2a2a; --mint:#00d787;
+    --cyan:#5fd7ff; --grey:#8a8a8a; --label:#bcbcbc; --value:#eeeeee;
+  body background #060606, text var(--value).
+- PALETTE RULES (brand-locked): mint is reserved for SINGLE-FOCUS
+  elements only — the wordmark, the door-B primary button, one status
+  dot. Never body text. Cyan = links + enumerable things (the three
+  service rows, list bullets). Greys carry everything else. No gradients
+  anywhere. No border-radius larger than 10px.
+- Content column: max-width 940px, centered, padding 24px 16px.
+- The two door cards sit side by side on viewports >= 760px (CSS grid,
+  door B first and visually primary: 1px solid var(--mint) border +
+  slightly larger heading; door A: 1px solid var(--line)). They stack on
+  narrow viewports. Everything must remain readable at 360px wide.
+- Total file must stay under 40 KB.
+
+PAGE STRUCTURE, top to bottom:
+
+1. HEADER BAR (slim, border-bottom 1px var(--line)):
+   left: "▚" in cyan, then "MINTI" in mint with letter-spacing 2px, then
+   "distribution" in grey.
+   right: link "releases ↗" (cyan) to
+   https://github.com/emka21347-cyber/minti-releases
+
+2. HERO (centered, generous vertical padding):
+   - <img src="assets/logo.svg" alt="MINTI — nine-node mesh logo"
+     width="260"> (height auto).
+   - h1: "Own-your-hardware AI."
+   - One paragraph, grey, max 62ch, centered:
+     "MINTI turns the machines you already have into a private AI mesh —
+     open agents, open weights, no cloud, no accounts, nothing leaves
+     your LAN. Install it on your daily machine, or boot an old laptop
+     back to life as a dedicated node. Your browser is the whole
+     interface."
+
+3. THE TWO DOORS (section, h2 visually hidden or omitted):
+
+   DOOR B (primary card) — h2: "Add MINTI to this machine"
+   - sub-line (grey): "One installer. Three local services. Your browser
+     does the rest — http://127.0.0.1:8088 opens when it finishes."
+   - A small table (3 rows, borders var(--line)) headed "what gets
+     installed", cyan service names:
+       minti-cland | Clan daemon | LAN port :7777 — the only open port
+       minti-runtime | local-model API | 127.0.0.1:7780, loopback only
+       minti-workspace | the web UI | 127.0.0.1:8088, loopback only
+   - DOWNLOADS — a definition-list-like block, one row per OS. Each row:
+     OS name (label grey), a download link (cyan, the file name), the
+     size, and beneath it a <code> line with the SHA-256 (word-break:
+     break-all; font-size ~11px; color var(--grey)).
+       Windows 10/11 (x64):
+         link text "minti-windows-amd64-v0.4.0-D1.zip" ->
+         https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-windows-amd64-v0.4.0-D1.zip
+         "10 MB" ; sha256:
+         405c4140e9e70c9200156ada3ec182d153137119e3557e7dcef2131afaa1bb8f
+       Linux (Debian-family, amd64):
+         "minti-linux-amd64-v0.4.0-D1.tar.gz" ->
+         https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-linux-amd64-v0.4.0-D1.tar.gz
+         "29 MB" ; sha256:
+         4cb03b5f2cca2ca0f5becfa7b9153354f1c942f19c50c5b2da04bb6f8f8e4ab4
+       macOS (Apple Silicon):
+         "minti-macos-arm64-v0.4.0-D1.tar.gz" ->
+         https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-macos-arm64-v0.4.0-D1.tar.gz
+         "9 MB" ; sha256:
+         a2fdbf0ca170c9aa3b21327f3ffcd86ac89818a952e613467425726c6b22ba0a
+       macOS (Intel):
+         "minti-macos-amd64-v0.4.0-D1.tar.gz" ->
+         https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-macos-amd64-v0.4.0-D1.tar.gz
+         "10 MB" ; sha256:
+         95efa03dd0df2b063681ed06f227f18ecd0e121862f0ef276b475a3163fd27c7
+   - Under the macOS rows, one grey italic line:
+     "macOS recipes are peer-reviewed but have not yet run on physical
+     Apple hardware — reports welcome."
+   - "Install in three steps" (h3), an <ol> per OS in three short
+     <details> elements (Windows open by default):
+       Windows: 1. "Extract the zip." 2. "Double-click Install-MINTI.cmd
+       and accept the UAC prompt." 3. "Your browser opens the workspace
+       at http://127.0.0.1:8088."
+       Linux: 1. "tar xzf minti-linux-amd64-v0.4.0-D1.tar.gz" 2. "cd
+       minti-linux-amd64-v0.4.0-D1 && sudo bash install/install.sh"
+       3. "The workspace opens (or visit http://127.0.0.1:8088)."
+       macOS: 1. "tar xzf minti-macos-<arch>-v0.4.0-D1.tar.gz" 2. "cd
+       into it && sudo bash install-minti.sh" 3. "The workspace opens at
+       http://127.0.0.1:8088."
+   - One line, grey: "Uninstall anytime — uninstall scripts ship in the
+     download and preserve your Clan identity by default."
+   - One line with a cyan link: "Verify your download first:
+     checksums.txt" ->
+     https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/checksums.txt
+   - Models note (grey): "Models run through Ollama. The installer
+     detects it, or points you to ollama.com — it never installs
+     third-party software for you. (Linux: the installer offers the
+     official Ollama install script; set MINTI_NO_OLLAMA=1 to skip.)"
+
+   DOOR A (secondary card) — h2: "Revive a machine"
+   - badge at the top of the card: cyan-bordered pill, text
+     "live preview — disk installer coming".
+   - paragraph: "A lean bootable OS image with the whole MINTI stack
+     preinstalled — made for 10-year-old laptops (1–2 GB RAM). Flash it
+     to a USB stick, boot, and the machine joins your Clan as a node."
+   - Honest status box (border var(--line), padding 12px):
+     "The current image is a live preview: it runs entirely from RAM and
+     forgets everything on reboot. The disk installer (wipe & install)
+     is the next milestone. The ISO lands on the releases page when the
+     next image build completes — it is not uploaded yet."
+     The words "releases page" are a cyan link to
+     https://github.com/emka21347-cyber/minti-releases/releases
+   - h3 "When it's here: flash & boot" + <ol>:
+     1. "Download the .iso and verify its SHA-256."
+     2. "Write it to a USB stick with balenaEtcher, Rufus, or dd."
+     3. "Boot the old machine from USB (usually F12 / Esc at power-on)."
+   - requirements line (grey): "x86-64, 1–2 GB RAM, any disk. WiFi
+     firmware included."
+
+4. KNOWN WARNINGS (section, full width under the doors; h2 "Known
+   warnings — read before installing"; border 1px var(--line);
+   background var(--surface)). Four short blocks with h3s:
+   - "Unsigned binaries (for now)" — "These builds are not code-signed
+     yet. Windows SmartScreen will say 'Windows protected your PC' —
+     click 'More info', then 'Run anyway'. macOS Gatekeeper may require
+     right-click → Open, or 'Open Anyway' in System Settings >  Privacy &
+     Security. ALWAYS verify the SHA-256 against checksums.txt before
+     clicking through a warning — the hash check is your protection."
+   - "Windows Defender" — "Unsigned services doing LAN discovery can
+     trigger Defender's behavioural blocks. The installer prints the
+     two folder exclusions to add if your service stops minutes after
+     starting."
+   - "Hardware expectations" — "The stack itself is light. The models
+     are not: a 3B model wants ~4 GB free RAM, an 8B model ~8–10 GB. On
+     small machines stick to small models — heavy swapping looks like a
+     broken machine and isn't."
+   - "One open port" — "Only the Clan daemon listens on the network
+     (TCP 7777, scoped to private networks on Windows). The runtime and
+     the workspace bind 127.0.0.1 and are unreachable from the LAN."
+
+5. HOW IT WORKS (section; h2 "How it works"; three inline blocks side by
+   side (stack on narrow), each: a large monospace glyph in cyan, a
+   bold label, one grey sentence):
+   - "▢→" / "Install" / "One installer sets up three small services on
+     your machine."
+   - "◈◈" / "Knock" / "Machines on the same LAN knock into your Clan —
+     you approve each one with a short code."
+   - "▣" / "Browse" / "Every machine's browser opens its own workspace;
+     the Clan routes work to whoever is strongest."
+
+6. FOOTER (border-top var(--line), grey, small):
+   - "No telemetry. No accounts. Everything stays on your LAN."
+   - link "Release artifacts + checksums" (cyan) ->
+     https://github.com/emka21347-cyber/minti-releases
+   - "MINTI 0.4.0-D1"
+
+Output the complete index.html now.

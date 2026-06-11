@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MINTI — Own-your-hardware AI</title>
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg:#0a0a0a; --surface:#101414; --line:#1e2a2a; --mint:#00d787;
+  --cyan:#5fd7ff; --grey:#8a8a8a; --label:#bcbcbc; --value:#eeeeee;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #060606; color: var(--value); font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace;
+  line-height: 1.5; font-size: 14px; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: #000; padding: 2px 4px; border-radius: 4px; font-size: 13px; }
+
+/* Layout */
+.container { max-width: 940px; margin: 0 auto; padding: 0 16px; }
+header { border-bottom: 1px solid var(--line); padding: 12px 0; background: var(--bg); }
+.header-inner { display: flex; justify-content: space-between; align-items: center; }
+.brand { display: flex; align-items: baseline; gap: 8px; font-weight: bold; letter-spacing: 1px; }
+.brand .mint { color: var(--mint); letter-spacing: 2px; }
+.brand .grey { color: var(--grey); font-size: 0.9em; }
+
+/* Hero */
+.hero { text-align: center; padding: 60px 16px 40px; }
+.hero img { height: auto; max-width: 260px; margin-bottom: 24px; display: block; margin-left: auto; margin-right: auto; }
+h1 { font-size: 2.5rem; margin-bottom: 16px; letter-spacing: -1px; }
+.hero p { color: var(--grey); max-width: 62ch; margin: 0 auto; }
+
+/* Doors */
+.doors-section { padding: 40px 0; }
+.door-grid { display: grid; gap: 24px; grid-template-columns: 1fr; }
+@media (min-width: 760px) { .door-grid { grid-template-columns: 1.2fr 0.8fr; } }
+
+.card { background: var(--surface); border: 1px solid var(--line); padding: 24px; border-radius: 8px; display: flex; flex-direction: column; }
+.card.primary { border-color: var(--mint); position: relative; }
+.card h2 { font-size: 1.5rem; margin-bottom: 8px; color: var(--value); }
+.card.primary h2 { color: var(--mint); }
+.sub-line { color: var(--grey); margin-bottom: 24px; font-size: 0.9em; }
+
+/* Tables & Lists */
+table { width: 100%; border-collapse: collapse; margin-bottom: 24px; text-align: left; }
+td, th { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--label); font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; }
+td:first-child { color: var(--cyan); font-weight: bold; }
+
+.download-list { list-style: none; margin-bottom: 24px; }
+.download-item { margin-bottom: 16px; border-bottom: 1px solid #1e2a2a; padding-bottom: 12px; }
+.dl-meta { display: flex; gap: 12px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+.os-name { color: var(--label); font-weight: bold; }
+.file-size { color: var(--grey); font-size: 0.9em; }
+.sha-code { display: block; word-break: break-all; font-size: 11px; color: var(--grey); margin-top: 4px; }
+
+.mac-note { font-style: italic; color: var(--grey); font-size: 0.85em; margin-bottom: 24px; display: block; }
+
+details { margin-bottom: 8px; border: 1px solid var(--line); padding: 8px; border-radius: 4px; }
+summary { cursor: pointer; color: var(--cyan); font-weight: bold; outline: none; }
+details ol { margin-top: 8px; margin-left: 20px; color: var(--label); }
+details li { margin-bottom: 4px; }
+
+.uninstall-line, .verify-line, .models-note { margin-top: auto; padding-top: 16px; font-size: 0.9em; color: var(--grey); }
+.verify-link { display: block; margin-top: 8px; }
+
+/* Door A Specifics */
+.badge { display: inline-block; border: 1px solid var(--cyan); color: var(--cyan); padding: 2px 8px; font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; border-radius: 4px; }
+.status-box { background: #0a0a0a; border: 1px solid var(--line); padding: 12px; margin: 16px 0; font-size: 0.9em; color: var(--label); }
+
+/* Warnings */
+.warnings-section { margin: 40px 0; }
+.warnings-box { border: 1px solid var(--line); background: var(--surface); padding: 24px; border-radius: 8px; }
+.warnings-box h2 { font-size: 1.2rem; margin-bottom: 24px; color: var(--value); border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.warning-grid { display: grid; gap: 24px; grid-template-columns: 1fr; }
+@media (min-width: 600px) { .warning-grid { grid-template-columns: 1fr 1fr; } }
+.warning-block h3 { color: var(--value); font-size: 1rem; margin-bottom: 8px; }
+.warning-block p { color: var(--grey); font-size: 0.9em; line-height: 1.6; }
+
+/* How it works */
+.how-section { padding: 40px 0; text-align: center; }
+.how-grid { display: grid; gap: 24px; grid-template-columns: 1fr; margin-top: 32px; }
+@media (min-width: 600px) { .how-grid { grid-template-columns: repeat(3, 1fr); } }
+.how-block { padding: 20px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; }
+.glyph { font-size: 2rem; color: var(--cyan); margin-bottom: 12px; display: block; }
+.how-block h3 { color: var(--value); margin-bottom: 8px; }
+.how-block p { color: var(--grey); font-size: 0.9em; }
+
+/* Footer */
+footer { border-top: 1px solid var(--line); padding: 24px 0; text-align: center; color: var(--grey); font-size: 0.85em; margin-top: 40px; }
+footer a { color: var(--cyan); }
+
+/* Utilities */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container header-inner">
+    <div class="brand">
+      <span style="color: var(--cyan)">▚</span>
+      <span class="mint">MINTI</span>
+      <span class="grey">distribution</span>
+    </div>
+    <a href="https://github.com/emka21347-cyber/minti-releases" aria-label="View releases on GitHub">releases ↗</a>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- Hero -->
+  <section class="hero">
+    <img src="assets/logo.svg" alt="MINTI — nine-node mesh logo" width="260">
+    <h1>Own-your-hardware AI.</h1>
+    <p>MINTI turns the machines you already have into a private AI mesh — open agents, open weights, no cloud, no accounts, nothing leaves your LAN. Install it on your daily machine, or boot an old laptop back to life as a dedicated node. Your browser is the whole interface.</p>
+  </section>
+
+  <!-- The Two Doors -->
+  <section class="doors-section">
+    <div class="door-grid">
+      
+      <!-- Door B (Primary) -->
+      <article class="card primary" aria-label="Download MINTI for this machine">
+        <h2>Add MINTI to this machine</h2>
+        <p class="sub-line">One installer. Three local services. Your browser does the rest — http://127.0.0.1:8088 opens when it finishes.</p>
+
+        <table aria-label="what gets installed">
+          <thead><tr><th scope="col">Service</th><th scope="col">Role</th><th scope="col">Network</th></tr></thead>
+          <tbody>
+            <tr><td>minti-cland</td><td>Clan daemon</td><td>LAN port :7777 — the only open port</td></tr>
+            <tr><td>minti-runtime</td><td>local-model API</td><td>127.0.0.1:7780, loopback only</td></tr>
+            <tr><td>minti-workspace</td><td>the web UI</td><td>127.0.0.1:8088, loopback only</td></tr>
+          </tbody>
+        </table>
+
+        <h3 style="color: var(--value); margin-bottom: 12px;">DOWNLOADS</h3>
+        <ul class="download-list">
+          <li class="download-item">
+            <div class="dl-meta">
+              <span class="os-name">Windows 10/11 (x64)</span>
+              <a href="https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-windows-amd64-v0.4.0-D1.zip">minti-windows-amd64-v0.4.0-D1.zip</a>
+              <span class="file-size">10 MB</span>
+            </div>
+            <code class="sha-code">SHA-256: 405c4140e9e70c9200156ada3ec182d153137119e3557e7dcef2131afaa1bb8f</code>
+          </li>
+          <li class="download-item">
+            <div class="dl-meta">
+              <span class="os-name">Linux (Debian-family, amd64)</span>
+              <a href="https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-linux-amd64-v0.4.0-D1.tar.gz">minti-linux-amd64-v0.4.0-D1.tar.gz</a>
+              <span class="file-size">29 MB</span>
+            </div>
+            <code class="sha-code">SHA-256: 4cb03b5f2cca2ca0f5becfa7b9153354f1c942f19c50c5b2da04bb6f8f8e4ab4</code>
+          </li>
+          <li class="download-item">
+            <div class="dl-meta">
+              <span class="os-name">macOS (Apple Silicon)</span>
+              <a href="https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-macos-arm64-v0.4.0-D1.tar.gz">minti-macos-arm64-v0.4.0-D1.tar.gz</a>
+              <span class="file-size">9 MB</span>
+            </div>
+            <code class="sha-code">SHA-256: a2fdbf0ca170c9aa3b21327f3ffcd86ac89818a952e613467425726c6b22ba0a</code>
+          </li>
+          <li class="download-item" style="border-bottom: none;">
+            <div class="dl-meta">
+              <span class="os-name">macOS (Intel)</span>
+              <a href="https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/minti-macos-amd64-v0.4.0-D1.tar.gz">minti-macos-amd64-v0.4.0-D1.tar.gz</a>
+              <span class="file-size">10 MB</span>
+            </div>
+            <code class="sha-code">SHA-256: 95efa03dd0df2b063681ed06f227f18ecd0e121862f0ef276b475a3163fd27c7</code>
+          </li>
+        </ul>
+
+        <span class="mac-note">macOS recipes are peer-reviewed but have not yet run on physical Apple hardware — reports welcome.</span>
+
+        <h3 style="color: var(--value); margin-bottom: 12px;">Install in three steps</h3>
+        
+        <details open>
+          <summary>Windows</summary>
+          <ol>
+            <li>Extract the zip.</li>
+            <li>Double-click Install-MINTI.cmd and accept the UAC prompt.</li>
+            <li>Your browser opens the workspace at http://127.0.0.1:8088.</li>
+          </ol>
+        </details>
+
+        <details>
+          <summary>Linux</summary>
+          <ol>
+            <li>tar xzf minti-linux-amd64-v0.4.0-D1.tar.gz</li>
+            <li>cd minti-linux-amd64-v0.4.0-D1 &amp;&amp; sudo bash install/install.sh</li>
+            <li>The workspace opens (or visit http://127.0.0.1:8088).</li>
+          </ol>
+        </details>
+
+        <details>
+          <summary>macOS</summary>
+          <ol>
+            <li>tar xzf minti-macos-&lt;arch&gt;-v0.4.0-D1.tar.gz</li>
+            <li>cd into it &amp;&amp; sudo bash install-minti.sh</li>
+            <li>The workspace opens at http://127.0.0.1:8088.</li>
+          </ol>
+        </details>
+
+        <p class="uninstall-line">Uninstall anytime — uninstall scripts ship in the download and preserve your Clan identity by default.</p>
+        
+        <span class="verify-line">Verify your download first: <a href="https://github.com/emka21347-cyber/minti-releases/releases/download/v0.4.0-D1/checksums.txt">checksums.txt</a></span>
+        
+        <p class="models-note" style="margin-top: 16px;">Models run through Ollama. The installer detects it, or points you to ollama.com — it never installs third-party software for you. (Linux: the installer offers the official Ollama install script; set MINTI_NO_OLLAMA=1 to skip.)</p>
+      </article>
+
+      <!-- Door A (Secondary) -->
+      <article class="card" aria-label="Revive a machine with MINTI OS">
+        <div class="badge">live preview — disk installer coming</div>
+        <h2>Revive a machine</h2>
+        <p style="color: var(--label); margin-bottom: 16px;">A lean bootable OS image with the whole MINTI stack preinstalled — made for 10-year-old laptops (1–2 GB RAM). Flash it to a USB stick, boot, and the machine joins your Clan as a node.</p>
+        
+        <div class="status-box">
+          The current image is a live preview: it runs entirely from RAM and forgets everything on reboot. The disk installer (wipe &amp; install) is the next milestone. The ISO lands on the <a href="https://github.com/emka21347-cyber/minti-releases/releases">releases page</a> when the next image build completes — it is not uploaded yet.
+        </div>
+
+        <h3 style="color: var(--value); margin-bottom: 8px;">When it's here: flash &amp; boot</h3>
+        <ol style="margin-left: 20px; color: var(--label); margin-bottom: 16px;">
+          <li>Download the .iso and verify its SHA-256.</li>
+          <li>Write it to a USB stick with balenaEtcher, Rufus, or dd.</li>
+          <li>Boot the old machine from USB (usually F12 / Esc at power-on).</li>
+        </ol>
+
+        <p class="uninstall-line">x86-64, 1–2 GB RAM, any disk. WiFi firmware included.</p>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- Known Warnings -->
+  <section class="warnings-section">
+    <div class="warnings-box">
+      <h2>Known warnings — read before installing</h2>
+      <div class="warning-grid">
+        <div class="warning-block">
+          <h3>Unsigned binaries (for now)</h3>
+          <p>These builds are not code-signed yet. Windows SmartScreen will say 'Windows protected your PC' — click 'More info', then 'Run anyway'. macOS Gatekeeper may require right-click → Open, or 'Open Anyway' in System Settings &gt; Privacy &amp; Security. ALWAYS verify the SHA-256 against checksums.txt before clicking through a warning — the hash check is your protection.</p>
+        </div>
+        <div class="warning-block">
+          <h3>Windows Defender</h3>
+          <p>Unsigned services doing LAN discovery can trigger Defender's behavioural blocks. The installer prints the two folder exclusions to add if your service stops minutes after starting.</p>
+        </div>
+        <div class="warning-block">
+          <h3>Hardware expectations</h3>
+          <p>The stack itself is light. The models are not: a 3B model wants ~4 GB free RAM, an 8B model ~8–10 GB. On small machines stick to small models — heavy swapping looks like a broken machine and isn't.</p>
+        </div>
+        <div class="warning-block">
+          <h3>One open port</h3>
+          <p>Only the Clan daemon listens on the network (TCP 7777, scoped to private networks on Windows). The runtime and the workspace bind 127.0.0.1 and are unreachable from the LAN.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="how-section">
+    <h2 style="color: var(--value);">How it works</h2>
+    <div class="how-grid">
+      <div class="how-block">
+        <span class="glyph">▢→</span>
+        <h3>Install</h3>
+        <p>One installer sets up three small services on your machine.</p>
+      </div>
+      <div class="how-block">
+        <span class="glyph">◈◈</span>
+        <h3>Knock</h3>
+        <p>Machines on the same LAN knock into your Clan — you approve each one with a short code.</p>
+      </div>
+      <div class="how-block">
+        <span class="glyph">▣</span>
+        <h3>Browse</h3>
+        <p>Every machine's browser opens its own workspace; the Clan routes work to whoever is strongest.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <p>No telemetry. No accounts. Everything stays on your LAN.</p>
+    <p style="margin-top: 8px;"><a href="https://github.com/emka21347-cyber/minti-releases">Release artifacts + checksums</a></p>
+    <p style="margin-top: 8px; color: var(--grey); opacity: 0.6;">MINTI 0.4.0-D1</p>
+  </div>
+</footer>
+
+</body>
+</html>
