@@ -1,8 +1,10 @@
-# Clan Protocol Specification — v0.3
+# Clan Protocol Specification — v0.4
 
 > Status: **Draft**, v1 implementation target.
 > Source of truth for the on-wire behavior of `cland` (Linux) and the cross-platform Clan Agent (Windows / macOS).
 > This document defines the protocol; the PRD ([../../../../.claude/plans/hello-can-we-create-abundant-hopper.md](../../../../.claude/plans/hello-can-we-create-abundant-hopper.md)) defines the product. Where they conflict, the PRD wins on intent and this document wins on wire details.
+>
+> **v0.4 (2026-06-11, Memory M0):** Adds §13 *Clan Memory* — a gossiped, Clan-owned, curated memory **graph** for distributed research: LWW/CRDT-lite merge, content-versioned digest riding the election heartbeat (third passenger after revocations §3.5 + roster), an elected **Scribe** role on the *weakest* capable node (inverse of Orchestrator selection) with a continuous small-LLM distillation duty behind a human-review gate, explicit research sessions, and a portable single-file **Clan Blueprint** importable at `create`. §5.3 gains a heartbeat-passengers note (retroactively documenting the H-2/H-3 digest fields). §10 gains the four memory endpoints (+ the H-2 `GET /clan/revocations` row that was missing). §12 gains OQ-8 (delta sync), OQ-9 (edge tombstones / hard-delete), OQ-10 (blueprint signing).
 >
 > **v0.3 (2026-06-06, M8 Phase 0):** Adds §3.4 *Knock flow (no out-of-band secret)* — a third Clan-joining path alongside invite-token (§3.2) and paste-key (§3.3). Joiner sends an ephemeral X25519 pubkey + Ed25519 identity to a known Clan address; receiver and joiner derive a 20-bit confirm code from a HKDF binding both pubkeys + `clan_id` + `knock_id`; existing Clan operator visually verifies the digits with the joiner over a side channel before pressing accept; the welcome payload is AES-256-GCM-sealed with the ECDH-derived key + `aad=knock_id`. Renumbers existing §3.4 Revocation → §3.5 and §3.5 Self-leave → §3.6.
 >
@@ -382,6 +384,15 @@ Peers update local state: `current_orchestrator = member_id`, `current_term = te
 
 A peer ignores a heartbeat if `term < current_term`, or if the sender is not the highest-`reasoning_score` member according to its current advertisements (anti-spoofing).
 
+**Heartbeat passengers (additive, `omitempty`).** Later phases piggyback cheap state digests on the heartbeat so peers can detect drift without extra polling. All are optional string fields; receivers that predate a passenger ignore it (JSON unknown-field tolerance), so passengers never break mixed-version Clans:
+
+| Field | Added | Meaning | On mismatch |
+|---|---|---|---|
+| `revocations_digest` | Phase H-2 | sha256 of sorted revoked member_ids | fetch `GET /clan/revocations`, merge (§3.5) |
+| `roster_digest` | Phase H-3 | sha256 of sorted `(member_id, state)` tuples | fetch roster, merge state transitions |
+| `memory_digest` | §13 | content-versioned graph digest (§13.5) | fetch `GET /clan/memory`, merge (§13.4) |
+| `scribe` | §13 | Orchestrator's current Scribe selection (member_id) | peers adopt it (§13.8) |
+
 ### 5.4 Election flow
 
 When a member observes `lease_expires < now - FAILOVER_GRACE`:
@@ -618,6 +629,11 @@ v1: no automatic rotation. v1.1 will add `logrotate` integration with a default 
 | `/clan/members` | GET | local UI | Current roster |
 | `/clan/orchestrator` | GET | local UI | Who is the current Orchestrator |
 | `/clan/election/history` | GET | local UI | Recent elections (term, winner, reason) |
+| `/clan/revocations` | GET | active member | Full revocation list, fetched on heartbeat digest mismatch (Phase H-2; row added retroactively in v0.4) |
+| `/clan/memory` | GET | active member / local UI | Full memory graph (§13); fetched on `memory_digest` mismatch |
+| `/clan/memory/node` | POST | active member / local CLI | Create or update one memory node (§13.6); author set by the daemon |
+| `/clan/memory/edge` | POST | active member / local CLI | Add one memory edge (§13.6); set-union semantics |
+| `/clan/memory/import` | POST | local CLI | Import a Clan Blueprint into the running Clan (§13.10); merge by default |
 | `/mcp/execute` | POST | origin member | Cross-Clan tool call with execution token |
 
 ---
@@ -642,6 +658,210 @@ This is **protocol version 1** (`proto=1` in mDNS TXT). Future versions:
 | OQ-5 | WireGuard mesh for off-LAN members | v2 |
 | OQ-6 | Raft-strict consensus (if leader-lease proves insufficient) | v2 if needed |
 | OQ-7 | Micro Clan Agent for ESP32/Cardputer-class devices (subset proto) | v2 stretch |
+| OQ-8 | Memory delta-sync (full-graph fetch on digest mismatch is O(graph); fine ≤2 MiB on LAN, wasteful beyond) | v1.1 |
+| OQ-9 | Memory edge tombstones + hard-delete/compaction (v1 archives nodes but never shrinks the graph; edges are add-only) | v1.1 |
+| OQ-10 | Blueprint signing (v1 ships an integrity checksum + reserved `signature` field; no authenticity proof) | v2 |
+
+---
+
+## 13. Clan Memory
+
+A Clan-owned, curated, **gossiped knowledge graph** built for distributed research: every member contributes findings into one shared graph; an elected **Scribe** (§13.8) continuously distills Clan activity into it; the whole graph (or one research session) exports as a portable **Clan Blueprint** (§13.10) that a fresh Clan can import at `create`. The model is curated memory in the Karpathy sense — distilled, evolving knowledge — not raw logs.
+
+**Unlike the audit log (§9.1), which is *never* gossiped, Clan Memory IS gossiped**: every active member holds the full graph and converges on the union of all members' contributions. The two stores are opposites by design — audit answers "what did *my* node do" (private, per-member); memory answers "what does the *Clan* know" (shared, replicated).
+
+**Survival rule.** Memory is keyed to `clan_id` and lives exactly as long as the Clan: it survives daemon restarts and reboots, including the 1-node last-survivor case. On self-leave (§3.6) the leaving member deletes its local copy along with the other Clan secrets; joining a different Clan prunes any graph whose `clan_id` doesn't match. (Same lifetime rule as workspace chat sessions.)
+
+**Write authority is peer-equal.** Any `active` member may create, edit, or archive nodes and add edges — the same authority model as membership decisions (§3.4 "Acceptance authority"). There is no memory-owner role; the Scribe is a *contributor* with a duty, not a gatekeeper.
+
+### 13.1 Data model
+
+A single graph per Clan. Wire shapes (JSON):
+
+```json
+// Node
+{
+  "id":          "<UUIDv4, or deterministic id (§13.3)>",
+  "type":        "research_session | finding | decision | fact | skill | event | member | artifact",
+  "title":       "<= 200 chars",
+  "body":        "markdown, <= 8 KiB",
+  "tags":        ["<= 16 strings"],
+  "status":      "proposed | active | superseded | archived",
+  "session_id":  "<research_session node id, or \"\" for global memory>",
+  "provenance": {
+    "author_member_id": "<member_id — set by the DAEMON, never client-supplied>",
+    "source":           "manual | system | scribe | distill | import",
+    "created_at":       "RFC3339"
+  },
+  "updated_at":  "RFC3339Nano — the LWW key",
+  "rev":         1
+}
+
+// Edge
+{
+  "from": "<node id>", "to": "<node id>",
+  "relation": "relates | supersedes | derived_from | contributes_to | about_member | caused_by",
+  "created_at": "RFC3339", "created_by": "<member_id>"
+}
+
+// Graph (the unit that is stored, fetched, merged, and exported)
+{ "format_version": 1, "nodes": [ ... ], "edges": [ ... ] }
+```
+
+**Status lifecycle.** `proposed` is the Scribe/distillation entry state (§13.9) — visible in the review lane, excluded from "what the Clan knows" summaries until a human **promotes** it to `active`. `superseded` marks a node replaced by a newer one (set alongside a `supersedes` edge; manual in v1). `archived` is the **tombstone**: archiving is an ordinary LWW field update, so deletion propagates exactly like any edit. Tombstones are never removed in v1 (hard-delete is OQ-9) and keep their `title`/`body` (an archived research session is *closed*, not destroyed). Any status may transition to any other via a node update; UIs only offer the sensible arrows (propose→promote/dismiss, active→archive).
+
+**Caps (lean, P2).** Enforced at the write endpoints (§13.6) with clear errors: **2,000 nodes**, **8,000 edges**, **2 MiB serialized graph**, plus the per-field caps above (title 200 chars, body 8 KiB, tags 16). Caps exist to keep the full-graph gossip fetch, the workspace render, and the 1–2 GB boxes comfortable. **Proposed nodes count toward the node cap** like any other (see §13.9 for the Scribe's own budget). **Over-cap honesty:** merge is deliberately exempt (§13.4), so a partition-heal union can land past a cap; from there the graph is **read-only** (new writes 409) until it shrinks — and v1 has no compaction (archiving keeps title/body; hard-delete is OQ-9). Practical recovery: export the valuable sessions as a Blueprint and found (or locally `--replace`) from it. Documented rather than hidden.
+
+### 13.2 Storage
+
+`memory.json` in the cland state dir, mode **0600** (distillates may carry chat content — treat like `clan.json`, not like `revocations.json`). Written via the same atomic write-temp + rename path as all Clan state; a missing file loads as the empty graph. The graph is held in memory by the daemon's memory service and persisted on change only — never re-parsed per heartbeat (§13.5).
+
+### 13.3 Identifiers
+
+- **Manual + scribe + import nodes:** UUIDv4 (hand-rolled from crypto/rand, as `identity.go` does — no external dep, P1).
+- **System / structural nodes** (auto-events §13.7.1, per-session scribe summaries): a **deterministic id** so every observer mints the *same* node and the merge union dedups instead of multiplying. Construction:
+
+```
+seed  = sha256( clan_id || "|" || kind || "|" || subject || "|" || qualifier )
+id    = seed[0:16] folded to UUID shape (version nibble = 4, variant bits = 10)
+```
+
+e.g. `kind="member_joined", subject=<member_id>, qualifier=""` — every member that observes the join writes the identical node id; the LWW merge collapses them. The qualifier disambiguates repeatable events (e.g. an election term number).
+
+### 13.4 Merge semantics (CRDT-lite)
+
+`Merge(local, remote) → merged` must be **commutative, associative, and idempotent** so that pairwise gossip converges regardless of topology or ordering:
+
+- **Nodes** are keyed by `id`. On conflict the winner is the greater tuple of
+  `(updated_at, rev, sha256(canonical_node_bytes))` — compared in that order. Both sides compare the identical tuple, so the winner is deterministic regardless of either receiver's local clock: convergence is guaranteed; clock skew affects *fairness* (whose edit survives), never *agreement*. The `rev` and hash terms break ties **only at identical timestamps** — they provide **zero** protection against clock skew (M0 peer review, gemma4).
+- **Canonical node bytes (normative).** `canonical_node_bytes` = the node encoded as compact stdlib JSON (no indentation) with fields in the exact §13.1 declaration order. Implementations MUST declare the Go structs in that order with explicit `json:` tags and MUST ship a conformance test asserting the canonical encoding of a fixed node is byte-stable — Go marshals in struct declaration order, so a careless field insertion silently changes every hash (M0 peer review, qwen3.6).
+- **Origin-monotone timestamps (HLC-lite).** The write path (§13.6) stamps `updated_at = max(now, max_updated_at_in_local_graph + 1ns)`. Stamped once at the origin daemon and gossiped verbatim, so convergence is untouched (receiver-side clamping is forbidden — different receivers would stamp different values and diverge). Effect: a member with a far-future clock can write nodes that temporarily out-rank honest wall-clocks, but any member's *next* edit stamps past the poisoned value — nobody is ever locked out of editing. The cost is Lamport-style: after poisoning, timestamps run ahead of wall-clock (visible in the UI as author + updated_at) until real time catches up. Three lines of code; vector clocks stay out (P2).
+- **Tombstones propagate as ordinary LWW wins** — `status:"archived"` is just a field edit with a newer `(updated_at, rev)`. Corollary: **archived is not a terminal state** — a concurrent edit carrying a greater tuple resurrects the node. Acceptable for v1's research-notes workload (data preservation beats strict deletion); flagged so nobody mistakes archive for delete.
+- **Edges** are a **set-union** deduped by `(from, to, relation)`; on duplicate, local metadata (`created_at`, `created_by`) wins — mirrors `Revocations.Merge` (§3.5). Edges are add-only in v1 (no edge tombstones — OQ-9); an edge whose endpoint node is archived is simply not rendered.
+- **Dangling edges are permitted.** Gossip and direct POSTs can deliver an edge before its endpoint nodes. Receivers keep the edge; UIs hide it until both endpoints exist. Refusing it would break the union property.
+- **Merge is permissive about per-field caps.** Caps are enforced at write endpoints (§13.6); merge accepts structurally valid nodes even if oversized, because dropping them locally would freeze the digests in permanent mismatch (a fetch storm). Total ingest is bounded by the sync fetch guard (§13.5). v1 honesty: a malicious member can stuff the graph up to the guard — the same insider trust level that already lets any member revoke anyone (§3.5).
+
+**v1 honesty — LWW can drop a concurrent edit.** Two members editing the *same node* within one gossip round: the lesser `(updated_at, rev, hash)` tuple loses silently. Acceptable for v1's research-notes workload (the UI shows `author + updated_at` so the loss is visible and recoverable from the loser's screen); vector clocks are deliberately out of scope (P2 lean). The origin-monotone stamp above bounds the *clock-poisoning* variant of this; it does not change the basic LWW trade.
+
+### 13.5 Digest & gossip
+
+Memory rides the election heartbeat as the **third digest passenger** (§5.3 table), reusing the proven §3.5 revocations machinery: compare digests → on mismatch, fetch the full graph over HMAC → merge → persist if changed.
+
+**Digest construction (content-versioned).** Unlike the revocations digest — which hashes only the *set* of member_ids, because only membership matters — the memory digest must change on every **edit**, or LWW updates would never propagate. One line per node and per edge:
+
+```
+node line:  "n|" + id + "|" + rev + "|" + RFC3339Nano(updated_at)
+edge line:  "e|" + from + "|" + to + "|" + relation
+
+digest = sha256_hex( join("\n", sort(node_lines) ++ sort(edge_lines)) )
+```
+
+Node lines sorted, then edge lines sorted, concatenated in that order, LF-joined. **Archived nodes are included** — tombstones must converge too. The empty graph digests to sha256 of empty input (same convention as §3.5).
+
+**Digest cost discipline.** The digest is **cached** in the daemon's memory service and recomputed only on mutation or merge. The election engine reads it through an injected `MemoryDigest func() string` and MUST NOT reload or re-hash `memory.json` on the 2 s heartbeat path. Emitted from both heartbeat sites (steady-state heartbeats and election announcements), `omitempty`. Wire cost of all three digest passengers together is ~192 bytes per heartbeat (three sha256 hex strings) — negligible even on 1–2 GB boxes.
+
+**Sync flow** (mirrors §3.5 / Phase H-2 exactly):
+
+1. Heartbeat arrives carrying `memory_digest` ≠ local digest.
+2. Per-peer in-flight dedup (concurrent heartbeats from the same sender trigger at most one fetch).
+3. `GET /clan/memory` from the sender over HMAC + pinned TLS.
+4. **Fetch guard: 4 MiB.** Responses larger than that are dropped with a warning. The guard is deliberately 2× the write cap so a graph transiently past 2 MiB (e.g. a merge union of two near-cap graphs) still syncs instead of wedging the Clan in permanent divergence; sustained growth is stopped by the write-path cap on every member.
+5. `Merge` (§13.4) into the local graph; persist + recompute cached digest **only if the digest changed**; audit-log the application.
+6. Fetch errors preserve local state untouched (next heartbeat retries).
+
+Eventual consistency bound: any edit reaches every connected member within one heartbeat round (~2 s) plus one fetch; partitioned members converge on the union when the partition heals — same guarantee as revocations.
+
+### 13.6 Write endpoints & authority
+
+All three write paths are HMAC-authenticated (§2.3); the local CLI reaches them through the same loopback HMAC client every other subcommand uses.
+
+| Endpoint | Body | Semantics |
+|---|---|---|
+| `GET /clan/memory` | — | Full graph JSON (the §13.1 `Graph` shape). |
+| `POST /clan/memory/node` | one `Node` | Create if `id` unknown; **update** if known (daemon bumps `rev = old.rev + 1`, stamps `updated_at` per the §13.4 origin-monotone rule). Caps enforced here (§13.1) → `409` with a clear error past them. |
+| `POST /clan/memory/edge` | one `Edge` | Set-union add; duplicate `(from,to,relation)` is a no-op `200`. Caps enforced. |
+| `POST /clan/memory/import` | `{ blueprint, mode }` | §13.10. `mode: "merge"` (default) or `"replace"`. **`replace` is loopback-CLI-only**: the daemon rejects it (`403`) unless the request originates from the local CLI on the loopback interface. A destructive remote primitive behind a *shared* key is exactly the §7.1 insider-forgery surface — remote members get `merge` only (M0 peer review, gemma4). |
+
+**Provenance is daemon-set.** `provenance.author_member_id` is **always** overwritten with the authenticated member (`transport.OriginMember`) on create; client-supplied values are ignored. On update, the original `provenance` block is immutable — v1 does not track last-editor (lean); `updated_at`/`rev` show *that* it changed, the audit log on the accepting daemon shows *who* changed it. `created_by` on edges follows the same rule.
+
+**Every memory mutation is audit-logged** locally by the daemon that accepts it (`tool: "memory.node" / "memory.edge" / "memory.import" / "memory.sync"`, §9.2 format). The audit trail of *who wrote what* stays per-member and local; only the resulting *content* gossips.
+
+**Workspace caveat.** The Clan Workspace mutates memory by shelling the local CLI (loopback). Its HTTP surface (`/api/memory/*`) ships loopback-only and MUST be enumerated in the workspace PIN/bearer middleware when that lands — flagged here so the gate isn't forgotten.
+
+### 13.7 Research sessions
+
+A **research session** is an ordinary node (`type: "research_session"`) — no separate store. It groups a research effort into a unit that can be consolidated, analyzed, filtered, and exported.
+
+- **Start:** any active member mints one (`minti-cland memory research start "<title>"` → UUIDv4, `status:"active"`, `session_id:""`). The starter is recorded in provenance; sessions are peer-equal like all writes.
+- **Contribute:** a contribution is a node carrying `session_id: <session node id>` plus a `contributes_to` edge to the session node. `memory add --type finding --session <id> …` does both.
+- **Close:** `memory research close <id>` flips the session node to `status:"archived"` (closed, not destroyed — title/body/edges survive). Contributions keep their own statuses.
+- **Consolidate:** the Scribe's duty (§13.9) includes proposing a per-session summary node (deterministic id: `kind="session_summary", subject=<session id>` — so repeated consolidation passes *update* one node instead of spawning duplicates) and flagging near-duplicate findings.
+- **Analyze / share:** the workspace memory tab filters by session (one cluster); `memory export --session <id>` exports just that effort's subgraph as a Blueprint (§13.10).
+
+#### 13.7.1 System auto-events
+
+The daemon itself writes a small set of system nodes (`source:"system"`, deterministic ids §13.3, `session_id:""`) so the graph keeps an ambient Clan chronicle without any human action: member joined / left / revoked (from membership transitions), and **failover** election milestones (reason ≠ bootstrap — steady-state re-elections are noise, failovers are history). Every member observes these independently and mints the identical node id; the union dedups.
+
+### 13.8 Scribe role
+
+The Scribe is the Clan's "court typewriter": symmetric to the Orchestrator but **inverted** — the strongest reasoning node *thinks*, the weakest capable node *remembers*. It gives 1–2 GB resurrected boxes a real job: run a tiny LLM ambiently and keep the minutes, so the busy Orchestrator never stops inferring to take notes.
+
+- **Capability.** A member advertises `scribe_capable: true` in its capability advertisement (§4.2) when its local runtime is healthy and reports at least one available model it could distill with (any model qualifies in v1; the Scribe loop itself prefers the smallest resident model — llama3.2:1b / qwen2.5:0.5b class; a future `minti-pack-scribe-tiny` ships one). A `pinned_scribe: false|true` field rides the same advertisement.
+- **Selection (inverse of §5.4 step 1).** Among `scribe_capable` **active** members, pick the **lowest** `reasoning_score`; ties broken by oldest `joined_at`, then lowest `member_id`. Any `pinned_scribe` member (that is scribe-capable) wins regardless; multiple pins → lowest `member_id` (mirror of §5.6).
+- **Authority + propagation.** The **Orchestrator's** selection is authoritative: it computes the Scribe locally and emits the winner in the heartbeat `scribe` passenger (§5.3); peers adopt it on heartbeat accept. This avoids N members re-deriving conflicting scribes from divergent advertisement views — the same single-leader authority that already settles routing.
+- **No lease.** Memory loss is non-fatal (the graph is fully replicated; only *new distillation* pauses), so the Scribe gets none of the lease machinery. The Orchestrator re-selects on its next heartbeat tick whenever the current Scribe stops being eligible: dropped from the active roster, advertisement stale, heartbeat-miss, or capability withdrawn.
+- **Persistence + surfaces.** `current_scribe` (and the local `pinned_scribe` flag) persist in `clan.json` on change only. CLI: `minti-cland scribe [--json]`, `minti-cland pin-scribe --self|--clear`. The workspace marks the Scribe node with a quill in the mesh and memory tab.
+
+**Edge cases (normative).**
+
+| Case | Behavior |
+|---|---|
+| No `scribe_capable` active member | `current_scribe = ""` — distillation is simply off; manual + system memory still work. Not an error. |
+| 1-node Clan | Scribe == Orchestrator == self. Fine: distillation is debounced + lowest-priority (§13.9), so the lone node thinks first and scribbles in the gaps. |
+| Scribe == Orchestrator in an N-node Clan | Legal but never *chosen*: it only happens when exactly one member is scribe-capable and it also wins the orchestrator election. The inverse selection otherwise guarantees they differ. |
+| Scribe dies | Next Orchestrator heartbeat tick re-selects among the survivors. In-flight proposals are lost (best-effort by design); accepted memories are already replicated. |
+
+### 13.9 Scribe distillation duty
+
+The elected Scribe runs a continuous, low-cost loop on its **small** model — the Karpathy move: activity in, curated memory out, a human between.
+
+- **Inputs watched:** workspace chat session files for this Clan (`/var/lib/minti/workspace/sessions/<clan_id>/`), the Scribe's own local audit events, and fresh findings in **open** research sessions.
+- **Loop:** debounced ticker (default 120 s; skips a beat when the local runtime is mid-inference). New activity since the last high-water mark is prompted into the smallest resident model via the local runtime-adapter (`127.0.0.1:7780/v1/chat/completions`) with a strict-JSON "archivist" prompt requesting **≤ 5 durable memories** per pass.
+- **Tolerant parsing:** small models leak prose around JSON. The parser extracts the first `[ … ]` block, drops entries that fail validation, and never lets a garbage completion corrupt the graph — worst case, the pass yields nothing and logs why.
+- **Everything lands gated:** `status:"proposed"`, `source:"scribe"`, plus `contributes_to` edges when the input came from a research session. **Nothing the Scribe writes becomes `active` without an explicit human promote** (workspace review lane, or a node update via CLI). Auto-promotion and BYO-Claude orchestration ride the Hermes-as-harness direction later — out of v1.
+- **Cost caps:** smallest model, debounce, per-pass proposal cap, skip-if-busy. The Scribe must never contend with the Orchestrator for inference — it is the lowest-priority consumer of the weakest box.
+- **Pending-proposal budget.** Proposed nodes count toward the global 2,000-node cap (§13.1), so an unattended Scribe could otherwise grind the Clan's write budget away 5 nodes per pass. The Scribe therefore refuses to mint *new* proposals while more than **200** of its own un-reviewed (`status:"proposed"`, `source:"scribe"`) nodes exist — updating its existing proposals (e.g. the deterministic per-session summaries) stays allowed. Tunable; the floor matters, not the number (M0 peer review, gemma4 + qwen3.6 consensus).
+
+### 13.10 Clan Blueprint (export / import)
+
+A single portable JSON file — the Clan's distilled knowledge, snapshot at a moment — that a **fresh Clan imports at `create` to pick up where a previous effort left off**, or an existing Clan merges in.
+
+```json
+{
+  "kind":            "minti-clan-blueprint",
+  "format_version":  1,
+  "exported_at":     "RFC3339",
+  "source_clan":     "sha256:<hex of clan_id>",
+  "session_filter":  "<research_session id, or \"\" for the full graph>",
+  "stats":           { "nodes": 0, "edges": 0, "proposed": 0, "archived": 0 },
+  "graph":           { "format_version": 1, "nodes": [...], "edges": [...] },
+  "signature":       "",
+  "checksum_sha256": "<hex>"
+}
+```
+
+- **Checksum:** sha256-hex over the document serialized as compact JSON in the field order above with `checksum_sha256` set to `""` (the toolexec canonical-bytes idiom; the §13.4 normative canonical-bytes rule — declaration-ordered structs, explicit tags, conformance test — applies to this document too). Verified on **every** import; any mismatch rejects the file outright. `signature` is reserved-empty in v1 (OQ-10) — the checksum proves *integrity*, not *authorship*; v1-honesty posture, same as toolexec's.
+- **`source_clan` is pre-hashed** — a Blueprint never carries the raw `clan_id` (it is quasi-public but there's no reason to leak it in a file built for sharing).
+- **Export:** `minti-cland memory export [--out f] [--session <id>] [--strip-authors]` (CLI fetches `GET /clan/memory`, builds the file client-side); the workspace offers a download behind a **privacy confirm modal**. `--session` exports the session node + everything carrying its `session_id` or reachable by its `contributes_to` edges. `--strip-authors` pseudonymizes member ids (`provenance.author_member_id`, `created_by`, and `member`-type node ids): distinct ids are sorted, then mapped to `member-1 … member-N` — stable within the file, meaningless outside it.
+- **Import at create:** `minti-cland create --from-blueprint f.json` — after the normal `create` flow, verify checksum + `format_version`, flip every node's `provenance.source` to `"import"` (deterministically, preserving `updated_at`/`rev`, so re-importing the same file stays idempotent under merge), seed `memory.json`. The new Clan starts with the inherited graph already in place; it gossips to joiners like any other state.
+- **Import into an existing Clan:** `minti-cland memory import f.json [--replace]` → `POST /clan/memory/import`. Default mode is **merge** (the §13.4 union — safe, idempotent, and the result gossips Clan-wide for free). `--replace` discards the local graph first; it is destructive, demands the explicit flag, is audit-logged loudly, and is **loopback-only** at the daemon (§13.6). Import is a *local* operation by design — a member imports into its own daemon and gossip distributes the result; there is no remote-import use case that merge-gossip doesn't already cover with less attack surface. Note the v1 semantics of `--replace` under gossip: it clears *this member's* copy, after which the next digest mismatch merges peers' graphs back in — Clan-wide forgetting requires every member to replace (or a fresh Clan from a Blueprint); true coordinated compaction is OQ-9.
+
+### 13.11 Privacy & v1 honesty
+
+- **No secrets in nodes.** Keys, tokens, and credentials do not belong in memory; the graph is Clan-replicated by design and exportable by intent. (Policy enforcement is human + prompt discipline in v1 — there is no scanner.)
+- **Distillates carry chat content.** The Scribe reads workspace chats; its proposals can quote them. That is why `memory.json` is mode 0600, why the export path *always* warns ("may contain distilled chat content"), and why `--strip-authors` exists. No silent export: the CLI prints the warning before writing, the workspace requires the confirm modal.
+- **Author attribution is honest-but-insider-forgeable.** `author_member_id` is set by the accepting daemon from the HMAC-authenticated origin — but v1's shared `clan_key` means HMAC proves *some member* sent it, not *which* (§7.1 v1 honesty note applies verbatim). v2 per-member keys close this for memory exactly as for tool tokens.
+- **The graph is only as trustworthy as the Clan.** Any active member can edit or archive any node (peer-equal writes); provenance + audit logs + the review lane are the recourse, not cryptography. This matches the Clan's overall v1 trust model and is stated here so nobody mistakes the memory graph for an integrity-protected ledger.
 
 ---
 
