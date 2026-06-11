@@ -1,39 +1,117 @@
-# MINTI Distribution & OS Roadmap (multi-track)
+You are reviewing the implementation plan for MINTI's Distribution
+milestone "D" — putting two products on the internet: door B = one-click
+installers that set up the MINTI stack (cland Clan daemon + runtime
+adapter + workspace web UI) as services on Windows/Linux/macOS, and door
+A = a lean-OS ISO (its Calamares installer phase D4 is only a pointer
+here, not under review). D3 is a static two-door download site.
 
-> Disentangling "download from Vercel → total-wipe → lean MINTI OS" into the
-> separate deliverables it actually is. Each ships on its own timeline.
-> User intent (2026-06-07): the **download + install-the-OS path is FIRST**;
-> the workspace is the in-OS experience; the Android native node is parked.
+INSTALLERS TOUCH OTHER PEOPLE'S MACHINES. Your job is to find concrete
+safety problems in the plan BEFORE any code is written: what is written,
+started, opened, upgraded, and uninstalled per OS; how Ollama is handled;
+failure + rollback paths; the auto-open flow; the upgrade-over-existing-
+service path; and whether the download site's information architecture is
+honest and earns trust. Find real problems, not style notes. Be willing
+to say "looks good" rather than padding criticism. Be willing to disagree
+with the plan author. Cite the plan's own headings/question numbers
+(e.g. "D1 upgrade flow", "review Q3") so the author can find each item.
 
-## The tracks
+Priorities, in order:
 
-| # | Track | What it is | Status | Depends on |
-|---|---|---|---|---|
-| **1** | **Lean OS ISO** | The live-build image (Mint-lean, Debian bookworm base) | **PoC proven** — boots, autologin, minti tools run | — |
-| **2** | **Installer ("total wipe")** | Make the ISO *install to disk* persistently, with a wipe option | **NOT built** — current ISO is live-only (RAM, no persistence). Installer was deliberately disabled for the PoC | Track 1 |
-| **3** | **Vercel download site** | Static landing page hosting the `.iso` (+ later `.apk`); optional guided USB flasher | **NOT built** | Tracks 1+2 (something worth downloading) |
-| **4** | **Clan Workspace UI** | The web dashboard that ships *inside* the OS (the mock we locked) | Mock locked; Phase A pending | independent of 1-3 |
-| **5** | **Android native node + WAN** | Phone joins Clan as a contributing node; WAN transport | **Parked** (user: "later") | WAN/NAT milestone |
+1. **Windows upgrade-over-live-service (D1).** The author's own machine
+   runs the M5-B "Minti-Cland" service today. The plan: stop workspace ->
+   runtime -> cland, swap binaries, preserve state+configs+DACL, refresh
+   NSSM config via `nssm set` only, start cland -> runtime -> workspace.
+   Any way this bricks the existing service, loses clan state, leaves a
+   half-upgraded box on failure midway, or races NSSM handle release?
+   Is per-service nssm.exe copies (3x ~330KB) vs one shared copy the
+   right call (review Q1)? Is LocalSystem for all three services
+   acceptable given the workspace MUST read the strict-DACL cland state
+   via its shelled CLI (review Q1) — or is there a least-privilege split
+   worth doing NOW (e.g. dedicated virtual service accounts + DACL grants)?
 
-These parallelize: 2 is live-build config, 3 is a static site, 4 is Go. Different surfaces, can run concurrently.
+2. **What gets written/started/opened per OS — completeness + honesty.**
+   The plan's "exhaustive" write lists: anything missing that the
+   scripts will inevitably touch (registry via NSSM? event log? PATH?)?
+   The firewall posture (ONE inbound rule :7777 Private,Domain; nothing
+   for loopback 7780/8088) — correct on all three OSes? macOS
+   Application Firewall / Gatekeeper implications of unsigned binaries?
 
-## Reality checks (so there are no surprises)
+3. **Uninstall semantics.** Preserve-state default + purge opt-in per OS;
+   never touches Ollama/opencode; must work on a box that only has M5-B
+   cland (services absent -> skip gracefully). Anything destructive
+   hiding in the default path? Anything the default SHOULD remove but
+   keeps (e.g. the firewall rule? PATH edits? launchd bootout order)?
 
-1. **Live ISO ≠ installer.** Today the image boots to RAM and forgets everything on reboot. "Total wipe + set up the OS" needs an **installer** added to the ISO. Recommended: **Calamares** — the modern, distro-agnostic graphical installer (used by EndeavourOS, etc.), themeable to the MINTI brand, handles wipe/partition/bootloader. Alternatives: debian-installer (clunky UX, the one we disabled) or a custom script (lean but reinvents partitioning/GRUB/LUKS — risky). → **Calamares.**
+4. **Ollama strategy (review Q3).** Win/mac: detect (PATH, default
+   location, port probe) -> guide (offer to open ollama.com download
+   page), NEVER auto-download/run third-party installers. Linux keeps
+   the validated existing behavior: auto-run the OFFICIAL ollama.com
+   install script when missing + new MINTI_NO_OLLAMA=1 opt-out (changing
+   it would regress the validated M0 path + the ISO chroot hook that
+   reuses install.sh). Is the asymmetry defensible if stated honestly on
+   the site, or a real safety/consistency problem? Is probing
+   127.0.0.1:11434 and trusting whatever answers a risk (Q8)?
 
-2. **You can't wipe a machine by just downloading a file.** The honest flow is: download `.iso` → write to USB → boot from USB → installer offers "try live" or "wipe & install". You can't wipe the disk you're currently booted from. Two ways to smooth it:
-   - **Minimal:** Vercel page = download `.iso` + clear instructions (use balenaEtcher/Rufus to flash USB).
-   - **Slick (later):** a small per-OS **guided flasher** download (à la Raspberry Pi Imager) that writes the USB and walks the user through it. Its own mini-deliverable.
+5. **Auto-open flow (review Q4).** Poll http://127.0.0.1:8088/ for 200
+   up to 15 s, then open the default browser (Start-Process URL from the
+   elevated session / xdg-open as $SUDO_USER / open as console user);
+   on timeout print URL + status command + log paths and exit non-zero.
+   Failure modes where the browser opens but the stack is actually
+   broken, or where opening from an elevated/root context does something
+   surprising? Is exit-nonzero-on-timeout right when services ARE
+   running but slow?
 
-3. **Total wipe is destructive** — the installer must have an explicit, unmissable confirm + a clear "install alongside" option for people who don't want to nuke their disk.
+6. **Linux/macOS service wiring (review Q7).** Workspace unit copies the
+   cland hardening + IPAddressAllow=localhost + IPAddressDeny=any; the
+   workspace shells the minti-cland CLI (child process of the unit)
+   which makes a loopback HMAC call to :7777 and reads
+   /var/lib/minti/cland (0700 minti:minti; workspace runs as the same
+   `minti` user). Does the child survive those sandbox knobs
+   (IPAddressDeny applies to the whole cgroup — localhost IS allowed;
+   ProtectSystem/ProtectHome/MemoryDenyWriteExecute effects on the
+   child exec + on Go runtime?). NoNewPrivileges + exec of
+   /usr/local/bin/minti-cland — any gotcha? macOS: three KeepAlive
+   daemons under one _minti account — any launchd ordering/contention
+   issue (workspace up before cland -> demo data on first open)?
 
-## Recommended sequence
+7. **Failure + rollback.** Each phase's failure handling is
+   refuse+remediate+rerun (idempotent), uninstaller as the rollback.
+   Mid-install crash windows (binaries swapped but service config not
+   refreshed; cland upgraded but runtime registration fails)? Is
+   re-run-the-installer genuinely a sufficient recovery story, or does
+   any window need explicit transactional care?
 
-1. **Track 1 hardening** — make the ISO reproducible + clean up the PoC debug scaffolding (already a pending item).
-2. **Track 2 — Calamares installer** → the ISO can now total-wipe-install the lean OS to disk. This is the core of "first".
-3. **Track 3 — Vercel site** → land, download the `.iso`, instructions to flash + boot. (Guided flasher = optional follow-on.)
-4. **Track 4 — Workspace Phase A** runs in parallel (independent code), lands inside the OS.
-5. **Track 5 — Android node** later, on the WAN milestone.
+8. **Site IA + trust (review Q9).** Two doors, B primary; per-OS "what
+   this installs" disclosure (services, the one port, paths, uninstall
+   one-liner); SHA-256 inline + checksums.txt; honest "live preview —
+   disk installer coming" badge on door A until D4; no telemetry
+   statement; artifacts on GitHub Releases, never Vercel. Does this
+   earn "this installer won't hurt my machine" trust? What's missing
+   (signing reality? Defender/SmartScreen/Gatekeeper warnings shown
+   up-front? minimum requirements?)? Is the two-door split
+   self-explanatory to someone who has never heard of MINTI?
+
+9. **The elevation shim (review Q2).** Zip ships Install-MINTI.cmd that
+   does Start-Process -Verb RunAs on the .ps1. M5-B explicitly refused
+   self-elevation for SmartScreen UX reasons; the shim is a
+   double-clicked different entry path but still MOTW-flagged. Ship the
+   shim, or README-only ("open elevated PowerShell, run one command")?
+
+10. **What the plan got right and should NOT change.** Say so briefly;
+    padding critique with non-issues wastes the author's time.
+
+The plan's own "Questions put to the D0 reviewers" (Q1-Q10) overlap the
+above — answer them explicitly where you have a position.
+
+End your review with one short verdict line:
+  VERDICT: build D1 as planned | build after addressing items N..M | block on item K
+
+Below are THREE documents.
+==================================================================
+DOCUMENT 1: The locked contract — decisions, browser reality
+check, resequencing + phase table (NOT under review; the plan
+must honor it)
+==================================================================
 
 ## Decisions (user, 2026-06-07)
 - **Installer = Calamares.** User said "whatever Mint uses — they reach most hardware with ease; it's about reviving old hardware." Mint uses Ubiquity (Ubuntu-based); our ISO is Debian, where Calamares is the equivalent friendly broad-hardware installer (and what Debian Live itself ships). Honors the intent.
@@ -109,6 +187,12 @@ Commits: `Dist D<N>: <what>`, one per phase, same verification + honest
 STATUS.md discipline as the Memory milestone. The Clan Memory 3-node VM gate
 (see STATUS.md) is unrelated and runs whenever the VMs are up anyway.
 
+
+
+==================================================================
+DOCUMENT 2: The NEW D-milestone detail (the plan being reviewed)
+==================================================================
+
 ## D-milestone detail (D0, 2026-06-11) — reviewed by 3 local LLMs before any code
 
 > Scope: everything door B writes/starts/uninstalls per OS, the Ollama
@@ -155,8 +239,7 @@ Invariants (the safety bar, from the M5-B precedent):
 - **Detect**: (a) `ollama` on PATH → report version; (b) OS default install
   location (`%LOCALAPPDATA%\Programs\Ollama\ollama.exe`,
   `/Applications/Ollama.app`); (c) HTTP probe `127.0.0.1:11434/api/version`
-  — parsed for a JSON `version` field, not just an open port (D0 review F5;
-  detection stays advisory-only, nothing is ever piped into it).
+  (catches "installed but custom location" + "running right now").
 - **Found + serving** → report and move on. **Found + not running** → tell
   the user to launch the Ollama app (it autostarts at login thereafter).
 - **Missing** → print guidance + offer to open the official download page
@@ -167,24 +250,16 @@ Invariants (the safety bar, from the M5-B precedent):
   keep it (changing it would regress the validated install path AND the ISO
   chroot hook that reuses install.sh). Add `MINTI_NO_OLLAMA=1` opt-out env.
   The difference in posture vs Win/mac is stated honestly on the site.
-  **D0 review F6:** the Ollama block becomes non-fatal on door-B installs
-  (today `set -e` aborts the whole install on a flaky ollama.com download;
-  instead: warn + continue + an honest `Ollama: FAILED` summary line —
-  runtime tolerates absence by design) but stays **fatal under
-  `MINTI_CHROOT=1`** (an ISO silently built without Ollama is worse than a
-  failed build).
 - **Install order never matters**: minti-runtime starts fine with Ollama
   down (startup probe warns; `/minti/health` surfaces it honestly — M1).
 
 **Auto-open flow (all OSes):** after the services report running, poll
-`http://127.0.0.1:8088/` for HTTP 200 (≤30 s — D0 review F7). On success,
-open the URL in the user's default browser **de-elevated**: Windows via
-`explorer.exe "http://127.0.0.1:8088"` (explorer marshals the URL to the
-desktop user's medium-IL context instead of the elevated installer session
-— D0 review F3), Linux `xdg-open` as `$SUDO_USER`, macOS `open` as the
-console user. On timeout, do NOT open — print the URL, the service status
-command, and the log paths, and exit non-zero. The printed URL appears in
-both cases (the browser open is best-effort polish, never load-bearing).
+`http://127.0.0.1:8088/` for HTTP 200 (≤15 s). On success, open the URL in
+the user's default browser (`Start-Process` / `xdg-open` as `$SUDO_USER` /
+`open` as console user); on timeout, do NOT open — print the URL, the
+service status command, and the log paths, and exit non-zero. The printed
+URL appears in both cases (the browser open is best-effort polish, never
+load-bearing).
 
 ### D1 — Windows (the headline)
 
@@ -219,25 +294,14 @@ configs\reasoning-scores.yaml.example
   `runtime.yaml` + logs; workspace's holds logs only.
 - Services (NSSM 2.24, SHA-256-verified before first use): `Minti-Cland`
   (existing M5-B name — **upgrade in place, never a second service**),
-  `Minti-Runtime`, `Minti-Workspace`. All `SERVICE_AUTO_START`,
+  `Minti-Runtime`, `Minti-Workspace`. All `SERVICE_AUTO_START`, LocalSystem,
   stdout/err logs at `<state>\logs\` with 10 MiB rotation,
   `AppStopMethodConsole 5500` (matches Go-side 3 s shutdown under the SCM
   ~10 s budget — M5 item 7).
-  - **Service accounts (D0 review F1 — split along the trust boundary):**
-    `Minti-Cland` stays **LocalSystem** (the live M5-B service is upgraded
-    in place; its mDNS/firewall/Defender behavior is proven under that
-    account — an ObjectName flip mid-upgrade is the class of surprise D1
-    must not have). `Minti-Runtime` + `Minti-Workspace` run as
-    **`NT SERVICE\<name>` virtual accounts** (no passwords; registered via
-    NSSM then `sc.exe config <name> obj= "NT SERVICE\<name>"` — sc takes no
-    password arg, NSSM's ObjectName setter wants one). icacls grants after
-    registration: runtime = Modify on its own state dir; workspace = Modify
-    on its own state dir + **Read** on the cland state dir (the shelled CLI
-    reads identity/clan_key/cland.yaml and writes nothing; if D1
-    verification proves a write is needed, the fallback is a Modify grant
-    on `audit.jsonl` only — never LocalSystem). Blast-radius honesty: a
-    workspace compromise yields clan_key read (Clan-scoped, recoverable by
-    key rotation), not SYSTEM.
+  - LocalSystem for all three: workspace shells `minti-cland.exe <sub>
+    --json`, which reads the strict-DACL cland state dir — LocalService
+    could not. Runtime follows for uniformity; both are loopback-bound.
+    (Review Q1.)
   - Workspace service gets `AppEnvironmentExtra
     PATH=%PROGRAMFILES%\MINTI\cland;...` so `exec.LookPath("minti-cland")`
     resolves — scoped to the service, no machine-wide PATH mutation.
@@ -263,17 +327,10 @@ the whole state dir + DACL, refresh NSSM settings idempotently, start
 cland → runtime → workspace. PID is discovered live via `Get-Service`,
 never assumed. The existing service is never removed/re-added (no
 `nssm remove` in the install path) — settings are `nssm set`-refreshed.
-Crash-window honesty (D0 review F10): between binary swap and NSSM
-refresh the services are stopped, `AppParameters` are version-stable
-across this upgrade, and re-running the installer is the designed repair —
-no transactional machinery (it would add more failure modes than it
-removes).
 
 **Uninstall (uninstall-minti.ps1):** stop+remove the three services (each
 skipped gracefully if absent — works on an M5-B-only box too), remove the
-firewall rule (by DisplayName **and** a sweep of inbound rules whose
-Program is our installed exe — catches admin-renamed rules, D0 review F8),
-remove `%PROGRAMFILES%\MINTI`. State preserved by default
+firewall rule, remove `%PROGRAMFILES%\MINTI`. State preserved by default
 with the exact M5-B messaging; `-Purge` wipes `%PROGRAMDATA%\MINTI` +
 logs after printing what that means (member identity destroyed). Ollama
 untouched (pointer to Windows "Add or remove programs").
@@ -316,9 +373,8 @@ the tarball layout as another candidate.
   `minti-cland.service` (`ProtectSystem=strict`, `ProtectHome=true`,
   `PrivateTmp`, `NoNewPrivileges`, `LockPersonality`,
   `MemoryDenyWriteExecute`, `RestrictRealtime`, `User=minti`,
-  `Restart=on-failure`) **plus** `IPAddressAllow=127.0.0.0/8 ::1/128` +
-  `IPAddressDeny=any` (explicit v4+v6 loopback rather than the `localhost`
-  alias — D0 review F4) — the workspace is loopback-only and its only
+  `Restart=on-failure`) **plus** `IPAddressAllow=localhost` +
+  `IPAddressDeny=any` — the workspace is loopback-only and its only
   outbound calls are the shelled `minti-cland` CLI's loopback HMAC hits on
   :7777, so localhost-only is airtight (cland's own unit can't have this —
   documented there). `ExecStart=/usr/local/bin/minti-workspace -listen
@@ -350,15 +406,10 @@ system mode `UserName _minti`; runtime's `ProgramArguments` passes
 workspace's passes `-listen 127.0.0.1:8088`). `install-minti.sh` /
 `uninstall-minti.sh` extend the M5-C scripts' system/per-user dual branches
 to the three services (same `_minti` dscl recipe, same state-dir modes,
-same bootstrap-with-fallback). `xattr -d com.apple.quarantine` runs on
-**all three** bundled binaries (M5-C cleared one — D0 review F2);
-`uninstall-minti.sh` bootouts + deletes **all three**
-`com.minti.{cland,runtime,workspace}.plist` files in both system and
-per-user branches (orphan plists respawn-fail at every boot — D0 review
-F9). Ollama: detect-or-guide (open `ollama.com/download/mac`); note that
-Ollama.app is a per-user login item — fine, runtime talks to
-`127.0.0.1:11434` regardless of who started it. Auto-open via `open` as
-the console user.
+same bootstrap-with-fallback). Ollama: detect-or-guide (open
+`ollama.com/download/mac`); note that Ollama.app is a per-user login item —
+fine, runtime talks to `127.0.0.1:11434` regardless of who started it.
+Auto-open via `open` as the console user.
 
 **D2 verification:** Linux — `bash -n` + shellcheck (if present) on both
 scripts; tarball assembled with the right layout; full install/uninstall/
@@ -398,18 +449,10 @@ node** (locked).
    - **A · Revive a machine** — ISO download + SHA-256, flash instructions
      (Rufus / balenaEtcher / dd), boot-from-USB note, requirements
      (x86-64, 1–2 GB RAM), the honest live-vs-installed copy.
-4. **Known warnings** (D0 review F2 — gemma's blocker, 3/3 consensus):
-   the binaries are not yet code-signed, stated plainly; the exact
-   SmartScreen ("More info → Run anyway") and Gatekeeper ("Open Anyway")
-   paths; verify-the-SHA-256-first framing; minimum hardware expectations
-   (RAM per model tier, so swap-death on a 4 GB box isn't read as "MINTI
-   broke my machine"). Pretending one-click while the OS shows red
-   destroys trust — the warning is part of the product until signing
-   lands.
-5. **How it works strip** — three glyphs: install → machines knock into a
+4. **How it works strip** — three glyphs: install → machines knock into a
    Clan → the browser is the whole interface (workspace screenshot or
    stylized SVG, no heavy images).
-6. **Footer** — GitHub, license, "no telemetry, no accounts, everything
+5. **Footer** — GitHub, license, "no telemetry, no accounts, everything
    stays on your LAN" statement.
 - Downloads link to **GitHub Releases** (`emka21347-cyber`); the one open
   operator decision (publish the source repo vs a public `minti-releases`
@@ -475,91 +518,113 @@ copy already covers its absence honestly.
    someone who has never heard of MINTI?
 10. What's right and should NOT change (don't pad the critique).
 
-### D0 review outcome (2026-06-11)
 
-Run via `scripts/dist-d0-review.py` (mirrors memory-peer-review.py; input
-snapshot + raw reviews at `scripts/m4-reviews/dist-d0-*`). Verdicts:
-qwen3.6 "build after 1A/5A/6A", deepseek-r1 blanket "address 1–9" (weak
-round — no thinking trace, generic corroboration), gemma4 "build after
-2+8". **Ten findings folded (F1–F10, marked inline above), eight
-overruled with reasons** — full table in
-`scripts/m4-reviews/dist-d0-triage.md`. Headline folds: the
-runtime/workspace services drop LocalSystem for `NT SERVICE\` virtual
-accounts while cland keeps the proven M5-B account (F1, the panel's only
-split decision, resolved along the trust boundary); the site + macOS
-installer stop pretending unsigned binaries are seamless (F2, 3/3
-consensus); the Windows browser auto-open de-elevates via explorer.exe
-(F3). The panel unanimously endorsed: loopback-only workspace/runtime,
-state-preserving uninstall default, SHA-256 verification, idempotent
-re-run as the repair story, the elevation shim, per-service NSSM copies,
-and the "what this installs" disclosure. D1 may start.
 
-## Kickstart prompt for the D-milestone chat (paste verbatim)
+==================================================================
+DOCUMENT 3: Ground truth — existing install surfaces + daemon
+flags the plan extends
+==================================================================
 
-```
-Project: MINTI — repo at C:\Users\aouad\Documents\CCode\MINT\MINT_wip (Go monorepo:
-cland, runtime-adapter, workspace, status, mcp-servers, pack-manager).
+Ground truth — the EXISTING, already-peer-reviewed install surfaces the
+plan extends (behavioral summaries, faithful to the code on disk):
 
-Task: the Distribution milestone "D" — put MINTI's two doors on the internet.
-Door B ("Add MINTI to this machine"): one-click installers for Windows/Linux/macOS
-that set up cland + runtime-adapter + workspace as services, handle Ollama
-(detect-or-guide), and auto-open http://127.0.0.1:8088 when done. Door A
-("Revive a machine"): the lean-OS ISO — D4 adds the Calamares disk installer +
-re-enables firmware. D3 is the site itself: a static two-door landing page in
-site/ (MINTI brand), built + previewed locally, deployable to Vercel free tier;
-big artifacts live on a free file host the page links to, NEVER on Vercel, and
-Vercel NEVER runs a node.
+cland/windows/nssm/install-cland.ps1 (M5-B, live on the author's daily
+driver right now as service "Minti-Cland", pre-Clan):
+  - Requires admin; REFUSES to auto-elevate (documented reason: a script
+    re-launching itself via Start-Process -Verb RunAs confuses SmartScreen;
+    operator elevates by hand).
+  - Verifies bundled nssm.exe against a SHA-256 sidecar BEFORE use; aborts
+    on mismatch ("zip may be tampered with").
+  - Dirs: %PROGRAMFILES%\MINTI\cland (binaries), %PROGRAMDATA%\MINTI\cland
+    (state: clan_key, identity.json, audit log, cland.yaml, logs\).
+  - icacls on the state dir: /inheritance:r, grant only SYSTEM:(OI)(CI)F +
+    BUILTIN\Administrators:(OI)(CI)F. This DACL is the load-bearing
+    security step (replaces in-process ACL hardening).
+  - If the service exists and is running: Stop-Service, 1 s sleep for
+    handle release, THEN copy binaries over. Configs preserved if present
+    (copy only when missing). NSSM config refreshed via `nssm set` (the
+    install path never does `nssm remove`).
+  - Service: LocalSystem, SERVICE_AUTO_START, AppParameters `--config
+    <state>\cland.yaml`, stdout/err logs with 10 MiB online rotation,
+    AppStopMethodConsole/Window 5500 ms (Go srv.Shutdown is 3 s; stays
+    under the SCM ~10 s "Not Responding" budget).
+  - Firewall: ONE inbound rule "MINTI cland (Clan TLS)" TCP 7777, default
+    profiles Private,Domain (NOT Public; warns + documents the override),
+    bound to the program path. Existing rule is removed + recreated.
+  - Exits non-zero with remediation text at every failure (missing bundle
+    file, hash mismatch, icacls fail, nssm fail, service not Running).
+  - Ends with Defender guidance: unsigned LocalSystem service doing mDNS
+    can get behaviorally quarantined within minutes; until code-signing,
+    operators add Folder Exclusions for install + state dirs.
 
-Read FIRST, in order:
-1. docs/plans/distribution-roadmap.md — the contract: tracks, locked decisions
-   (Calamares; firmware re-enable is a HARD requirement; two products A+B),
-   the 2026-06-11 resequencing + browser reality check, the D0..D4 phase
-   table, and the operator list (Vercel `emka21347-2077` + GitHub
-   `emka21347-cyber` both VERIFIED authed on the daily-driver; the one open
-   decision — publish the source repo vs a separate public minti-releases
-   artifacts repo — is asked at D3; build-VM boot gates D4 only).
-2. STATUS.md — TL;DR + the M5-B/M5-C entries (the Windows NSSM installer and
-   macOS launchd work you are wrapping) + the M9/ISO entries (door A state).
-3. docs/brand.md + workspace/mock/index.html — the locked visual language the
-   site MUST reuse.
-4. cland/windows/nssm/{install-cland.ps1,build-zip.ps1,README} — the proven,
-   peer-reviewed Windows install pattern (SHA-256-verified NSSM, strict DACL,
-   firewall scoping, Defender guidance). Extend, don't reinvent.
-5. install/install.sh — the Linux path; note it does NOT yet deploy the
-   workspace (D2 adds that + a systemd unit mirroring minti-cland.service's
-   hardening). cland/macos/ for the M5-C launchd recipes.
-6. memory/MEMORY.md + memory/reference_dev_environment.md (pre-flight rule,
-   PS 5.1 quirks, smoke recipe) + memory/reference_local_llms.md (T3 calling
-   pattern + the load-bearing-review caveat) + memory/reference_live_build.md
-   BEFORE touching anything ISO (D4: build VM is the CLONE minti-dev-2,
-   identify by MAC).
+cland/windows/nssm/uninstall-cland.ps1 (M5-B):
+  - Stops service, `nssm remove confirm` (sc.exe delete fallback), removes
+    firewall rule, removes %PROGRAMFILES%\MINTI\cland.
+  - STATE PRESERVED BY DEFAULT with printed explanation (clan_key +
+    identity = Clan membership; deleting silently would drop the host out
+    of its Clan). -Purge wipes state + logs + the system rubric mirror.
 
-Norms (non-negotiable): P1 no new external Go deps; P2 lean for 1-2 GB boxes;
-P3 spec/plan wins. PEER-REVIEW BEFORE CODE — installers touch people's
-machines: D0 runs the 3-LLM review (qwen3.6 think:false, deepseek-r1:32b,
-gemma4:31b; copy scripts/memory-peer-review.py, outputs to scripts/m4-reviews/,
-triage with folded-vs-overruled reasons) focused on installer SAFETY
-(what is written/started/uninstalled per OS, Ollama handling, failure +
-rollback paths, the auto-open flow) and the site's two-door IA. One commit per
-phase, message "Dist D<N>: <what>". Each phase ends with go vet/go test green
-in touched modules (where Go is touched), the phase's verification run, and an
-honest STATUS.md update. Delegation: T2 = installer logic, service wiring,
-anything that writes to user machines; T3 via scripts/t3-codegen.py = the
-static site's first-pass HTML/CSS (tight spec; review line-by-line — M4's
-delegation shipped 2 silent logic bugs that only review caught).
+install/install.sh (Linux, M0-M6, validated end-to-end in the minti-dev VM):
+  - Root-only, Debian-family gate, amd64 gate, warn-only network check.
+  - Installs Ollama via the OFFICIAL `curl | sh` script when missing
+    (validated M0 behavior; the ISO chroot hook reuses install.sh with
+    MINTI_CHROOT=1 which skips systemctl calls but still installs).
+  - Creates system user `minti` (nologin, no home); /var/lib/minti owned
+    minti:minti; /var/lib/minti/cland mode 0700 (clan_key inside).
+  - Per-daemon blocks (runtime, cland): stage binary to /usr/local/bin,
+    install hardened systemd unit, preserve existing /etc/minti/*.yaml,
+    daemon-reload, then the B13 idempotency pattern: compare new binary
+    hash vs sha256 of /proc/<MainPID>/exe — restart ONLY when the running
+    binary is stale; else enable --now.
+  - Also stages 5 MCP server binaries + mcptest + minti-pack-fetch +
+    opencode (official installer as $SUDO_USER) + minti-fetch branding.
+  - There is NO uninstall.sh today. install.sh does NOT deploy the
+    workspace today (D2 adds both).
 
-Door-B safety bar (from the M5-B precedent): explicit uninstall that preserves
-state by default, no silent destructive steps, every downloaded binary
-checksum-verified, services hardened like the existing units. The Windows
-installer must coexist with an already-installed M5-B service (upgrade, don't
-double-install — the daily-driver HAS one running, pre-Clan, PID varies).
+cland/systemd/minti-cland.service (the hardening template):
+  ProtectSystem=strict, ProtectHome=true, PrivateTmp, NoNewPrivileges,
+  LockPersonality, MemoryDenyWriteExecute, RestrictRealtime, User=minti,
+  ReadWritePaths=/var/lib/minti/cland /var/lib/minti, Restart=on-failure,
+  Environment=HOME=/var/lib/minti/cland (audit-log path redirect;
+  ProtectHome would block the default). IPAddressDeny deliberately ABSENT
+  on cland (it needs LAN peer traffic on :7777).
 
-Do NOW: (1) read the items above; (2) execute D0 — write the D-milestone plan
-detail (per-OS install/uninstall/upgrade flows, Ollama strategy, site IA) into
-docs/plans/distribution-roadmap.md, run the 3-LLM review on it, write the
-triage, fold consensus findings, commit "Dist D0: plan + 3-LLM peer review";
-(3) then D1. Do not start a phase until the prior phase's verification passes
-and it is committed. Verify door-B installers on THIS machine (the daily
-driver) only after the D0 review blesses the upgrade-over-M5-B path; never
-test destructive paths on the daily driver.
-```
+cland/darwin/* (M5-C, peer-reviewed recipes; NO live Mac validation yet):
+  - install-cland.sh: root => system LaunchDaemon under dedicated _minti
+    account (dscl create at lowest free UID 300-499, IsHidden +
+    HiddenSystemUser, NFSHomeDirectory=/var/empty); non-root => per-user
+    LaunchAgent (plist with UserName stripped via plutil -remove).
+  - Binary /usr/local/bin/minti-cland; state "/Library/Application
+    Support/MINTI/cland" chmod 0700 chown _minti; plist root:wheel 0644 +
+    plutil -lint; `launchctl bootstrap system` with `load -w` fallback;
+    xattr -d com.apple.quarantine after install.
+  - com.minti.cland.plist: RunAtLoad=true, KeepAlive={SuccessfulExit:false},
+    ThrottleInterval=5, EnvironmentVariables.HOME=<state_dir>,
+    ProcessType=Background.
+  - uninstall mirrors; --purge deletes state + the _minti account.
+
+The three daemons (ports/flags ground truth):
+  - minti-cland: Clan daemon, listens :7777 (TLS + HMAC, LAN-facing).
+    State dir holds clan_key + Ed25519 identity. CLI subcommands (show,
+    members, orchestrator, join, ...) talk to the LOCAL daemon over a
+    loopback HMAC client that reads the state dir for the key.
+  - minti-runtime: flag `--config` (compiled-in default is the Unix path
+    /etc/minti/runtime.yaml; a MISSING config file is NOT an error —
+    defaults apply: listen 127.0.0.1:7780, backend ollama at its default
+    127.0.0.1:11434). Startup probes the backend but continues if down;
+    /minti/health reports honestly.
+  - minti-workspace: single static binary, embeds its SPA; flag `-listen`,
+    default 127.0.0.1:8088; NO config file. Doc comment: "Default bind is
+    loopback; LAN exposure waits until PIN/bearer auth lands so the
+    mutating API is never opened without a gate." It NEVER speaks HMAC
+    itself — it shells `minti-cland <sub> --json` (exec.LookPath +
+    CommandContext) and degrades to a demo snapshot when cland is missing.
+
+Constraints in force: P1 = no new external Go deps. P2 = lean enough for
+1-2 GB resurrected boxes (and a lean site). P3 = spec/plan wins over
+clever implementation ideas. Safety bar from M5-B: explicit uninstall
+preserving state by default, no silent destructive steps, every bundled
+third-party binary checksum-verified, services hardened like the existing
+units. The author's daily driver ALREADY runs the M5-B "Minti-Cland"
+service (pre-Clan) — D1's installer must upgrade it in place, never
+double-install, and destructive paths are never exercised on that machine.
