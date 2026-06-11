@@ -107,6 +107,8 @@ type Advertisement struct {
 	Capabilities       map[string]any `json:"capabilities"`
 	Load               float64        `json:"load"`
 	PinnedOrchestrator bool           `json:"pinned_orchestrator"`
+	ScribeCapable      bool           `json:"scribe_capable,omitempty"` // Memory M3 (spec §13.8): can run a small local model for distillation
+	PinnedScribe       bool           `json:"pinned_scribe,omitempty"`  // Memory M3: local scribe self-pin
 }
 
 // AdFresh reports whether the last advertisement is within the Phase D

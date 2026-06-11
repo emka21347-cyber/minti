@@ -71,6 +71,8 @@ func (h *Handlers) Register(srv *transport.Server) {
 	srv.Handle("GET /clan/orchestrator", h.handleOrchestrator)
 	srv.Handle("GET /clan/election/history", h.handleHistory)
 	srv.Handle("POST /clan/pin", h.handlePin)
+	srv.Handle("GET /clan/scribe", h.handleScribe)
+	srv.Handle("POST /clan/pin-scribe", h.handlePinScribe)
 }
 
 // ---------- POST /clan/heartbeat ----------
@@ -209,6 +211,69 @@ func (h *Handlers) handlePin(w http.ResponseWriter, r *http.Request) {
 		h.Bump() // propagate pin via the next advertisement immediately
 	}
 	writeJSON(w, http.StatusOK, PinResponse{PinnedOrchestrator: req.Value})
+}
+
+// ---------- GET /clan/scribe (Memory M3, spec §13.8) ----------
+
+// ScribeResponse is the body of GET /clan/scribe. Exported for the CLI.
+type ScribeResponse struct {
+	CurrentScribe string `json:"current_scribe"`
+	Self          string `json:"self"`
+	IsSelf        bool   `json:"is_self"`
+	PinnedScribe  bool   `json:"pinned_scribe"` // THIS member's local self-pin flag
+}
+
+func (h *Handlers) handleScribe(w http.ResponseWriter, r *http.Request) {
+	snap := h.Engine.opts.State.Snapshot()
+	scribe := h.Engine.opts.State.CurrentScribe()
+	pinned := false
+	if clan, err := h.Store.LoadClan(); err == nil && clan != nil {
+		pinned = clan.PinnedScribe
+	}
+	writeJSON(w, http.StatusOK, ScribeResponse{
+		CurrentScribe: scribe,
+		Self:          snap.SelfID,
+		IsSelf:        scribe != "" && scribe == snap.SelfID,
+		PinnedScribe:  pinned,
+	})
+}
+
+// ---------- POST /clan/pin-scribe (Memory M3, spec §13.8) ----------
+
+// PinScribeRequest mirrors PinRequest for the scribe role.
+type PinScribeRequest struct {
+	Value bool `json:"value"`
+}
+
+// PinScribeResponse mirrors PinResponse.
+type PinScribeResponse struct {
+	PinnedScribe bool `json:"pinned_scribe"`
+}
+
+func (h *Handlers) handlePinScribe(w http.ResponseWriter, r *http.Request) {
+	var req PinScribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	clan, err := h.Store.LoadClan()
+	if err != nil || clan == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load clan failed"})
+		return
+	}
+	if clan.PinnedScribe == req.Value {
+		writeJSON(w, http.StatusOK, PinScribeResponse{PinnedScribe: clan.PinnedScribe})
+		return
+	}
+	clan.PinnedScribe = req.Value
+	if err := h.Store.SaveClan(clan); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.Bump != nil {
+		h.Bump() // propagate the pin via the next advertisement immediately
+	}
+	writeJSON(w, http.StatusOK, PinScribeResponse{PinnedScribe: req.Value})
 }
 
 // ---------- helpers ----------

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,14 @@ type Service struct {
 	RecentFailures *scores.RecentFailures
 	Client         *transport.Client
 	Log            *slog.Logger
+
+	// Pins returns the local self-pin flags (clan.PinnedOrchestrator,
+	// clan.PinnedScribe) for the outgoing advertisement. Optional; nil =
+	// both false. Added in Memory M3 — which also surfaced that the
+	// orchestrator pin was never put on the wire before this (peers'
+	// step-down logic reads LatestAd.PinnedOrchestrator, which was always
+	// false; only self-election saw the pin via LocalSelf).
+	Pins func() (pinnedOrchestrator, pinnedScribe bool)
 
 	Interval    time.Duration
 	InitialWait time.Duration
@@ -222,8 +231,26 @@ func (s *Service) buildPayload(ctx context.Context, generation uint64) (*peers.A
 	if forceHealthy && reasoningScore == 0 {
 		reasoningScore = 50
 	}
+	// Memory M3 smoke hatch: MINTI_CLAND_FORCE_SCORE pins the advertised
+	// reasoning_score so a localhost rig can differentiate node strength
+	// (the scribe smoke needs a deterministic weakest node). Implies the
+	// FORCE_HEALTHY semantics. Production leaves both unset.
+	if v := os.Getenv("MINTI_CLAND_FORCE_SCORE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			reasoningScore = n
+			forceHealthy = true
+		}
+	}
 	reasoningEnabled := reasoningScore > 0 || forceHealthy
 	inferenceEnabled := (caps != nil && caps.Healthy) || forceHealthy
+	// §13.8: scribe-capable = healthy local runtime with at least one
+	// resident model to distill with (remote APIs deliberately excluded —
+	// the scribe is an ambient local loop, not a metered API consumer).
+	scribeCapable := (caps != nil && caps.Healthy && len(residentModels) > 0) || forceHealthy
+	pinnedOrch, pinnedScribe := false, false
+	if s.Pins != nil {
+		pinnedOrch, pinnedScribe = s.Pins()
+	}
 
 	cap := map[string]any{
 		"reasoning": map[string]any{
@@ -254,10 +281,13 @@ func (s *Service) buildPayload(ctx context.Context, generation uint64) (*peers.A
 			"uptime_24h":            hw.Uptime24h,
 			"nvme_throughput_gbps":  hw.NVMeThroughputGbps,
 		},
-		ReasoningScore: reasoningScore,
-		SystemScore:    systemScore,
-		Capabilities:   cap,
-		Load:           0, // Phase D doesn't measure live load; Phase F's router will populate
+		ReasoningScore:     reasoningScore,
+		SystemScore:        systemScore,
+		Capabilities:       cap,
+		Load:               0, // Phase D doesn't measure live load; Phase F's router will populate
+		PinnedOrchestrator: pinnedOrch,
+		ScribeCapable:      scribeCapable,
+		PinnedScribe:       pinnedScribe,
 	}, nil
 }
 

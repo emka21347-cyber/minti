@@ -4,6 +4,7 @@ package main
 // for size; same package, same loadCommon/localDaemonClient plumbing.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/minti/cland/internal/config"
+	"github.com/minti/cland/internal/election"
 	"github.com/minti/cland/internal/memory"
 	"github.com/minti/cland/internal/transport"
 )
@@ -630,6 +632,91 @@ func cmdResearchList(args []string) error {
 		}
 		fmt.Printf("  %s  %-6s %3d contributions  %s\n",
 			shortID(s.ID), state, contributions[s.ID], s.Title)
+	}
+	return nil
+}
+
+// ---------- scribe (Memory M3, spec 13.8) ----------
+
+func cmdScribe(args []string) error {
+	fs := flag.NewFlagSet("scribe", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cli, base, err := memoryDaemon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/clan/scribe", nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("scribe (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		_, _ = io.Copy(os.Stdout, resp.Body)
+		return nil
+	}
+	var sr election.ScribeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return err
+	}
+	fmt.Printf("Self:    %s\n", sr.Self)
+	if sr.CurrentScribe == "" {
+		fmt.Println("Scribe:  (none - no scribe-capable active member)")
+	} else {
+		tag := ""
+		if sr.IsSelf {
+			tag = " (self)"
+		}
+		fmt.Printf("Scribe:  %s%s\n", sr.CurrentScribe, tag)
+	}
+	if sr.PinnedScribe {
+		fmt.Println("Pin:     this member is scribe-pinned")
+	}
+	return nil
+}
+
+func cmdPinScribe(args []string) error {
+	fs := flag.NewFlagSet("pin-scribe", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	selfFlag := fs.Bool("self", false, "pin this member as the Scribe")
+	clearFlag := fs.Bool("clear", false, "clear this member's scribe pin")
+	_ = fs.Parse(args)
+
+	if *selfFlag == *clearFlag {
+		return errors.New("usage: minti-cland pin-scribe --self | --clear")
+	}
+
+	cli, base, err := memoryDaemon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(election.PinScribeRequest{Value: *selfFlag})
+	resp, err := cli.Post(base+"/clan/pin-scribe", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pin-scribe (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var pr election.PinScribeResponse
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &pr); err != nil {
+		return err
+	}
+	if pr.PinnedScribe {
+		fmt.Println("Scribe pin set - takes effect on the Orchestrator's next selection tick.")
+	} else {
+		fmt.Println("Scribe pin cleared.")
 	}
 	return nil
 }

@@ -635,6 +635,8 @@ v1: no automatic rotation. v1.1 will add `logrotate` integration with a default 
 | `/clan/memory/node` | POST | active member / local CLI | Create or update one memory node (§13.6); author set by the daemon |
 | `/clan/memory/edge` | POST | active member / local CLI | Add one memory edge (§13.6); set-union semantics |
 | `/clan/memory/import` | POST | local CLI | Import a Clan Blueprint into the running Clan (§13.10); merge by default |
+| `/clan/scribe` | GET | local UI | Current Scribe (§13.8): member_id + is_self + local pin flag |
+| `/clan/pin-scribe` | POST | local user/CLI | Set/clear this member's `pinned_scribe` (§13.8); mirrors `/clan/pin` |
 | `/mcp/execute` | POST | origin member | Cross-Clan tool call with execution token |
 
 ---

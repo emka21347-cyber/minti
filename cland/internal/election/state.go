@@ -49,6 +49,7 @@ type Heartbeat struct {
 	RevocationsDigest  string    `json:"revocations_digest,omitempty"` // Phase H-2: sha256 of sorted revoked member_ids
 	RosterDigest       string    `json:"roster_digest,omitempty"`      // Phase H-3: sha256 of sorted (member_id, state) tuples
 	MemoryDigest       string    `json:"memory_digest,omitempty"`      // Memory M2: spec §13.5 content-versioned graph digest
+	Scribe             string    `json:"scribe,omitempty"`             // Memory M3: spec §13.8 Orchestrator-authoritative Scribe selection
 }
 
 // HistoryEntry is one row in the in-memory ring at /clan/election/history.
@@ -73,6 +74,13 @@ type State struct {
 	currentOrchestrator string
 	leaseExpires        time.Time
 
+	// currentScribe is the Memory M3 (spec §13.8) role: selected by the
+	// Orchestrator, adopted by followers from the heartbeat `scribe` field.
+	// No lease — re-selected by the Orchestrator whenever the holder stops
+	// being eligible. Persistence (Clan.CurrentScribe) is the engine's
+	// responsibility, on change only.
+	currentScribe string
+
 	// In-memory ring of recent elections, size = cfg.HistorySize.
 	history    []HistoryEntry
 	historyCap int
@@ -91,6 +99,32 @@ func NewState(selfID string, persistedTerm uint64, persistedOrchestrator string,
 		currentOrchestrator: persistedOrchestrator,
 		historyCap:          historyCap,
 	}
+}
+
+// CurrentScribe returns the in-memory scribe selection ("" = none).
+func (s *State) CurrentScribe() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentScribe
+}
+
+// SetScribe records a new scribe selection; reports whether it changed.
+func (s *State) SetScribe(memberID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.currentScribe == memberID {
+		return false
+	}
+	s.currentScribe = memberID
+	return true
+}
+
+// SeedScribe sets the initial scribe from persisted state without the
+// "changed" semantics — called once at startup.
+func (s *State) SeedScribe(memberID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentScribe = memberID
 }
 
 // Snapshot returns an atomic copy of the public fields. Used by handlers

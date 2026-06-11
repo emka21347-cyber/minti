@@ -41,6 +41,10 @@ type LocalCandidate struct {
 	ReasoningEnabled bool
 	Pinned           bool
 	AdmittedAt       time.Time
+
+	// Memory M3 (spec §13.8): scribe eligibility for the inverse selection.
+	ScribeCapable bool
+	PinnedScribe  bool
 }
 
 // EngineOpts is the dependency bundle for NewEngine.
@@ -266,6 +270,10 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 	if e.opts.MemoryDigest != nil {
 		hb.MemoryDigest = e.opts.MemoryDigest() // cached read — never re-hashes (§13.5)
 	}
+	// Memory M3 (§13.8): the Orchestrator's selection is authoritative —
+	// recompute every tick (cheap: sort over the live registry) so a dead or
+	// de-capable'd scribe is replaced within one heartbeat.
+	hb.Scribe = e.refreshScribe(clan)
 	body, err := json.Marshal(hb)
 	if err != nil {
 		e.opts.Log.Error("election: marshal heartbeat", "err", err)
@@ -289,6 +297,13 @@ func (e *Engine) emitHeartbeats(ctx context.Context, now time.Time, term uint64)
 			e.opts.Log.Debug("election: heartbeat POST failed", "peer", m.MemberID, "err", err)
 			continue
 		}
+		// Delivery-liveness (Memory M3): a follower never SENDS heartbeats,
+		// so without this the Orchestrator's only liveness signal for it is
+		// the 90 s ad-freshness window — a dead Scribe would stay selected
+		// for up to 90 s. A delivered heartbeat (any status — a 409 peer is
+		// alive, just disagreeing) proves the peer is up; the §13.8
+		// "re-select on heartbeat-miss" then works on the 2 s cadence.
+		e.opts.Registry.TouchLive(m.MemberID)
 		e.handleAckResponse(m.MemberID, resp)
 		e.heartbeatsSent.Add(1)
 	}
@@ -347,6 +362,7 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 	if e.opts.MemoryDigest != nil {
 		hb.MemoryDigest = e.opts.MemoryDigest()
 	}
+	hb.Scribe = e.refreshScribe(clan)
 	body, _ := json.Marshal(hb)
 	_, members := e.opts.Registry.Snapshot()
 	for _, m := range members {
@@ -362,6 +378,7 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		if resp.StatusCode == http.StatusOK {
 			accepts++
 		}
+		e.opts.Registry.TouchLive(m.MemberID) // delivery-liveness, same as emit
 		e.handleAckResponse(m.MemberID, resp)
 	}
 
@@ -413,6 +430,102 @@ func (e *Engine) runElection(ctx context.Context, now time.Time, currentTerm uin
 		case <-time.After(backoff):
 		}
 	}
+}
+
+// selectScribe implements spec §13.8 — the INVERSE of selectCandidate: among
+// scribe_capable members, the LOWEST reasoning_score wins (the strong node
+// thinks, the weak node remembers); ties → oldest AdmittedAt → lowest
+// member_id; any pinned_scribe candidate restricts the set (multi-pin →
+// lowest member_id, mirroring §5.6). Liveness gates mirror selectCandidate
+// exactly (HeartbeatSeen→Live, else AdFresh) — the registry's bound members
+// with fresh ads are operationally the active set; a literal roster-state
+// check would deadlock bootstrap the same way it would for the Orchestrator.
+// Returns the zero candidate when nobody is scribe-capable (legal: §13.8 —
+// distillation is simply off).
+func (e *Engine) selectScribe(clan *state.Clan) LocalCandidate {
+	self := e.opts.LocalSelf()
+	candidates := []LocalCandidate{}
+	if self.ScribeCapable {
+		candidates = append(candidates, self)
+	}
+
+	now := time.Now()
+	_, members := e.opts.Registry.Snapshot()
+	for _, m := range members {
+		if m.LatestAd == nil || !m.LatestAd.ScribeCapable {
+			continue
+		}
+		if m.HeartbeatSeen {
+			if !m.Live(now) {
+				continue
+			}
+		} else if !m.AdFresh(now) {
+			continue
+		}
+		candidates = append(candidates, LocalCandidate{
+			MemberID:       m.MemberID,
+			ReasoningScore: m.LatestAd.ReasoningScore,
+			ScribeCapable:  true,
+			PinnedScribe:   m.LatestAd.PinnedScribe,
+			AdmittedAt:     admittedAtFromRoster(clan, m.MemberID),
+		})
+	}
+	if len(candidates) == 0 {
+		return LocalCandidate{}
+	}
+
+	pinned := []LocalCandidate{}
+	for _, c := range candidates {
+		if c.PinnedScribe {
+			pinned = append(pinned, c)
+		}
+	}
+	if len(pinned) > 0 {
+		sort.Slice(pinned, func(i, j int) bool { return pinned[i].MemberID < pinned[j].MemberID })
+		if len(pinned) > 1 {
+			e.opts.Log.Warn("scribe: multiple pins; lowest member_id wins (mirror of §5.6)",
+				"winner", pinned[0].MemberID, "all", memberIDs(pinned))
+		}
+		return pinned[0]
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].ReasoningScore != candidates[j].ReasoningScore {
+			return candidates[i].ReasoningScore < candidates[j].ReasoningScore // INVERTED: lowest wins
+		}
+		if !candidates[i].AdmittedAt.Equal(candidates[j].AdmittedAt) {
+			return candidates[i].AdmittedAt.Before(candidates[j].AdmittedAt)
+		}
+		return candidates[i].MemberID < candidates[j].MemberID
+	})
+	return candidates[0]
+}
+
+// refreshScribeLocked recomputes the scribe selection (Orchestrator side),
+// updates in-memory state, and persists Clan.CurrentScribe on change.
+// Returns the selection for the outgoing heartbeat.
+func (e *Engine) refreshScribe(clan *state.Clan) string {
+	scribe := e.selectScribe(clan).MemberID
+	if e.opts.State.SetScribe(scribe) {
+		if err := e.persistScribe(scribe); err != nil {
+			e.opts.Log.Error("scribe: persist failed", "err", err)
+		}
+		e.opts.Log.Info("scribe selected", "scribe", scribe)
+	}
+	return scribe
+}
+
+// persistScribe writes Clan.CurrentScribe when it differs (R2 discipline).
+func (e *Engine) persistScribe(scribe string) error {
+	clan, err := e.opts.Store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if clan == nil || clan.CurrentScribe == scribe {
+		return nil
+	}
+	clan.CurrentScribe = scribe
+	return e.opts.Store.SaveClan(clan)
 }
 
 // selectCandidate implements spec §5.4 step 1. Pin path wins over score; ties
@@ -577,6 +690,16 @@ func (e *Engine) OnHeartbeatReceived(hb Heartbeat, senderID string, now time.Tim
 		if perr := e.persistTermAndOrch(res.NewTerm, res.NewOrch); perr != nil {
 			e.opts.Log.Error("election: persist after accept", "err", perr)
 		}
+	}
+	// Memory M3 (§13.8): followers adopt the Orchestrator's scribe selection
+	// from accepted heartbeats only. Empty field = sender predates §13 OR no
+	// scribe-capable member exists; adopt "" too so a withdrawn scribe clears
+	// everywhere. Persist-on-change.
+	if e.opts.State.SetScribe(hb.Scribe) {
+		if perr := e.persistScribe(hb.Scribe); perr != nil {
+			e.opts.Log.Error("scribe: persist after adopt", "err", perr)
+		}
+		e.opts.Log.Info("scribe adopted from heartbeat", "scribe", hb.Scribe)
 	}
 	return res, nil
 }

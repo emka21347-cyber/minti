@@ -69,6 +69,13 @@ type Clan struct {
 	CurrentOrchestrator string `json:"current_orchestrator,omitempty"`
 	CurrentTerm         uint64 `json:"current_term,omitempty"`
 	PinnedOrchestrator  bool   `json:"pinned_orchestrator,omitempty"`
+
+	// Memory M3 (spec §13.8): the Scribe role — inverse of the Orchestrator.
+	// CurrentScribe persists on change only (like CurrentOrchestrator; no
+	// lease machinery — memory loss is non-fatal). PinnedScribe is the local
+	// self-pin, propagated via Advertisement.PinnedScribe.
+	CurrentScribe string `json:"current_scribe,omitempty"`
+	PinnedScribe  bool   `json:"pinned_scribe,omitempty"`
 }
 
 // RosterMember is one entry in the persisted roster cache.

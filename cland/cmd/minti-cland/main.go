@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,10 @@ func main() {
 			err = cmdShow(os.Args[2:])
 		case "memory":
 			err = cmdMemory(os.Args[2:])
+		case "scribe":
+			err = cmdScribe(os.Args[2:])
+		case "pin-scribe":
+			err = cmdPinScribe(os.Args[2:])
 		case "knock":
 			err = cmdKnock(os.Args[2:])
 		case "knocks":
@@ -154,6 +159,9 @@ Usage:
        digest
        research start "<title>" | research close <id> | research list
        (all take --json)
+  minti-cland scribe                   print the current Scribe (spec §13.8)
+  minti-cland pin-scribe [--self|--clear]
+                                       set or clear the scribe self-pin
   minti-cland knock [flags]            join a Clan without a shared secret (§3.4)
        --clan-id UUID  --address ip:port  --pin sha256:...
   minti-cland knocks                   list pending knock requests (operator)
@@ -345,9 +353,19 @@ func runDaemon(args []string) error {
 		RecentFailures: recentFailures,
 		Client:         advClient,
 		Log:            log,
-		Interval:       cfg.Advertise.Interval,
-		InitialWait:    cfg.Advertise.InitialDelay,
-		BumpRate:       cfg.Advertise.BumpRate,
+		// Memory M3: put both self-pins on the wire (the orchestrator pin
+		// was never advertised before this — peers' step-down logic reads
+		// LatestAd.PinnedOrchestrator, which was always false).
+		Pins: func() (bool, bool) {
+			c, err := store.LoadClan()
+			if err != nil || c == nil {
+				return false, false
+			}
+			return c.PinnedOrchestrator, c.PinnedScribe
+		},
+		Interval:    cfg.Advertise.Interval,
+		InitialWait: cfg.Advertise.InitialDelay,
+		BumpRate:    cfg.Advertise.BumpRate,
 	}
 	(&peers.Handlers{
 		Registry: registry,
@@ -418,6 +436,7 @@ func runDaemon(args []string) error {
 
 	// ----- Phase E: leader-lease election -----
 	electionState := election.NewState(id.MemberID, clan.CurrentTerm, clan.CurrentOrchestrator, cfg.Election.HistorySize)
+	electionState.SeedScribe(clan.CurrentScribe) // Memory M3: survive restarts without a flap
 	localSelfFn := func() election.LocalCandidate {
 		curClan, err := store.LoadClan()
 		if err != nil || curClan == nil {
@@ -428,6 +447,9 @@ func runDaemon(args []string) error {
 		remote := caps.RemoteAPIs()
 		score := scores.ReasoningScore(rubric, resident, remote)
 		enabled := caps != nil && caps.Healthy && len(resident)+len(remote) > 0
+		// Memory M3 (§13.8): scribe-capable = healthy runtime + >=1 RESIDENT
+		// model (remote APIs excluded — ambient distillation must be local).
+		scribeCapable := caps != nil && caps.Healthy && len(resident) > 0
 		// Smoke-test escape hatch: same env var as healthFn (R1 bypass).
 		// Forces reasoning-capable so the daemon can be elected even without
 		// a live runtime-adapter alongside. Production leaves this unset.
@@ -436,6 +458,17 @@ func runDaemon(args []string) error {
 			if score == 0 {
 				score = 50
 			}
+		}
+		// Memory M3 smoke hatch (matches advertise.buildPayload): pins the
+		// score so a localhost rig gets a deterministic weakest node.
+		if v := os.Getenv("MINTI_CLAND_FORCE_SCORE"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil {
+				score = n
+				enabled = true
+			}
+		}
+		if !scribeCapable && (os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1" || os.Getenv("MINTI_CLAND_FORCE_SCORE") != "") {
+			scribeCapable = true
 		}
 		var admittedAt time.Time
 		for _, m := range curClan.Roster {
@@ -450,13 +483,16 @@ func runDaemon(args []string) error {
 			ReasoningEnabled: enabled,
 			Pinned:           curClan.PinnedOrchestrator,
 			AdmittedAt:       admittedAt,
+			ScribeCapable:    scribeCapable,
+			PinnedScribe:     curClan.PinnedScribe,
 		}
 	}
 	healthFn := func(now time.Time) bool {
 		// Smoke-test escape hatch: lets the Phase E smoke script run cland
 		// pairs on 127.0.0.1 without requiring a live minti-runtime alongside.
 		// Production deployments leave this unset; R1 gate is then enforced.
-		if os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1" {
+		// FORCE_SCORE (Memory M3 smoke) implies the same bypass.
+		if os.Getenv("MINTI_CLAND_FORCE_HEALTHY") == "1" || os.Getenv("MINTI_CLAND_FORCE_SCORE") != "" {
 			return true
 		}
 		caps, err := runtimeClient.Get(context.Background())
