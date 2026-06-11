@@ -44,6 +44,7 @@ import (
 	"github.com/minti/cland/internal/identity"
 	"github.com/minti/cland/internal/keyrotate"
 	"github.com/minti/cland/internal/membership"
+	"github.com/minti/cland/internal/memory"
 	"github.com/minti/cland/internal/peers"
 	"github.com/minti/cland/internal/probe"
 	"github.com/minti/cland/internal/revocations"
@@ -88,6 +89,8 @@ func main() {
 			err = cmdRotateKey(os.Args[2:])
 		case "show":
 			err = cmdShow(os.Args[2:])
+		case "memory":
+			err = cmdMemory(os.Args[2:])
 		case "knock":
 			err = cmdKnock(os.Args[2:])
 		case "knocks":
@@ -142,6 +145,15 @@ Usage:
   minti-cland election-history         print recent elections (ring buffer)
   minti-cland rotate-key               rotate the Clan key (Orchestrator only)
   minti-cland show                     print clan_id, pin, LAN address
+  minti-cland memory <sub>             Clan Memory graph (spec §13); subs:
+       list [--session id] [--type t] [--status s]
+       show <id>
+       add --type T --title "..." [--body ...] [--tags a,b] [--session id]
+       link <from> <to> [--relation relates]
+       archive <id>
+       digest
+       research start "<title>" | research close <id> | research list
+       (all take --json)
   minti-cland knock [flags]            join a Clan without a shared secret (§3.4)
        --clan-id UUID  --address ip:port  --pin sha256:...
   minti-cland knocks                   list pending knock requests (operator)
@@ -478,6 +490,22 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("rostersync: %w", err)
 	}
 	(&rostersync.Handler{Store: store, Log: log}).Register(srv)
+
+	// ----- Memory M1: Clan Memory graph (spec §13) -----
+	memSvc, err := memory.NewService(memory.ServiceOpts{
+		Store:  store,
+		SelfID: id.MemberID,
+		ClanID: clan.ClanID,
+		Audit:  audit,
+		Log:    log,
+	})
+	if err != nil {
+		return fmt.Errorf("memory: %w", err)
+	}
+	(&memory.Handler{Svc: memSvc, Log: log}).Register(srv)
+	log.Info("clan memory enabled",
+		"digest", memSvc.Digest()[:12],
+		"endpoints", "/clan/memory{,/digest,/node,/edge}")
 
 	(&election.Handlers{
 		Engine:          electionEng,

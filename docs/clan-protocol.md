@@ -631,6 +631,7 @@ v1: no automatic rotation. v1.1 will add `logrotate` integration with a default 
 | `/clan/election/history` | GET | local UI | Recent elections (term, winner, reason) |
 | `/clan/revocations` | GET | active member | Full revocation list, fetched on heartbeat digest mismatch (Phase H-2; row added retroactively in v0.4) |
 | `/clan/memory` | GET | active member / local UI | Full memory graph (§13); fetched on `memory_digest` mismatch |
+| `/clan/memory/digest` | GET | local UI | Cached graph digest (§13.5) — cheap change-poll for the workspace; gossip itself rides the heartbeat, never this |
 | `/clan/memory/node` | POST | active member / local CLI | Create or update one memory node (§13.6); author set by the daemon |
 | `/clan/memory/edge` | POST | active member / local CLI | Add one memory edge (§13.6); set-union semantics |
 | `/clan/memory/import` | POST | local CLI | Import a Clan Blueprint into the running Clan (§13.10); merge by default |
@@ -778,6 +779,7 @@ All three write paths are HMAC-authenticated (§2.3); the local CLI reaches them
 | Endpoint | Body | Semantics |
 |---|---|---|
 | `GET /clan/memory` | — | Full graph JSON (the §13.1 `Graph` shape). |
+| `GET /clan/memory/digest` | — | `{ "digest": "<hex>" }` — the cached §13.5 digest. Lets local UIs poll for change without transferring the graph. |
 | `POST /clan/memory/node` | one `Node` | Create if `id` unknown; **update** if known (daemon bumps `rev = old.rev + 1`, stamps `updated_at` per the §13.4 origin-monotone rule). Caps enforced here (§13.1) → `409` with a clear error past them. |
 | `POST /clan/memory/edge` | one `Edge` | Set-union add; duplicate `(from,to,relation)` is a no-op `200`. Caps enforced. |
 | `POST /clan/memory/import` | `{ blueprint, mode }` | §13.10. `mode: "merge"` (default) or `"replace"`. **`replace` is loopback-CLI-only**: the daemon rejects it (`403`) unless the request originates from the local CLI on the loopback interface. A destructive remote primitive behind a *shared* key is exactly the §7.1 insider-forgery surface — remote members get `merge` only (M0 peer review, gemma4). |

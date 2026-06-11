@@ -33,6 +33,7 @@ import (
 const (
 	ClanFile        = "clan.json"
 	RevocationsFile = "revocations.json"
+	MemoryFile      = "memory.json"
 )
 
 // Clan is what every active member persists about its current Clan. Empty
@@ -285,6 +286,38 @@ func (s *Store) SaveRevocations(r *Revocations) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return saveJSONAtomic(filepath.Join(s.dir, RevocationsFile), r, 0o644)
+}
+
+// LoadMemory unmarshals memory.json into v (the memory.Graph — typed as any
+// here so state doesn't import the memory package, which imports state).
+// Returns found=false with v untouched when the file doesn't exist yet.
+func (s *Store) LoadMemory(v any) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.dir, MemoryFile)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("state: read %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return false, fmt.Errorf("state: parse %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// SaveMemory persists the memory graph atomically at mode 0600 — distillates
+// may carry chat content, so it gets clan.json treatment, not the 0644 the
+// revocations list gets (spec §13.2).
+func (s *Store) SaveMemory(v any) error {
+	if v == nil {
+		return errors.New("state: SaveMemory(nil)")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return saveJSONAtomic(filepath.Join(s.dir, MemoryFile), v, 0o600)
 }
 
 // loadJSON returns nil + nil if the file is missing.
