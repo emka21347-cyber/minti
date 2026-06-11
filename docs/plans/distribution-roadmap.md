@@ -494,7 +494,90 @@ state-preserving uninstall default, SHA-256 verification, idempotent
 re-run as the repair story, the elevation shim, per-service NSSM copies,
 and the "what this installs" disclosure. D1 may start.
 
-## Kickstart prompt for the D-milestone chat (paste verbatim)
+## Sequencing after D3 (user, 2026-06-11) + handover
+
+D0–D3 shipped 2026-06-11 (commits `1f419e1` → `1da3597` → `9f6cd50` →
+`603fdba`). The two doors are live: **https://minti-pi.vercel.app** serving
+downloads from **github.com/emka21347-cyber/minti-releases** (v0.4.0-D1).
+User-decided order for what remains:
+
+1. **Site layout polish FIRST** — iterate on minti-pi.vercel.app's layout
+   with the user in the loop until it's "set". Layout only; the D0-review
+   trust content is non-negotiable (see kickstart below).
+2. **Then D4** — Calamares disk installer + firmware re-enable on the ISO
+   (build-VM-gated as before). The site's door-A copy flips when it ships.
+3. **macOS deliberately LAST, "really further down the line"** — once
+   everything else is set, the user switches to a real Mac and the D2
+   macOS recipes get their live validation there, closing the milestone.
+   Do not spend session time on macOS before the user brings the Mac.
+
+Operational facts the next session needs:
+- **Vercel**: `site/` is linked to project `minti` (scope
+  `emka21347-2077s-projects`; `.vercel/` is gitignored). Deploy =
+  `vercel deploy --cwd site --prod`. **Production deploys are held for
+  explicit user consent by the permission classifier** — ask once at
+  session start whether iterative layout redeploys are pre-authorized,
+  or preview locally and deploy once at the end.
+- **Local preview**: `.claude/launch.json` has a `site` config
+  (`python -m http.server 8930 --directory site`). Gotcha from D3:
+  `preview_screenshot` hung repeatedly (tool-side renderer; the page
+  itself served fine) — layout verification ran HTTP/structural-level
+  only. For LAYOUT work, visual verification is the point: retry the
+  preview tools fresh, and lean on the Launch preview panel + the user's
+  eyes as the arbiter.
+- **Downloads**: all four artifact links + checksums.txt on the page are
+  live (verified 200). Don't touch URLs/hashes during layout work.
+
+## Kickstart prompt for the NEXT chat — site layout (paste verbatim)
+
+```
+Project: MINTI — repo at C:\Users\aouad\Documents\CCode\MINT\MINT_wip.
+Task: polish the LAYOUT of the live two-door site (site/index.html,
+deployed at https://minti-pi.vercel.app). Iterative design session — the
+user reviews and redirects; work T2-direct (no T3 for iteration).
+
+Read FIRST, in order:
+1. docs/plans/distribution-roadmap.md — "Sequencing after D3 + handover"
+   (operational facts: Vercel project/consent, launch.json preview,
+   screenshot-tool gotcha) and the D-milestone detail D3 section (the
+   locked IA + review-mandated content).
+2. docs/brand.md + workspace/mock/index.html — the locked visual
+   language; the mock is the layout north star (top-bar idiom, surface
+   colors, spacing, node-mesh motifs).
+3. site/index.html — the current page (15.5 KB, single file).
+4. STATUS.md "Dist D3 done" entry — how it was built + verified.
+
+Invariants that survive ANY layout change (D0 3-LLM review, 3/3
+consensus — not yours or the user's to drop casually; if the user asks,
+flag the review provenance first): zero JavaScript, zero external
+resources (no CDN fonts/icons), palette rules (mint = single-focus only,
+cyan = links/enumerables, no gradients), the what-gets-installed
+disclosure table, inline SHA-256s + checksums.txt link, the Known
+warnings section (unsigned-binary honesty incl. SmartScreen/Gatekeeper
+steps), honest door-A live-preview copy until D4 ships, readable at
+360 px, total page < 40 KB. Door B stays visually primary.
+
+Workflow: edit site/index.html → verify in the local preview (launch
+config "site"; try preview_screenshot fresh — it hung tool-side on
+2026-06-11) → user reviews in the Launch panel → iterate. Deploy to
+production only with explicit user approval (the classifier enforces
+this). One commit when the user calls it set: "Dist D3.1: site layout".
+
+When the user says the site is set, hand over to D4 (Calamares +
+firmware): BEFORE touching anything ISO, read
+memory/reference_live_build.md (build VM is the CLONE minti-dev-2,
+identify by MAC not IP; lb 3.0~a57 quirks) + the roadmap's D4 section +
+locked decisions (Calamares; firmware re-enable is a HARD requirement —
+revert aebdba2: archive-areas "main contrib non-free non-free-firmware",
+--firmware-chroot true, --firmware-binary true). lbconfig/ +
+scripts/build-iso.{sh,ps1} are the build surface. Operator gate: the
+user boots the VM. The built ISO uploads to
+github.com/emka21347-cyber/minti-releases and door A's status box flips.
+macOS is deliberately parked until the user brings a real Mac — do not
+schedule or start macOS work.
+```
+
+## Kickstart prompt for the D-milestone chat (historical — used 2026-06-11; superseded by the section above)
 
 ```
 Project: MINTI — repo at C:\Users\aouad\Documents\CCode\MINT\MINT_wip (Go monorepo:
