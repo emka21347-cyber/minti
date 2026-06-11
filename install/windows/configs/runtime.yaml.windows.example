@@ -1,0 +1,22 @@
+# MINTI runtime adapter — Windows defaults (NSSM-managed service install).
+#
+# install-minti.ps1 drops this file at %PROGRAMDATA%\MINTI\runtime\runtime.yaml
+# on first install (preserves any existing file on re-install). The service
+# passes it explicitly via --config; the binary's compiled-in default path is
+# the Unix /etc/minti/runtime.yaml, which doesn't exist on Windows.
+
+listen:
+  # Loopback only. The runtime is consumed by cland and the workspace on
+  # this machine; LAN traffic goes through cland's authenticated :7777.
+  address: "127.0.0.1"
+  port: 7780
+
+backend:
+  # Ollama on its default local port. The runtime starts fine when Ollama
+  # is down/absent — /minti/health reports the backend status honestly and
+  # the adapter picks it up when it appears.
+  kind: "ollama"
+  # base_url: "http://127.0.0.1:11434"   # default; uncomment to override
+
+telemetry:
+  log_level: "info"

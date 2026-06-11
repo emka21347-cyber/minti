@@ -37,11 +37,14 @@ CLAND_BIN_WINDOWS     := $(CLAND_DIR)/dist/minti-cland-windows-amd64.exe
 CLAND_BIN_DARWIN_AMD64 := $(CLAND_DIR)/dist/minti-cland-darwin-amd64
 CLAND_BIN_DARWIN_ARM64 := $(CLAND_DIR)/dist/minti-cland-darwin-arm64
 
+WORKSPACE_DIR := workspace
+WORKSPACE_PKG := ./cmd/minti-workspace
+
 DIST          := dist
 PACKS_DIR     := packs
 PACK_NAMES    := recon hermes3 mistral wiki-simple
 # Pinned per-milestone — bump on milestone landing.
-VERSION       := 0.3.0-M7.6
+VERSION       := 0.4.0-D1
 LDFLAGS       := -X main.version=$(VERSION)
 # Release build flags: strip debug info, omit absolute build paths. ~30%
 # smaller binaries + no leaked /Users/... paths in error messages.
@@ -49,7 +52,7 @@ LDFLAGS_REL   := $(LDFLAGS) -s -w
 GOFLAGS_REL   := -trimpath
 
 # ---------- Phony targets ----------
-.PHONY: help all runtime runtime-linux \
+.PHONY: help all runtime runtime-linux runtime-windows workspace workspace-linux workspace-windows minti-windows-zip \
         cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip cland-darwin-tarball \
         mcp mcp-linux mcptest mcptest-linux \
         pack-fetch pack-fetch-linux pack-fetch-deb \
@@ -79,8 +82,13 @@ help:
 	@echo "  make cland-darwin-amd64  — cross-compile minti-cland for macOS x86_64"
 	@echo "  make cland-darwin-arm64  — cross-compile minti-cland for macOS arm64 (Apple Silicon)"
 	@echo "  make cland-all-platforms — all four cland binaries"
-	@echo "  make cland-windows-zip   — bundle Windows .zip distribution (NSSM service)"
+	@echo "  make cland-windows-zip   — bundle cland-only Windows .zip (M5-B artifact)"
 	@echo "  make cland-darwin-tarball— bundle macOS .tar.gz distributions (amd64 + arm64, launchd)"
+	@echo "  make runtime-windows     — cross-compile minti-runtime for Windows amd64 (.exe)"
+	@echo "  make workspace           — build minti-workspace (native)"
+	@echo "  make workspace-linux     — cross-compile minti-workspace for Linux amd64"
+	@echo "  make workspace-windows   — cross-compile minti-workspace for Windows amd64 (.exe)"
+	@echo "  make minti-windows-zip   — bundle the FULL-STACK Windows .zip (door B, Dist D1)"
 	@echo "  make status              — build minti-status TUI dashboard (native)"
 	@echo "  make status-linux        — cross-compile minti-status for Linux amd64"
 	@echo "  make status-windows      — cross-compile minti-status for Windows amd64"
@@ -108,6 +116,22 @@ $(RUNTIME_BIN):
 runtime-linux:
 	mkdir -p $(RUNTIME_DIR)/dist
 	cd $(RUNTIME_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build -ldflags "$(LDFLAGS)" -o dist/minti-runtime-linux-amd64 $(RUNTIME_PKG)
+
+runtime-windows:
+	mkdir -p $(RUNTIME_DIR)/dist
+	cd $(RUNTIME_DIR) && GOOS=windows GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "-s -w" -o dist/minti-runtime-windows-amd64.exe $(RUNTIME_PKG)
+
+# ---------- workspace (Clan Workspace web UI) ----------
+workspace:
+	cd $(WORKSPACE_DIR) && $(GO) build -ldflags "$(LDFLAGS)" -o minti-workspace $(WORKSPACE_PKG)
+
+workspace-linux:
+	mkdir -p $(WORKSPACE_DIR)/dist
+	cd $(WORKSPACE_DIR) && GOOS=$(GOOS_LINUX) GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-workspace-linux-amd64 $(WORKSPACE_PKG)
+
+workspace-windows:
+	mkdir -p $(WORKSPACE_DIR)/dist
+	cd $(WORKSPACE_DIR) && GOOS=windows GOARCH=$(GOARCH_AMD64) $(GO) build $(GOFLAGS_REL) -ldflags "$(LDFLAGS_REL)" -o dist/minti-workspace-windows-amd64.exe $(WORKSPACE_PKG)
 
 # ---------- mcp-servers (M2) ----------
 mcp:
@@ -320,11 +344,21 @@ cland-windows-zip:
 cland-darwin-tarball:
 	VERSION=$(VERSION) GO=$(GO) bash $(CLAND_DIR)/darwin/build-tarball.sh
 
+# Bundle the FULL-STACK Windows distribution (door B, Dist D1):
+# cland + runtime + workspace as NSSM services + Install-MINTI.cmd shim.
+# Produces dist/minti-windows-amd64-v$VERSION.zip.
+minti-windows-zip:
+	@if command -v pwsh >/dev/null 2>&1; then \
+	  pwsh -NoProfile -ExecutionPolicy Bypass -File install/windows/build-zip.ps1 -Version $(VERSION); \
+	else \
+	  powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/windows/build-zip.ps1 -Version $(VERSION); \
+	fi
+
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
 
 # ---------- Go hygiene ----------
-GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR) $(PM_DIR) $(STATUS_DIR)
+GO_MODULES := $(RUNTIME_DIR) $(MCP_DIR) $(CLAND_DIR) $(PM_DIR) $(STATUS_DIR) $(WORKSPACE_DIR)
 
 fmt:
 	@for m in $(GO_MODULES); do echo ">> gofmt $$m"; cd $$m && $(GO) fmt ./... && cd - >/dev/null; done
