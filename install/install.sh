@@ -1,17 +1,41 @@
 #!/usr/bin/env bash
-# MINTI installer (M0–M4) — prepares a Debian-family host to run MINTI.
-# Idempotent: safe to re-run. Installs runtime + 5 MCP servers + cland.
-# Does NOT install webapp/wireless/forensics packs (M6).
+# MINTI installer — prepares a Debian-family host to run MINTI.
+# Idempotent: safe to re-run. Installs runtime + 5 MCP servers + cland +
+# workspace (Dist D2). Does NOT install addon packs (user picks those).
+#
+# Works from two layouts:
+#   - a source checkout  (<repo>/install/install.sh, binaries in module dirs)
+#   - the door-B tarball (<root>/install/install.sh, binaries in <root>/bin,
+#     configs in <root>/configs, units in <root>/systemd)
+# Every artifact lookup tries the tarball path first, then the checkout
+# paths — same candidate-loop idiom throughout.
+#
+# Env knobs:
+#   MINTI_CHROOT=1     live-build chroot mode: skip systemctl + auto-open;
+#                      an Ollama install failure stays FATAL (an ISO built
+#                      without Ollama is worse than a failed build).
+#   MINTI_NO_OLLAMA=1  skip the Ollama install entirely (D0 review F6).
 
 set -euo pipefail
 
-minti_version="0.1.0-M4"
+minti_version="0.4.0-D1"
 
 # Resolve repo root: install.sh lives at <repo>/install/install.sh, so
 # the staged artifacts (runtime-adapter binary, systemd unit, configs)
 # are at <repo>/runtime-adapter/... when running from a source checkout.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
+
+# first_existing PATH... — print the first path that exists, fail if none.
+# Used to resolve every artifact across the two supported layouts
+# (tarball candidates first, then source-checkout candidates).
+first_existing() {
+    local p
+    for p in "$@"; do
+        if [[ -e "${p}" ]]; then printf '%s' "${p}"; return 0; fi
+    done
+    return 1
+}
 
 # ---------- Output helpers ----------
 if [[ -t 2 ]] && command -v tput >/dev/null 2>&1; then
@@ -114,14 +138,34 @@ else
 fi
 
 # ---------- Ollama install (idempotent) ----------
-if command -v ollama >/dev/null 2>&1; then
+# D0 review F6: a flaky ollama.com download must not abort the whole
+# door-B install (the runtime tolerates a missing backend by design and
+# picks it up when it appears). In the ISO chroot the failure STAYS
+# fatal — a silently Ollama-less image is worse than a failed build.
+ollama_status="not installed"
+if [[ "${MINTI_NO_OLLAMA:-0}" == "1" ]]; then
+    warn "MINTI_NO_OLLAMA=1 — skipping Ollama install (get it later: https://ollama.com/download/linux)"
+    ollama_status="skipped (MINTI_NO_OLLAMA=1)"
+elif command -v ollama >/dev/null 2>&1; then
     ollama_version="$(ollama --version 2>&1 | head -1 || echo 'unknown')"
     ok "Ollama already installed (${ollama_version})."
+    ollama_status="already installed (${ollama_version})"
 else
     info "Installing Ollama via official install script..."
     # Official Ollama installer is the supported path; we don't shadow it.
-    curl -fsSL https://ollama.com/install.sh | sh
-    ok "Ollama installed: $(ollama --version 2>&1 | head -1 || echo 'version-unknown')."
+    if curl -fsSL https://ollama.com/install.sh | sh; then
+        ollama_status="installed ($(ollama --version 2>&1 | head -1 || echo 'version-unknown'))"
+        ok "Ollama ${ollama_status}."
+    else
+        if [[ "$MINTI_CHROOT" == "1" ]]; then
+            err "Ollama install failed inside the image build chroot — aborting (the ISO must not ship without it)."
+            exit 1
+        fi
+        warn "Ollama install FAILED. MINTI still works — the runtime reports the"
+        warn "missing backend honestly and picks Ollama up when it appears."
+        warn "Install it later from: https://ollama.com/download/linux"
+        ollama_status="FAILED — install manually"
+    fi
 fi
 
 # ---------- MINTI state directories + system user ----------
@@ -156,6 +200,7 @@ fi
 # Windows cross-compile for Linux → runtime-adapter/dist/minti-runtime-linux-amd64.
 runtime_bin=""
 for candidate in \
+    "${repo_root}/bin/minti-runtime" \
     "${repo_root}/runtime-adapter/minti-runtime" \
     "${repo_root}/runtime-adapter/dist/minti-runtime-linux-amd64" \
     "${repo_root}/runtime-adapter/dist/minti-runtime"; do
@@ -164,8 +209,12 @@ for candidate in \
         break
     fi
 done
-runtime_unit="${repo_root}/runtime-adapter/systemd/minti-runtime.service"
-runtime_cfg_example="${repo_root}/runtime-adapter/configs/runtime.yaml.example"
+runtime_unit="$(first_existing \
+    "${repo_root}/systemd/minti-runtime.service" \
+    "${repo_root}/runtime-adapter/systemd/minti-runtime.service")" || runtime_unit=""
+runtime_cfg_example="$(first_existing \
+    "${repo_root}/configs/runtime.yaml.example" \
+    "${repo_root}/runtime-adapter/configs/runtime.yaml.example")" || runtime_cfg_example=""
 
 runtime_status="skipped (binary not built)"
 if [[ -n "${runtime_bin}" ]]; then
@@ -228,6 +277,7 @@ declare -a mcp_servers=(mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http)
 for s in "${mcp_servers[@]}"; do
     bin=""
     for candidate in \
+        "${repo_root}/bin/minti-${s}" \
         "${repo_root}/mcp-servers/dist/minti-${s}-linux-amd64" \
         "${repo_root}/mcp-servers/dist/minti-${s}"; do
         if [[ -x "${candidate}" ]]; then bin="${candidate}"; break; fi
@@ -243,6 +293,7 @@ done
 # mcptest stays useful through M3 — it's the only way to drive an MCP server
 # from the shell without an agent client.
 for candidate in \
+    "${repo_root}/bin/mcptest" \
     "${repo_root}/mcp-servers/dist/mcptest-linux-amd64" \
     "${repo_root}/mcp-servers/dist/mcptest"; do
     if [[ -x "${candidate}" ]]; then
@@ -258,7 +309,9 @@ if [[ "${mcp_count}" -gt 0 ]]; then
 fi
 
 # System default policy (preserved if already present — user may have edited).
-policy_example="${repo_root}/mcp-servers/configs/policy.yaml.example"
+policy_example="$(first_existing \
+    "${repo_root}/configs/policy.yaml.example" \
+    "${repo_root}/mcp-servers/configs/policy.yaml.example")" || policy_example=""
 if [[ -f "${policy_example}" ]]; then
     if [[ ! -f /etc/minti/policy.yaml ]]; then
         install -m 0644 "${policy_example}" /etc/minti/policy.yaml
@@ -286,6 +339,7 @@ fi
 # cland's state dir holds clan_key + cert priv, so mode 0700 is mandatory.
 cland_bin=""
 for candidate in \
+    "${repo_root}/bin/minti-cland" \
     "${repo_root}/cland/minti-cland" \
     "${repo_root}/cland/dist/minti-cland-linux-amd64" \
     "${repo_root}/cland/dist/minti-cland"; do
@@ -294,9 +348,15 @@ for candidate in \
         break
     fi
 done
-cland_unit="${repo_root}/cland/systemd/minti-cland.service"
-cland_cfg_example="${repo_root}/cland/configs/cland.yaml.example"
-cland_rubric_example="${repo_root}/cland/configs/reasoning-scores.yaml.example"
+cland_unit="$(first_existing \
+    "${repo_root}/systemd/minti-cland.service" \
+    "${repo_root}/cland/systemd/minti-cland.service")" || cland_unit=""
+cland_cfg_example="$(first_existing \
+    "${repo_root}/configs/cland.yaml.example" \
+    "${repo_root}/cland/configs/cland.yaml.example")" || cland_cfg_example=""
+cland_rubric_example="$(first_existing \
+    "${repo_root}/configs/reasoning-scores.yaml.example" \
+    "${repo_root}/cland/configs/reasoning-scores.yaml.example")" || cland_rubric_example=""
 
 cland_status="skipped (binary not built)"
 if [[ -n "${cland_bin}" ]]; then
@@ -350,6 +410,61 @@ else
     warn "Build with: make cland (native) or make cland-linux (for this host)"
 fi
 
+# ---------- minti-workspace (Dist D2 — Clan Workspace web UI) ----------
+# Same deploy pattern as cland: stage binary, install hardened unit,
+# B13 restart-on-stale-binary. No config file (single -listen flag, baked
+# into the unit). Loopback-only until PIN/bearer auth lands — the unit
+# enforces it at the cgroup level (IPAddressAllow loopback + deny any).
+workspace_bin=""
+for candidate in \
+    "${repo_root}/bin/minti-workspace" \
+    "${repo_root}/workspace/minti-workspace" \
+    "${repo_root}/workspace/dist/minti-workspace-linux-amd64" \
+    "${repo_root}/workspace/dist/minti-workspace"; do
+    if [[ -x "${candidate}" ]]; then
+        workspace_bin="${candidate}"
+        break
+    fi
+done
+workspace_unit="$(first_existing \
+    "${repo_root}/systemd/minti-workspace.service" \
+    "${repo_root}/workspace/systemd/minti-workspace.service")" || workspace_unit=""
+
+workspace_status="skipped (binary not built)"
+if [[ -n "${workspace_bin}" && -n "${workspace_unit}" ]]; then
+    info "Installing minti-workspace (source: ${workspace_bin#${repo_root}/})..."
+
+    install -m 0755 "${workspace_bin}" /usr/local/bin/minti-workspace
+    workspace_new_hash="$(sha256sum /usr/local/bin/minti-workspace | awk '{print $1}')"
+
+    install -m 0644 "${workspace_unit}" /etc/systemd/system/minti-workspace.service
+    _svc daemon-reload
+
+    # Same restart-on-stale-binary pattern as minti-runtime/cland (B13).
+    workspace_should_restart=false
+    if systemctl is-active --quiet minti-workspace.service; then
+        workspace_pid="$(systemctl show -p MainPID --value minti-workspace.service)"
+        if [[ -n "${workspace_pid}" && "${workspace_pid}" != "0" ]]; then
+            workspace_running_hash="$(sha256sum "/proc/${workspace_pid}/exe" 2>/dev/null | awk '{print $1}')"
+            if [[ -z "${workspace_running_hash}" || "${workspace_running_hash}" != "${workspace_new_hash}" ]]; then
+                workspace_should_restart=true
+            fi
+        fi
+    fi
+    if [[ "${workspace_should_restart}" == "true" ]]; then
+        info "minti-workspace running stale binary — restarting service..."
+        _svc restart minti-workspace.service
+        workspace_status="restarted with new binary"
+    else
+        _svc enable --now minti-workspace.service
+        workspace_status="installed and started"
+    fi
+    ok "minti-workspace running on 127.0.0.1:8088 (loopback only)"
+else
+    warn "minti-workspace binary or unit not found; skipping. Build with:"
+    warn "  make workspace-linux  (binary)  — unit at workspace/systemd/"
+fi
+
 # ---------- minti-pack-fetch (M6-content — addon-pack content fetcher) ----------
 # Not a daemon; just a helper binary called by addon-pack postinst scripts.
 # The minti-pack-fetch.deb (built via `make pack-fetch-deb`) installs the
@@ -358,6 +473,7 @@ fi
 # to install pack-fetch.deb first.
 pack_fetch_bin=""
 for candidate in \
+    "${repo_root}/bin/minti-pack-fetch" \
     "${repo_root}/pack-manager/minti-pack-fetch" \
     "${repo_root}/pack-manager/dist/minti-pack-fetch-linux-amd64" \
     "${repo_root}/pack-manager/dist/minti-pack-fetch"; do
@@ -478,10 +594,11 @@ printf "%s%s══════════════════════�
 printf "  Host:    %s\n" "${PRETTY_NAME:-${ID} ${VERSION_ID}}"
 printf "  Arch:    %s\n" "${arch}"
 printf "  %s\n" "${gpu_summary}"
-printf "  Ollama:  %s\n" "$(ollama --version 2>&1 | head -1 || echo 'present')"
+printf "  Ollama:  %s\n" "${ollama_status}"
 printf "  Runtime: %s\n" "${runtime_status}"
 printf "  MCP:     %s\n" "${mcp_status}"
 printf "  Cland:   %s\n" "${cland_status}"
+printf "  Workspace: %s\n" "${workspace_status}"
 printf "  Pack-fetch: %s\n" "${pack_fetch_status}"
 printf "  opencode: %s\n" "${opencode_status}"
 printf "  Pack:    %s\n" "${pack_status}"
@@ -522,6 +639,46 @@ else
 fi
 printf "  8. This script is idempotent — safe to re-run after MINTI updates.\n"
 printf "  9. Run %sminti-fetch%s anytime to see your system + Clan + addons status.\n" "${bold}" "${reset}"
+if [[ "${workspace_status}" == *"installed"* || "${workspace_status}" == *"restarted"* ]]; then
+    printf " 10. The %sClan Workspace%s (web UI) is at http://127.0.0.1:8088 — loopback only.\n" "${bold}" "${reset}"
+    printf "     Headless box? Tunnel it:  ssh -L 8088:127.0.0.1:8088 <user>@<this-host>\n"
+fi
 printf "\n"
+
+# ---------- auto-open the workspace (door-B polish; D0 review F3/F7) ----------
+# Best-effort, never load-bearing: poll up to 30 s, open the browser as the
+# invoking (non-root) user when a display is around, print the URL always.
+# Skipped in the image-build chroot.
+if [[ "$MINTI_CHROOT" != "1" ]] && \
+   [[ "${workspace_status}" == *"installed"* || "${workspace_status}" == *"restarted"* ]]; then
+    workspace_url="http://127.0.0.1:8088"
+    workspace_up=false
+    for _ in $(seq 1 30); do
+        if curl -sf --max-time 2 "${workspace_url}/" >/dev/null 2>&1; then
+            workspace_up=true
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${workspace_up}" == "true" ]]; then
+        opened=false
+        if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" && -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] \
+           && command -v xdg-open >/dev/null 2>&1; then
+            # De-elevated open (D0 review F3): xdg-open as the human user,
+            # with just the display env it needs.
+            if sudo -u "${SUDO_USER}" --preserve-env=DISPLAY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR \
+                   xdg-open "${workspace_url}" >/dev/null 2>&1; then
+                opened=true
+                ok "Opened the Clan Workspace in your browser: ${workspace_url}"
+            fi
+        fi
+        if [[ "${opened}" != "true" ]]; then
+            ok "Clan Workspace is up: ${workspace_url}"
+        fi
+    else
+        warn "Workspace service installed but not answering after 30 s."
+        warn "Check: systemctl status minti-workspace ; journalctl -u minti-workspace -n 30"
+    fi
+fi
 
 exit 0

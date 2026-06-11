@@ -1,0 +1,25 @@
+# MINTI runtime adapter — macOS defaults (launchd-managed install).
+#
+# install-minti.sh drops this at
+#   /Library/Application Support/MINTI/runtime/runtime.yaml   (system)
+#   ~/Library/Application Support/MINTI/runtime/runtime.yaml  (per-user)
+# preserving any existing file on re-install. The launchd plist passes it
+# explicitly via --config (the binary's compiled-in default is the Linux
+# path /etc/minti/runtime.yaml).
+
+listen:
+  # Loopback only. The runtime is consumed by cland and the workspace on
+  # this machine; LAN traffic goes through cland's authenticated :7777.
+  address: "127.0.0.1"
+  port: 7780
+
+backend:
+  # Ollama on its default local port. Ollama.app on macOS is a per-user
+  # login item — that's fine: the runtime talks to 127.0.0.1:11434 no
+  # matter who started it, reports the backend honestly at /minti/health
+  # while it's down, and picks it up the moment it appears.
+  kind: "ollama"
+  # base_url: "http://127.0.0.1:11434"   # default; uncomment to override
+
+telemetry:
+  log_level: "info"

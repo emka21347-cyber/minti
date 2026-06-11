@@ -1,0 +1,54 @@
+[Unit]
+Description=MINTI Clan Workspace (web UI, loopback only until PIN/bearer auth lands)
+Documentation=https://github.com/minti
+After=network-online.target
+Wants=network-online.target
+# The workspace is INDEPENDENT of minti-cland — it shells the cland CLI
+# per request (clan.Probe) and degrades to demo/unconfigured data until
+# the daemon answers. Don't order After=minti-cland.service; no startup
+# dep chain needed (D0 review O3: probing is per-request, never sticky).
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/minti-workspace -listen 127.0.0.1:8088
+Restart=on-failure
+RestartSec=3
+User=minti
+Group=minti
+
+# HOME for the shelled minti-cland CLI (mirrors minti-cland.service's
+# redirect — the minti system user has no real home). Reads only; see
+# the ProtectSystem note below.
+Environment=HOME=/var/lib/minti/cland
+
+# Filesystem hardening — STRICTER than the daemons: the workspace writes
+# NOTHING, so there are no ReadWritePaths at all. The entire tree is
+# read-only to this unit and its children. The shelled minti-cland CLI
+# (same `minti` user that owns /var/lib/minti/cland) can READ the state
+# it needs; any accidental CLI write (e.g. identity creation on an
+# unconfigured box) fails closed into the UI's demo/unconfigured mode
+# instead of mutating state — the Linux mirror of the Windows install's
+# RX-only DACL grant (D0 review F1).
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadOnlyPaths=/etc/minti
+
+# Network — loopback ONLY, both families, enforced at the cgroup level
+# (explicit v4+v6 rather than the `localhost` alias — D0 review F4).
+# Covers the unit AND the shelled CLI's loopback HMAC call to :7777.
+# AF_NETLINK stays allowed: the CLI's `show` enumerates interfaces for
+# the LAN-address display (read-only netlink; blocking it would only
+# blank that field, but there's no reason to).
+IPAddressAllow=127.0.0.0/8 ::1/128
+IPAddressDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# Misc
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

@@ -52,7 +52,7 @@ LDFLAGS_REL   := $(LDFLAGS) -s -w
 GOFLAGS_REL   := -trimpath
 
 # ---------- Phony targets ----------
-.PHONY: help all runtime runtime-linux runtime-windows workspace workspace-linux workspace-windows minti-windows-zip \
+.PHONY: help all runtime runtime-linux runtime-windows workspace workspace-linux workspace-windows minti-windows-zip minti-linux-tarball minti-macos-tarball \
         cland cland-linux cland-windows cland-darwin-amd64 cland-darwin-arm64 cland-all-platforms cland-windows-zip cland-darwin-tarball \
         mcp mcp-linux mcptest mcptest-linux \
         pack-fetch pack-fetch-linux pack-fetch-deb \
@@ -89,6 +89,8 @@ help:
 	@echo "  make workspace-linux     — cross-compile minti-workspace for Linux amd64"
 	@echo "  make workspace-windows   — cross-compile minti-workspace for Windows amd64 (.exe)"
 	@echo "  make minti-windows-zip   — bundle the FULL-STACK Windows .zip (door B, Dist D1)"
+	@echo "  make minti-linux-tarball — bundle the FULL-STACK Linux .tar.gz (door B, Dist D2)"
+	@echo "  make minti-macos-tarball — bundle the FULL-STACK macOS .tar.gz x2 archs (door B, Dist D2)"
 	@echo "  make status              — build minti-status TUI dashboard (native)"
 	@echo "  make status-linux        — cross-compile minti-status for Linux amd64"
 	@echo "  make status-windows      — cross-compile minti-status for Windows amd64"
@@ -353,6 +355,17 @@ minti-windows-zip:
 	else \
 	  powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/windows/build-zip.ps1 -Version $(VERSION); \
 	fi
+
+# Bundle the FULL-STACK Linux distribution (door B, Dist D2):
+# all binaries + configs + units + install/uninstall scripts.
+# Produces dist/minti-linux-amd64-v$VERSION.tar.gz.
+minti-linux-tarball:
+	VERSION=$(VERSION) GO=$(GO) bash install/linux/build-tarball.sh
+
+# Bundle the FULL-STACK macOS distributions (door B, Dist D2):
+# 3 binaries + 3 plists + scripts, arm64 + amd64 tarballs.
+minti-macos-tarball:
+	VERSION=$(VERSION) GO=$(GO) bash install/macos/build-tarball.sh
 
 install-test:
 	@echo "TODO: run install/install.sh in a fresh Debian VM"
