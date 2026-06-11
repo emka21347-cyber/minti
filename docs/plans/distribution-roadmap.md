@@ -49,3 +49,31 @@ These parallelize: 2 is live-build config, 3 is a static site, 4 is Go. Differen
 2. OS track: re-enable firmware + add Calamares installer + harden/reproducible ISO.
 3. Vercel site: two doors (revive vs add-MINTI), host `.iso` + product-B installers.
 4. Android native node + WAN (parked).
+
+## Re-confirmed (user, 2026-06-11) + browser reality check
+
+User re-confirmed products **A + B as the deliverables** after asking whether a
+Vercel page could "take control of the system" directly from the browser.
+Recorded so it isn't re-litigated:
+
+- **A web page cannot install software, download models, open ports, or run
+  daemons — browsers are sandboxed by design.** Any "browser does everything"
+  experience is an illusion built on ONE manual step: the user runs a small
+  installer once; from then on the browser genuinely is the whole interface,
+  because the workspace runs on the machine and serves its UI locally. That
+  one step is a security feature, not a gap.
+- **Browsers never connect to each other.** Each machine runs the stack
+  (product B); each browser opens its OWN machine's workspace; the cland
+  daemons form the Clan underneath (knock flow = the onboarding). Same-LAN
+  works with what exists; cross-network is the parked WAN track (5).
+- **Browser-only nodes (zero install) rejected:** WASM in-browser models are
+  toy-scale, die with the tab, can't drive Ollama/GPU, and can't revive old
+  hardware — against the project's purpose (P2).
+- **Door-B polish adopted:** the product-B installer auto-opens
+  `http://127.0.0.1:8088` (the workspace) when it finishes, so the
+  page→install→Clan flow feels seamless. PWA manifest (already planned)
+  completes the app feel.
+- **Hosting cost posture:** Vercel free tier serves the page; the ~360 MB
+  `.iso` lives on a free artifact host (GitHub Releases / Cloudflare R2) that
+  the page links to — Vercel never hosts the big binaries and never runs a
+  node (unchanged locked decision).
