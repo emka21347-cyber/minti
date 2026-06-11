@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "workspace",
-      "runtimeExecutable": "C:\\Users\\aouad\\Documents\\CCode\\MINT\\MINT_wip\\workspace\\minti-workspace-m5.exe",
+      "runtimeExecutable": "C:\\Users\\aouad\\Documents\\CCode\\MINT\\MINT_wip\\workspace\\minti-workspace-dev.exe",
       "runtimeArgs": ["--listen", "127.0.0.1:8089"],
       "port": 8089
     },
