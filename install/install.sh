@@ -631,9 +631,14 @@ printf "       sudo apt install ./dist/minti-pack-wiki-simple_*.deb   # ~1.5 GB,
 printf "  6. Build & install the recon tool pack (Debian/Ubuntu only):\n"
 printf "       make pack-recon && sudo dpkg -i dist/minti-pack-recon_*.deb\n"
 if [[ "${cland_status}" == *"installed"* || "${cland_status}" == *"restarted"* ]]; then
-    printf "  7. Form a Clan (founder):\n"
-    printf "       sudo minti-cland create --address <this-host-LAN-ip>:7777\n"
-    printf "     Then have a peer run:  sudo minti-cland join --mnemonic '...' --address ...\n"
+    printf "  7. Join a Clan: open the workspace (step 10) and paste the connection\n"
+    printf "     token a member shared with you — the easiest path.\n"
+    printf "     Or from the CLI (run as the %sminti%s service user, flags BEFORE the\n" "${bold}" "${reset}"
+    printf "     message/positional — plain 'sudo' writes root-owned state the daemon\n"
+    printf "     can't read):\n"
+    printf "       sudo -u minti minti-cland join --config /etc/minti/cland.yaml --connect MINTI1-...\n"
+    printf "     To found your own Clan instead:\n"
+    printf "       sudo -u minti minti-cland create --config /etc/minti/cland.yaml --address <this-host-LAN-ip>:7777\n"
 else
     printf "  7. Build minti-cland: make cland-linux  (then re-run this installer)\n"
 fi

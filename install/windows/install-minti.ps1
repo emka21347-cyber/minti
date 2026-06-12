@@ -405,18 +405,21 @@ Write-Ok "$svcRuntime   -> NT SERVICE\$svcRuntime"
 Write-Ok "$svcWorkspace -> NT SERVICE\$svcWorkspace"
 Write-Ok "$svcCland     -> LocalSystem (M5-B precedent, upgraded in place)"
 
-# Workspace service environment — BOTH entries are load-bearing:
+# Workspace service environment — all three entries are load-bearing:
 #   PATH          lets exec.LookPath("minti-cland") find the CLI.
-#   LOCALAPPDATA  makes the CLI's non-LocalSystem default paths resolve to
-#                 the system state (paths_windows.go falls back to
-#                 %LOCALAPPDATA% for non-SYSTEM processes; the virtual
-#                 account's profile would be the wrong place).
+#   MINTI_CONFIG  points the shelled CLI straight at the system cland.yaml
+#                 (cland's DefaultConfigPath honors this env FIRST) — the
+#                 explicit, account-independent fix; matches the Linux unit.
+#   LOCALAPPDATA  kept as belt-and-braces for any CLI default path that is
+#                 not the config file (paths_windows.go falls back to
+#                 %LOCALAPPDATA% for non-SYSTEM processes).
 # Scoped to this service's registry key; removed with the service. cland
 # and runtime envs are deliberately untouched (an operator may have set
 # e.g. MINTI_CLAND_FORCE_HEALTHY on the M5-B service — preserved).
 $wsPath = "$dirCland;$env:SystemRoot\System32;$env:SystemRoot"
-& $nssmWorkspace set $svcWorkspace AppEnvironmentExtra "PATH=$wsPath" "LOCALAPPDATA=$env:ProgramData" | Out-Null
-Write-Ok 'workspace env: PATH includes cland dir; LOCALAPPDATA -> ProgramData'
+$wsConfig = Join-Path $stCland 'cland.yaml'
+& $nssmWorkspace set $svcWorkspace AppEnvironmentExtra "PATH=$wsPath" "MINTI_CONFIG=$wsConfig" "LOCALAPPDATA=$env:ProgramData" | Out-Null
+Write-Ok 'workspace env: PATH includes cland dir; MINTI_CONFIG + LOCALAPPDATA -> ProgramData'
 
 # ---------- 8. DACLs (strict base + least-privilege grants) ----------
 # One icacls call per state dir listing ALL its grants — idempotent on

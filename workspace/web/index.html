@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>MINTI Clan Workspace — mock</title>
-<!-- Reference mock for the Clan Workspace. Locked 2026-06-07.
-     The real frontend (Phase A) self-hosts the font + icons (offline-first);
-     this reference pulls them from CDN for fidelity. Fake data, real interactions. -->
+<title>MINTI Clan Workspace</title>
+<!-- The live Clan Workspace SPA. Real data via /api/* (shells minti-cland);
+     no simulated movement. Font + icons still CDN-pulled (self-hosting for
+     offline-first is a fast-follow). -->
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css" rel="stylesheet"/>
@@ -34,7 +34,7 @@
 <div id="mw" style="position:relative; background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5;">
   <div style="display:flex; align-items:center; gap:10px; padding:8px 13px; background:#141414; border-bottom:1px solid #242424;">
     <span style="color:var(--cyan);">&#9626;</span><span style="color:var(--mint); font-weight:500; letter-spacing:2px;">MINTI</span><span style="color:#5a5a5a;">workspace</span><span style="flex:1;"></span>
-    <span style="color:#6a6a6a; font-size:11px;">clan <span style="color:var(--label);">5725d958</span> &middot; founder &middot; term <span style="color:var(--label);">19</span> &middot; lease <span style="color:var(--mint);">6.2s</span></span>
+    <span id="hdr" style="color:#6a6a6a; font-size:11px;">connecting&hellip;</span>
     <span style="color:var(--mint); font-size:11px;"><i class="ti ti-lock" aria-hidden="true" style="vertical-align:-2px;"></i></span>
   </div>
 
@@ -51,13 +51,10 @@
       <div class="pane" id="p-home" style="display:flex; height:440px;">
         <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid #1c1c1c;">
           <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px;">
-            <i class="ti ti-message-2" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">chat</span><span style="color:#4a4a4a; font-size:11px;">&rarr; minti-b</span>
-            <select style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:1px 5px; margin-left:auto;"><option>hermes3:8b</option><option>mistral:7b</option></select>
+            <i class="ti ti-message-2" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">chat</span><span id="chat-orch" style="color:#4a4a4a; font-size:11px;">&rarr; clan</span>
+            <select id="chat-model" style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); border-radius:5px; font-size:11px; padding:1px 5px; margin-left:auto;"><option>hermes3:8b</option><option>mistral:7b</option></select>
           </div>
-          <div id="log" style="flex:1; overflow-y:auto; padding:11px 12px; font-size:12px; line-height:1.6;">
-            <div style="margin-bottom:11px;"><span style="color:var(--cyan);">you</span><br/><span style="color:#ddd;">who leads the clan and what can it run?</span></div>
-            <div style="margin-bottom:6px;"><span style="color:var(--mint);">hermes3</span> <span style="color:#444;">&middot; minti-b &middot; 41 tok/s</span><br/><span style="color:#ddd;">minti-b holds the lease (term 19) &mdash; it has the RTX 5090, so inference routes there. 4 active peers; the 2G thinkpad pools presence but doesn't infer.</span></div>
-          </div>
+          <div id="log" style="flex:1; overflow-y:auto; padding:11px 12px; font-size:12px; line-height:1.6;"></div>
           <div style="display:flex; gap:7px; padding:10px 12px; border-top:1px solid #161616;">
             <input id="cin" placeholder="ask the clan&hellip;" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:12px; height:32px; padding:0 8px;"/>
             <button id="csend" style="background:var(--mint); color:#003a22; border:none; padding:0 13px; border-radius:6px; cursor:pointer; font-size:12px;">send</button>
@@ -75,7 +72,7 @@
             <div id="det" style="background:var(--surface); border:1px solid var(--line); border-radius:7px; padding:7px 10px; font-size:10.5px; margin-top:4px;"></div>
           </div>
           <div style="margin:8px 12px 4px; display:flex; align-items:center; gap:6px; border-top:1px solid #1a1a1a; padding-top:7px;">
-            <span class="busy2" style="width:6px; height:6px; border-radius:50%; background:var(--mint);"></span><span style="font-size:11px; color:var(--grey);">live activity</span>
+            <span style="width:6px; height:6px; border-radius:50%; background:var(--mint);"></span><span style="font-size:11px; color:var(--grey);">roster</span>
           </div>
           <div id="feed" style="flex:1; overflow-y:auto; padding:0 12px 10px; font-size:11px; line-height:1.75;"></div>
         </div>
@@ -89,12 +86,12 @@
       <div class="pane" id="p-knocks" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
         <div style="font-size:14px; margin-bottom:10px;">Pending knocks</div><div id="klist"></div>
         <div style="margin-top:12px; border-top:1px solid #1c1c1c; padding-top:11px;">
-          <button id="mint" style="background:var(--mint); color:#003a22; border:none; padding:7px 13px; border-radius:6px; cursor:pointer; font-size:12px;"><i class="ti ti-plus" aria-hidden="true" style="vertical-align:-2px;"></i> mint 5-min invite</button>
+          <button id="mint" style="background:var(--mint); color:#003a22; border:none; padding:7px 13px; border-radius:6px; cursor:pointer; font-size:12px;"><i class="ti ti-plus" aria-hidden="true" style="vertical-align:-2px;"></i> mint connection token</button>
           <div id="ibox" style="display:none; margin-top:9px; background:var(--surface); border:1px solid var(--line); border-radius:7px; padding:10px; font-size:11px;"><div style="color:var(--grey); margin-bottom:5px;">expires in <span style="color:var(--mint);">4:58</span></div><code style="display:block; color:var(--cyan); background:var(--bg); padding:7px; border-radius:5px; font-size:10.5px; word-break:break-all;">minti-cland join --token aF3k&hellip;9Zx --address 192.168.56.101 --pin sha256:7e2b&hellip;</code></div>
         </div>
       </div>
       <div class="pane" id="p-cook" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
-        <div style="font-size:14px;">Cookbook</div><div style="color:#5a5a5a; font-size:11px; margin-bottom:11px;">this node: 2.1G ram &middot; cpu-only</div><div id="clist"></div>
+        <div style="font-size:14px;">Cookbook</div><div style="color:#5a5a5a; font-size:11px; margin-bottom:11px;">model packs &mdash; pull to this node via Ollama</div><div id="clist"></div>
       </div>
 
       <!-- Memory M5: the Clan Memory graph (spec §13) -->
@@ -156,64 +153,188 @@
     </div>
   </div>
 </div>
-<p style="font-family:var(--mono); font-size:11px; color:#5a5a5a; margin:8px 2px 0;">MINTI Clan Workspace &mdash; locked reference mock. Mesh + live activity share the right column. Send a chat, click a node, collapse the mesh, open knocks/cookbook.</p>
+<p style="font-family:var(--mono); font-size:11px; color:#5a5a5a; margin:8px 2px 0;">MINTI Clan Workspace &mdash; your browser is the whole interface. Loopback only (127.0.0.1:8088).</p>
 </div>
 
 <script>
 (function(){
-  var mw=document.getElementById('mw'), svg=document.getElementById('mesh'), NS='http://www.w3.org/2000/svg', feed=document.getElementById('feed'), det=document.getElementById('det');
+  var mw=document.getElementById('mw'), svg=document.getElementById('mesh'), NS='http://www.w3.org/2000/svg',
+      feed=document.getElementById('feed'), det=document.getElementById('det'),
+      hdr=document.getElementById('hdr'), log=document.getElementById('log'), cin=document.getElementById('cin');
   function el(t,a){ var e=document.createElementNS(NS,t); for(var k in a)e.setAttribute(k,a[k]); return e; }
-  var P={ self:{x:100,y:100,r:10}, orch:{x:100,y:32,r:9}, vmc:{x:158,y:66,r:8}, vmd:{x:158,y:134,r:8}, tp:{x:100,y:168,r:8}, c1:{x:42,y:134,r:6}, c2:{x:42,y:66,r:6} };
-  var INFO={ self:{n:'minti-a (this node)',c:'#ececec',b:'192.168.56.101 &middot; linux &middot; cpu-only &middot; r35'}, orch:{n:'♔ minti-b',c:'#00d787',b:'192.168.56.102 &middot; linux &middot; RTX 5090 32G &middot; r50'}, vmc:{n:'minti-c',c:'#5fd7ff',b:'192.168.56.103 &middot; windows &middot; RTX 3060 12G &middot; r44'}, vmd:{n:'minti-d',c:'#5fd7ff',b:'192.168.56.104 &middot; darwin &middot; M2 &middot; r41'}, tp:{n:'thinkpad-x230',c:'#5fd7ff',b:'192.168.56.150 &middot; linux &middot; 2G &middot; pools presence'}, c1:{n:'candidate',c:'#8a8a8a',b:'192.168.56.180 &middot; awaiting peer-add'}, c2:{n:'candidate',c:'#8a8a8a',b:'192.168.56.181 &middot; awaiting peer-add'} };
-  function spoke(a,b,col,w){ svg.appendChild(el('line',{x1:P[a].x,y1:P[a].y,x2:P[b].x,y2:P[b].y,stroke:col,'stroke-width':w})); }
-  ['orch','vmc','vmd','tp'].forEach(function(k){ spoke('self',k,'#1f5e6e',1.4); });
-  spoke('self','c1','#22343a',1); spoke('self','c2','#22343a',1);
-  ['vmc','vmd','tp'].forEach(function(k){ spoke('orch',k,'#11262c',0.8); });
-  var halo=el('circle',{cx:100,cy:100,r:15,fill:'none',stroke:'#00d787','stroke-width':2}); svg.appendChild(halo);
-  var busy=el('circle',{cx:P.vmc.x,cy:P.vmc.y,r:8,fill:'none',stroke:'#5fd7ff','stroke-width':1.5,class:'busy'}); busy.style.setProperty('--r0',8); busy.style.setProperty('--r1',15); svg.appendChild(busy);
-  var crown=el('text',{x:100,y:19,fill:'#00d787','font-size':12,'text-anchor':'middle'}); crown.textContent='♔'; svg.appendChild(crown);
-  function node(k){ var p=P[k],i=INFO[k]; var g=el('g',{class:'nd','data-id':k}); g.style.cursor='pointer';
-    if(k==='c1'||k==='c2') g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:'#0a0a0a',stroke:'#3a4a50','stroke-width':2,'stroke-dasharray':'2 2'}));
-    else if(k==='self'){ g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:'#ececec'})); g.appendChild(el('circle',{cx:p.x,cy:p.y,r:4.5,fill:'#0a0a0a'})); }
-    else g.appendChild(el('circle',{cx:p.x,cy:p.y,r:p.r,fill:k==='orch'?'#00d787':'#5fd7ff'}));
-    g.addEventListener('click',function(){ halo.setAttribute('cx',p.x); halo.setAttribute('cy',p.y); halo.setAttribute('r',p.r+5); det.innerHTML='<span style="color:'+i.c+'">'+i.n+'</span><br/><span style="color:#8a8a8a">'+i.b+'</span>'; });
-    svg.appendChild(g); }
-  ['orch','vmc','vmd','tp','c1','c2','self'].forEach(node);
-  det.innerHTML='<span style="color:#ececec">minti-a (this node)</span><br/><span style="color:#8a8a8a">192.168.56.101 &middot; linux &middot; cpu-only &middot; r35</span>';
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function api(path,opts){ return fetch(path,opts).then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||('http '+r.status)); return j; }); }); }
+  function shortId(id){ return id?id.slice(0,8):'?'; }
 
-  var flows=[];
-  function mk(a,b,col){ var d=el('circle',{r:2.4,fill:col}); svg.appendChild(d); flows.push({d:d,sx:P[a].x,sy:P[a].y,dx:P[b].x,dy:P[b].y,t:Math.random(),sp:0.007+Math.random()*0.006}); }
-  mk('self','orch','#7fe3ff'); mk('orch','self','#00d787'); mk('vmc','orch','#7fe3ff'); mk('orch','vmd','#00d787'); mk('tp','orch','#7fe3ff');
-  var gos={d:(function(){var g=el('circle',{r:2,fill:'#7a7a7a'}); svg.appendChild(g); return g;})(),sx:P.vmc.x,sy:P.vmc.y,dx:P.vmd.x,dy:P.vmd.y,t:0,sp:0.004};
-  function step(o){ o.t+=o.sp; if(o.t>=1)o.t=0; var x=o.sx+(o.dx-o.sx)*o.t,y=o.sy+(o.dy-o.sy)*o.t; o.d.setAttribute('cx',x); o.d.setAttribute('cy',y); o.d.setAttribute('opacity',o.t<0.12?o.t*8:(o.t>0.88?(1-o.t)*8:1)); }
-  (function frame(){ flows.forEach(step); step(gos); requestAnimationFrame(frame); })();
-  setInterval(function(){ var r=el('circle',{cx:P.orch.x,cy:P.orch.y,r:9,fill:'none',stroke:'#00d787','stroke-width':1.3,class:'hbring'}); svg.appendChild(r); r.addEventListener('animationend',function(){ if(r.parentNode)r.parentNode.removeChild(r); }); push('mint','♔ heartbeat &middot; term 19'); },2000);
-
-  var EV=[['cyan','minti-c &rarr; orch: embed batch'],['mint','orch &rarr; you: reply 412 tok'],['cyan','you &rarr; orch: /v1/messages'],['grey','minti-c &harr; vmd: revocation gossip'],['mint','orch &rarr; minti-d: dispatch vision'],['blue','knock from 192.168.56.190'],['mint','election settled &middot; 3/4 quorum'],['cyan','thinkpad: presence ping']];
-  var COL={cyan:'#7fe3ff',mint:'#00d787',grey:'#7a7a7a',blue:'#5fd7ff'};
-  function push(type,msg){ var c=COL[type]||'#8a8a8a'; var d=document.createElement('div'); d.className='fl'; d.innerHTML='<span style="color:'+c+';">&bull;</span> <span style="color:#bcbcbc;">'+msg+'</span>'; feed.insertBefore(d,feed.firstChild); while(feed.children.length>14) feed.removeChild(feed.lastChild); }
-  for(var i=0;i<5;i++){ var e=EV[i]; push(e[0],e[1]); }
-  setInterval(function(){ var e=EV[Math.floor(Math.random()*EV.length)]; push(e[0],e[1]); },1400);
-
+  // ---- nav + mesh collapse ----
   var meshcol=document.getElementById('meshcol'), spine=document.getElementById('meshspine');
   document.getElementById('mcol').addEventListener('click',function(){ meshcol.style.display='none'; spine.style.display='flex'; });
   spine.addEventListener('click',function(){ meshcol.style.display='flex'; spine.style.display='none'; });
   var PN={home:'p-home',knocks:'p-knocks',cook:'p-cook',memory:'p-memory'};
-  mw.querySelectorAll('.nav').forEach(function(n){ n.addEventListener('click',function(){ mw.querySelectorAll('.nav').forEach(function(x){ x.style.background='transparent'; x.style.color='#8a8a8a'; }); n.style.background='#16201e'; n.style.color='#00d787'; Object.keys(PN).forEach(function(key){ document.getElementById(PN[key]).style.display='none'; }); var p=n.getAttribute('data-p'); var t=document.getElementById(PN[p]); t.style.display=(p==='home'||p==='memory')?'flex':'block'; if(p==='memory'&&window.__memShow) window.__memShow(); }); });
+  mw.querySelectorAll('.nav').forEach(function(n){ n.addEventListener('click',function(){
+    mw.querySelectorAll('.nav').forEach(function(x){ x.style.background='transparent'; x.style.color='#8a8a8a'; });
+    n.style.background='#16201e'; n.style.color='#00d787';
+    Object.keys(PN).forEach(function(key){ document.getElementById(PN[key]).style.display='none'; });
+    var p=n.getAttribute('data-p'), t=document.getElementById(PN[p]);
+    t.style.display=(p==='home'||p==='memory')?'flex':'block';
+    if(p==='memory'&&window.__memShow) window.__memShow();
+    if(p==='knocks') fetchKnocks();
+    if(p==='cook') fetchCookbook();
+  }); });
 
-  var K=[{id:'k1',w:'192.168.56.190',sas:'4731-82905'},{id:'k2',w:'192.168.56.191',sas:'1208-44617'}];
-  function rK(){ var h=''; if(!K.length)h='<div style="color:#5a5a5a; font-size:12px;">no pending knocks.</div>'; K.forEach(function(k){ h+='<div id="x-'+k.id+'" style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="color:#eee; margin-bottom:3px;"><i class="ti ti-door-enter" aria-hidden="true" style="color:#5fd7ff; vertical-align:-2px;"></i> from <span style="color:#bcbcbc;">'+k.w+'</span></div><div style="color:#8a8a8a;">verify SAS:</div><div style="color:#00d787; font-size:17px; letter-spacing:3px; margin:5px 0;">'+k.sas+'</div><button class="ac" data-k="'+k.id+'" style="background:#00d787; color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">matches &rarr; accept</button> <button class="dn" data-k="'+k.id+'" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">deny</button></div>'; }); document.getElementById('klist').innerHTML=h; document.querySelectorAll('.ac').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),1); }); }); document.querySelectorAll('.dn').forEach(function(b){ b.addEventListener('click',function(){ rs(b.getAttribute('data-k'),0); }); }); }
-  function rs(id,ok){ document.getElementById('x-'+id).innerHTML=ok?'<div style="color:#00d787;"><i class="ti ti-check" aria-hidden="true"></i> accepted &mdash; roster updated.</div>':'<div style="color:#c06;"><i class="ti ti-x" aria-hidden="true"></i> denied.</div>'; if(ok)push('blue','knock accepted &middot; roster +1'); K=K.filter(function(k){return k.id!==id;}); var b=document.getElementById('kb'); if(K.length)b.textContent=K.length; else b.style.display='none'; }
-  rK(); document.getElementById('mint').addEventListener('click',function(){ document.getElementById('ibox').style.display='block'; });
+  // ---- header + mesh (real /api/mesh) ----
+  var lastOrch='';
+  function renderHeader(s){
+    if(s.source==='unconfigured'){ hdr.innerHTML='<span style="color:#c96;">not connected</span>'; return; }
+    if(s.source==='demo'){ hdr.innerHTML='<span style="color:#c96;">demo mode</span> &middot; install + join for live data'; return; }
+    var lease=s.lease_left_sec?('lease <span style="color:var(--mint);">'+s.lease_left_sec.toFixed(1)+'s</span>'):'';
+    hdr.innerHTML='clan <span style="color:var(--label);">'+esc(shortId(s.clan_id))+'</span> &middot; '+esc(s.role||'')+' &middot; term <span style="color:var(--label);">'+(s.term||0)+'</span> &middot; '+lease;
+    var oc=document.getElementById('chat-orch');
+    if(oc) oc.innerHTML='&rarr; '+(s.is_self_orchestrator?'self':esc(shortId(s.orchestrator)));
+  }
+  var halo=el('circle',{cx:100,cy:100,r:0,fill:'none',stroke:'#00d787','stroke-width':2});
+  function renderMesh(s){
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    var ms=s.members||[], self=ms.filter(function(m){return m.is_self;})[0]||{id:s.self_member_id,address:s.self_address,state:'self'};
+    var others=ms.filter(function(m){return !m.is_self;});
+    var cx=100, cy=100, R=64;
+    // spokes self -> others
+    others.forEach(function(m,i){ var a=(-Math.PI/2)+i*2*Math.PI/Math.max(others.length,1); var x=cx+R*Math.cos(a), y=cy+R*Math.sin(a); m._x=x; m._y=y;
+      svg.appendChild(el('line',{x1:cx,y1:cy,x2:x,y2:y,stroke:m.is_orchestrator?'#1f5e6e':'#22343a','stroke-width':m.is_orchestrator?1.4:1})); });
+    svg.appendChild(halo);
+    function drawNode(m,x,y){ var r=m.is_self?9:(m.state==='candidate'?6:8);
+      var g=el('g',{}); g.style.cursor='pointer';
+      if(m.state==='candidate') g.appendChild(el('circle',{cx:x,cy:y,r:r,fill:'#0a0a0a',stroke:'#3a4a50','stroke-width':2,'stroke-dasharray':'2 2'}));
+      else if(m.is_self){ g.appendChild(el('circle',{cx:x,cy:y,r:r,fill:'#ececec'})); g.appendChild(el('circle',{cx:x,cy:y,r:4.5,fill:'#0a0a0a'})); }
+      else g.appendChild(el('circle',{cx:x,cy:y,r:r,fill:m.is_orchestrator?'#00d787':'#5fd7ff'}));
+      if(m.is_orchestrator){ var cr=el('text',{x:x,y:y-r-3,fill:'#00d787','font-size':11,'text-anchor':'middle'}); cr.textContent='♚'; g.appendChild(cr); }
+      g.addEventListener('click',function(){ halo.setAttribute('cx',x); halo.setAttribute('cy',y); halo.setAttribute('r',r+5);
+        var os=m.os?(' &middot; '+esc(m.os)):''; var sc=(m.reasoning_score?(' &middot; r'+m.reasoning_score):'');
+        det.innerHTML='<span style="color:'+(m.is_self?'#ececec':(m.is_orchestrator?'#00d787':'#5fd7ff'))+'">'+(m.is_orchestrator?'♚ ':'')+esc(m.name||shortId(m.id))+(m.is_self?' (this node)':'')+'</span><br/><span style="color:#8a8a8a">'+esc(m.address||'')+os+sc+'</span>'; });
+      svg.appendChild(g); }
+    others.forEach(function(m){ drawNode(m,m._x,m._y); });
+    drawNode(self,cx,cy);
+    // active count + roster list
+    var active=ms.filter(function(m){return m.state!=='candidate';}).length;
+    var ac=svg.parentNode.parentNode.querySelector('span[style*="font-size:11px"]');
+    var rosterH=ms.map(function(m){ var col=m.is_self?'#ececec':(m.is_orchestrator?'#00d787':(m.state==='candidate'?'#6a6a6a':'#5fd7ff'));
+      return '<div><span style="color:'+col+';">'+(m.is_orchestrator?'♚ ':'')+esc(m.name||shortId(m.id))+'</span> <span style="color:#5a5a5a;">'+esc(m.address||m.state)+'</span></div>'; }).join('');
+    feed.innerHTML=rosterH;
+    // detail defaults to self once
+    if(!det.dataset.init){ det.dataset.init='1'; det.innerHTML='<span style="color:#ececec">'+esc(shortId(self.id))+' (this node)</span><br/><span style="color:#8a8a8a">'+esc(self.address||'')+'</span>'; }
+  }
 
-  var log=document.getElementById('log'), cin=document.getElementById('cin');
-  function reply(){ var txt='Routing to minti-b (lease holder) — hermes3:8b on the 5090. The thinkpad pools presence; the orchestrator answers.'; var d=document.createElement('div'); d.style.marginBottom='6px'; d.innerHTML='<span style="color:#00d787;">hermes3</span> <span style="color:#444;">&middot; minti-b &middot; streaming&hellip;</span><br/><span class="st" style="color:#ddd;"></span>'; log.appendChild(d); var s=d.querySelector('.st'),i=0,t=setInterval(function(){ s.textContent=txt.slice(0,i); i+=3; log.scrollTop=log.scrollHeight; if(i>txt.length)clearInterval(t); },22); }
-  function snd(){ var q=cin.value.trim(); if(!q)return; var u=document.createElement('div'); u.style.marginBottom='11px'; u.innerHTML='<span style="color:#5fd7ff;">you</span><br/><span style="color:#ddd;"></span>'; u.querySelector('span:last-child').textContent=q; log.appendChild(u); cin.value=''; log.scrollTop=log.scrollHeight; push('cyan','you &rarr; orch: /v1/messages'); setTimeout(reply,250); }
-  document.getElementById('csend').addEventListener('click',snd); cin.addEventListener('keydown',function(e){ if(e.key==='Enter')snd(); });
+  // ---- join overlay (shown when unconfigured) ----
+  var joinOverlay=null;
+  function showJoin(){
+    if(joinOverlay){ joinOverlay.style.display='flex'; return; }
+    joinOverlay=document.createElement('div');
+    joinOverlay.style.cssText='position:absolute; inset:0; background:rgba(4,6,6,.92); z-index:20; display:flex; align-items:center; justify-content:center;';
+    joinOverlay.innerHTML='<div style="width:380px; max-width:90%; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:20px;">'
+      +'<div style="color:var(--mint); font-size:14px; margin-bottom:6px;">▚ Join a Clan</div>'
+      +'<div style="color:var(--label); font-size:12px; line-height:1.55; margin-bottom:12px;">Paste the connection token a Clan member shared with you. Your node will join and this dashboard goes live.</div>'
+      +'<textarea id="join-tok" placeholder="MINTI1-…" rows="3" style="width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:11px; padding:8px; border-radius:6px; resize:vertical; word-break:break-all;"></textarea>'
+      +'<div id="join-err" style="color:#c96; font-size:11px; min-height:15px; margin:5px 0;"></div>'
+      +'<button id="join-go" style="width:100%; background:var(--mint); color:#003a22; border:none; padding:9px; border-radius:6px; cursor:pointer; font-size:13px;">connect</button>'
+      +'<div id="join-status" style="color:var(--grey); font-size:11px; text-align:center; margin-top:8px;"></div></div>';
+    mw.appendChild(joinOverlay);
+    var go=joinOverlay.querySelector('#join-go'), errd=joinOverlay.querySelector('#join-err'), statusd=joinOverlay.querySelector('#join-status');
+    go.addEventListener('click',function(){
+      var tok=joinOverlay.querySelector('#join-tok').value.trim(); errd.textContent='';
+      if(!tok){ errd.textContent='paste a connection token first'; return; }
+      go.disabled=true; go.textContent='joining…'; statusd.textContent='';
+      api('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connect:tok})})
+        .then(function(){ statusd.textContent='joined — node restarting, connecting…'; pollLive(); })
+        .catch(function(e){ go.disabled=false; go.textContent='connect'; errd.textContent=e.message; });
+    });
+  }
+  function hideJoin(){ if(joinOverlay) joinOverlay.style.display='none'; }
+  function pollLive(){ // after join, the daemon restarts; poll until live then reload
+    var tries=0; var iv=setInterval(function(){ tries++;
+      fetch('/api/mesh').then(function(r){return r.json();}).then(function(s){
+        if(s.source!=='unconfigured'){ clearInterval(iv); location.reload(); }
+        else if(tries>30){ clearInterval(iv); var sd=joinOverlay&&joinOverlay.querySelector('#join-status'); if(sd) sd.textContent='still connecting… give it a moment or reload'; }
+      }).catch(function(){});
+    },2000);
+  }
 
-  var PK=[{n:'minti-pack-hermes3',d:'Hermes 3 &middot; 8B &middot; ~5G',f:'needs 6G &mdash; won\'t fit on this 2.1G node',ok:0},{n:'minti-pack-mistral',d:'Mistral &middot; 7B &middot; ~4.4G',f:'fits on a peer with 8G+ vram',ok:1},{n:'minti-pack-wiki-simple',d:'Simple Wikipedia &middot; 937M',f:'fits &mdash; disk only',ok:1}];
-  function rC(){ var h=''; PK.forEach(function(p,i){ h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;"><div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+p.n+'</span><span style="flex:1;"></span>'+(p.ok?'<button class="in" data-i="'+i+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button>':'<span style="color:#a55; font-size:11px;"><i class="ti ti-alert-triangle" aria-hidden="true"></i> won\'t fit</span>')+'</div><div style="color:#8a8a8a; margin-top:3px;">'+p.d+'</div><div style="color:'+(p.ok?'#5a5a5a':'#a55')+'; font-size:11px;">'+p.f+'</div><div class="pg" data-i="'+i+'" style="display:none; height:5px; background:#0a0a0a; border-radius:3px; margin-top:7px; overflow:hidden;"><div style="height:100%; width:0; background:#00d787;"></div></div></div>'; }); document.getElementById('clist').innerHTML=h; document.querySelectorAll('.in').forEach(function(b){ b.addEventListener('click',function(){ var bar=document.querySelector('.pg[data-i="'+b.getAttribute('data-i')+'"]'); bar.style.display='block'; var f=bar.firstChild,w=0; b.disabled=true; b.textContent='fetching&hellip;'; var t=setInterval(function(){ w+=4; f.style.width=Math.min(w,100)+'%'; if(w>=100){ clearInterval(t); b.textContent='installed'; b.style.background='#1a3a2a'; b.style.color='#5fd7ff'; push('mint','pack installed &middot; minti-pack-mistral'); } },85); }); }); }
-  rC();
+  function refresh(){ return api('/api/mesh').then(function(s){ renderHeader(s);
+    if(s.source==='unconfigured'){ showJoin(); } else { hideJoin(); renderMesh(s); } return s;
+  }).catch(function(e){ hdr.innerHTML='<span style="color:#c66;">'+esc(e.message)+'</span>'; }); }
+  refresh(); setInterval(refresh,3000);
+
+  // ---- chat (real streaming) ----
+  function bubble(label,labelColor){
+    var d=document.createElement('div'); d.style.marginBottom='9px';
+    d.innerHTML='<span style="color:'+labelColor+';">'+esc(label)+'</span><br/><span class="bd" style="color:#ddd; white-space:pre-wrap;"></span>';
+    log.appendChild(d); log.scrollTop=log.scrollHeight; return d.querySelector('.bd');
+  }
+  function snd(){ var q=cin.value.trim(); if(!q)return;
+    bubble('you','#5fd7ff').textContent=q; cin.value='';
+    var model=document.getElementById('chat-model').value;
+    var bd=bubble(model,'#00d787'); bd.textContent='…';
+    var first=true;
+    fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q,model:model})})
+      .then(function(resp){
+        if(!resp.ok){ return resp.text().then(function(t){ bd.textContent='[error: '+(t||resp.status)+']'; }); }
+        var reader=resp.body.getReader(), dec=new TextDecoder();
+        function pump(){ return reader.read().then(function(r){ if(r.done)return;
+          if(first){ bd.textContent=''; first=false; }
+          bd.textContent+=dec.decode(r.value,{stream:true}); log.scrollTop=log.scrollHeight; return pump(); }); }
+        return pump();
+      })
+      .catch(function(e){ bd.textContent+='\n[error: '+e.message+']'; });
+  }
+  document.getElementById('csend').addEventListener('click',snd);
+  cin.addEventListener('keydown',function(e){ if(e.key==='Enter')snd(); });
+
+  // ---- knocks ----
+  function fetchKnocks(){ api('/api/knocks').then(renderKnocks).catch(function(e){ document.getElementById('klist').innerHTML='<div style="color:#c66; font-size:12px;">'+esc(e.message)+'</div>'; }); }
+  function renderKnocks(j){ var ks=(j&&j.knocks)||[]; var kb=document.getElementById('kb');
+    if(ks.length){ kb.textContent=ks.length; kb.style.display=''; } else { kb.style.display='none'; }
+    if(!ks.length){ document.getElementById('klist').innerHTML='<div style="color:#5a5a5a; font-size:12px;">no pending knocks.</div>'; return; }
+    var h=''; ks.forEach(function(k){ var id=k.knock_id||k.id; h+='<div id="x-'+esc(id)+'" style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;">'
+      +'<div style="color:#eee; margin-bottom:3px;"><i class="ti ti-door-enter" aria-hidden="true" style="color:#5fd7ff; vertical-align:-2px;"></i> from <span style="color:#bcbcbc;">'+esc(k.joiner_member_id?shortId(k.joiner_member_id):(k.address||'?'))+'</span></div>'
+      +'<div style="color:#8a8a8a;">verify SAS matches the joiner:</div>'
+      +'<div style="color:#00d787; font-size:17px; letter-spacing:3px; margin:5px 0;">'+esc(k.sas||'')+'</div>'
+      +'<button class="ac" data-k="'+esc(id)+'" style="background:#00d787; color:#003a22; border:none; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">matches &rarr; accept</button> '
+      +'<button class="dn" data-k="'+esc(id)+'" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:5px 11px; border-radius:6px; cursor:pointer; font-size:11px;">deny</button></div>'; });
+    document.getElementById('klist').innerHTML=h;
+    document.querySelectorAll('.ac').forEach(function(b){ b.addEventListener('click',function(){ knockAct(b.getAttribute('data-k'),true); }); });
+    document.querySelectorAll('.dn').forEach(function(b){ b.addEventListener('click',function(){ knockAct(b.getAttribute('data-k'),false); }); });
+  }
+  function knockAct(id,ok){ var box=document.getElementById('x-'+id); box.style.opacity='.5';
+    api('/api/knock/'+(ok?'accept':'deny'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})
+      .then(function(){ box.innerHTML=ok?'<div style="color:#00d787;"><i class="ti ti-check"></i> accepted — roster updated.</div>':'<div style="color:#c06;"><i class="ti ti-x"></i> denied.</div>'; setTimeout(fetchKnocks,1200); })
+      .catch(function(e){ box.style.opacity='1'; box.querySelector('.ac')&&(box.innerHTML+='<div style="color:#c66; font-size:11px;">'+esc(e.message)+'</div>'); });
+  }
+  // mint invite -> connection token
+  document.getElementById('mint').addEventListener('click',function(){
+    var ibox=document.getElementById('ibox'); ibox.style.display='block';
+    ibox.innerHTML='<div style="color:var(--grey);">minting…</div>';
+    api('/api/invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ttl_seconds:3600})})
+      .then(function(r){ ibox.innerHTML='<div style="color:var(--grey); margin-bottom:5px;">share this connection token (valid 1h, single use):</div>'
+        +'<code style="display:block; color:var(--cyan); background:var(--bg); padding:7px; border-radius:5px; font-size:10.5px; word-break:break-all; cursor:pointer;" title="click to copy">'+esc(r.connect)+'</code>';
+        var code=ibox.querySelector('code'); code.addEventListener('click',function(){ navigator.clipboard&&navigator.clipboard.writeText(r.connect); code.style.color='#00d787'; }); })
+      .catch(function(e){ ibox.innerHTML='<div style="color:#c66;">'+esc(e.message)+'</div>'; });
+  });
+
+  // ---- cookbook ----
+  function fetchCookbook(){ api('/api/cookbook').then(renderCookbook).catch(function(e){ document.getElementById('clist').innerHTML='<div style="color:#c66; font-size:12px;">'+esc(e.message)+'</div>'; }); }
+  function renderCookbook(j){ var packs=(j&&j.packs)||[]; var h='';
+    packs.forEach(function(p){ h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;">'
+      +'<div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+esc(p.name)+'</span><span style="color:#5a5a5a;">'+esc(p.size)+'</span><span style="flex:1;"></span>'
+      +'<button class="in" data-t="'+esc(p.name)+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button></div>'
+      +'<div style="color:#8a8a8a; margin-top:3px;">'+esc(p.desc)+' &middot; '+esc(p.need_ram)+'</div>'
+      +'<div class="cmd" style="display:none; margin-top:7px; color:var(--cyan); background:var(--bg); padding:6px 8px; border-radius:5px; font-size:10.5px;"></div></div>'; });
+    document.getElementById('clist').innerHTML=h;
+    document.querySelectorAll('.in').forEach(function(b){ b.addEventListener('click',function(){
+      var cmdBox=b.parentNode.parentNode.querySelector('.cmd');
+      api('/api/cookbook/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.getAttribute('data-t')})})
+        .then(function(r){ cmdBox.style.display='block'; cmdBox.textContent='run on this node:  '+r.command; })
+        .catch(function(e){ cmdBox.style.display='block'; cmdBox.style.color='#c66'; cmdBox.textContent=e.message; });
+    }); });
+  }
 })();
 </script>
 <script>

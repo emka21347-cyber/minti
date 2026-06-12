@@ -92,6 +92,8 @@ func main() {
 			err = cmdShow(os.Args[2:])
 		case "memory":
 			err = cmdMemory(os.Args[2:])
+		case "chat":
+			err = cmdChat(os.Args[2:])
 		case "scribe":
 			err = cmdScribe(os.Args[2:])
 		case "pin-scribe":
@@ -136,10 +138,13 @@ Usage:
   minti-cland                          daemon mode (default)
   minti-cland create [flags]           found a new Clan; prints paste-key
        --from-blueprint f.json         inherit a Clan Blueprint's memory (§13.10)
-  minti-cland invite [--ttl 1h]        mint a single-use join token
+  minti-cland invite [--ttl 1h] [--connect]
+                                       mint a join token (--connect = one blob)
   minti-cland join [flags]             join an existing Clan
-       --mnemonic "..." --address ip:port --pin sha256:...
+       --connect MINTI1-...            single connection token (token+address+pin)
+       OR  --mnemonic "..." --address ip:port --pin sha256:...
        OR  --token <base64> --address ip:port --pin sha256:...
+  minti-cland chat [--model m] <msg>   chat through the Clan (streams the reply)
   minti-cland leave                    wipe local Clan state
   minti-cland revoke <member_id> [--reason "..."]
                                        kick a member
@@ -231,11 +236,29 @@ func runDaemon(args []string) error {
 	defer stop()
 
 	if !clan.IsActive() {
-		log.Info("clan state: unaffiliated — daemon idle", "hint", "run `minti-cland create` or `minti-cland join`")
+		log.Info("clan state: unaffiliated — daemon idle", "hint", "run `minti-cland create`/`join`, or paste a connection token in the workspace")
 		log.Info("minti-cland started", "version", version)
-		<-ctx.Done()
-		log.Info("shutdown signal received")
-		return nil
+		// Watch for an out-of-process join: the workspace shells
+		// `minti-cland join`, which writes clan.json. When we become
+		// affiliated, exit nonzero so the service manager restarts us into
+		// the full active path below — systemd Restart=on-failure, launchd
+		// KeepAlive{SuccessfulExit:false}, and NSSM's default-restart all
+		// honor a nonzero exit. The ~RestartSec blip (2-5s) is the join
+		// "connecting…" window the dashboard polls through.
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info("shutdown signal received")
+				return nil
+			case <-ticker.C:
+				if c, err := store.LoadClan(); err == nil && c.IsActive() {
+					log.Info("clan joined out-of-process — restarting into active mode", "clan_id", c.ClanID, "role", c.Role)
+					os.Exit(3)
+				}
+			}
+		}
 	}
 
 	// Clan is active → bring up the transport server + membership service.
@@ -862,6 +885,7 @@ func cmdInvite(args []string) error {
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	ttl := fs.Duration("ttl", time.Hour, "token validity (60s..24h)")
 	jsonOut := fs.Bool("json", false, "output the invite response as JSON")
+	connect := fs.Bool("connect", false, "emit a single shareable connection token (MINTI1-…)")
 	_ = fs.Parse(args)
 
 	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
@@ -895,8 +919,19 @@ func cmdInvite(args []string) error {
 		return err
 	}
 
+	blob := encodeConnectBlob(ir.Token, ir.LANAddress, ir.ClanCertPin)
+
 	if *jsonOut {
-		return json.NewEncoder(os.Stdout).Encode(ir)
+		// Wrap (don't mutate the shared InviteResponse type) to add the blob.
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			membership.InviteResponse
+			Connect string `json:"connect"`
+		}{ir, blob})
+	}
+	if *connect {
+		// Just the one shareable string — for piping/copying.
+		fmt.Println(blob)
+		return nil
 	}
 	fmt.Println("Invite token minted (single-use; share over a trusted channel).")
 	fmt.Println()
@@ -906,7 +941,10 @@ func cmdInvite(args []string) error {
 	fmt.Printf("  Token:      %s\n", ir.Token)
 	fmt.Printf("  Expires at: %s\n", ir.ExpiresAt)
 	fmt.Println()
-	fmt.Println("Joiner runs:")
+	fmt.Println("Connection token (paste this one string into the dashboard, or `join --connect`):")
+	fmt.Printf("  %s\n", blob)
+	fmt.Println()
+	fmt.Println("Or run the three-field form:")
 	fmt.Printf("  minti-cland join --token %s --address %s --pin %s\n", ir.Token, ir.LANAddress, ir.ClanCertPin)
 	return nil
 }
@@ -921,13 +959,23 @@ func cmdJoin(args []string) error {
 	token := fs.String("token", "", "invite token (omit if using --mnemonic)")
 	address := fs.String("address", "", "LAN address of an existing member: ip:port (required)")
 	pin := fs.String("pin", "", "sha256:<hex> cert pin (required)")
+	connect := fs.String("connect", "", "single connection token (MINTI1-…); supplies token+address+pin")
 	_ = fs.Parse(args)
 
+	// A connection token expands to token+address+pin — the one-paste path.
+	if *connect != "" {
+		t, a, p, err := decodeConnectBlob(*connect)
+		if err != nil {
+			return err
+		}
+		*token, *address, *pin = t, a, p
+	}
+
 	if *address == "" || *pin == "" {
-		return errors.New("--address and --pin are required")
+		return errors.New("--address and --pin are required (or pass --connect)")
 	}
 	if (*mnemonic == "" && *token == "") || (*mnemonic != "" && *token != "") {
-		return errors.New("provide exactly one of --mnemonic or --token")
+		return errors.New("provide exactly one of --mnemonic or --token (or --connect)")
 	}
 
 	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)

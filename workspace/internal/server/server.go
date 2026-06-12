@@ -3,23 +3,29 @@
 // snapshot; Memory M5 adds the spec §13 memory surface. SSE (/api/events) and
 // PIN/bearer auth land in the next increments.
 //
-// SECURITY (spec §13.6 workspace caveat): every MUTATING route below — the
-// /api/memory POSTs — ships loopback-only (main.go binds 127.0.0.1) and MUST
-// be enumerated in the PIN/bearer middleware when it lands:
+// SECURITY (spec §13.6 workspace caveat): every MUTATING route below ships
+// loopback-only (main.go binds 127.0.0.1) and MUST be enumerated in the
+// PIN/bearer middleware when it lands:
 //
+//	POST /api/join             POST /api/chat
+//	POST /api/invite           POST /api/knock/accept   POST /api/knock/deny
+//	POST /api/cookbook/install
 //	POST /api/memory/node      POST /api/memory/edge
 //	POST /api/memory/archive   POST /api/memory/import
 //
-// GET /api/memory/blueprint is read-only but EXPORTS distilled chat content;
-// gate it with the same auth when LAN exposure arrives.
+// /api/join changes Clan membership and /api/invite mints join tokens — both
+// are especially sensitive. GET /api/memory/blueprint is read-only but EXPORTS
+// distilled chat content; gate it with the same auth when LAN exposure arrives.
 package server
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/minti/workspace/internal/clan"
@@ -43,9 +49,150 @@ func New(webFS fs.FS) *Server {
 	})
 
 	mux.HandleFunc("GET /api/mesh", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		// Probe shells show + orchestrator + peers (3 local CLI calls); 3s budget.
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		writeJSON(w, clan.Probe(ctx))
+	})
+
+	// POST /api/join — paste a connection token (or token+address+pin) to
+	// join the Clan. Shells `minti-cland join`; the idle daemon then restarts
+	// itself into active mode and the SPA polls /api/mesh until live.
+	mux.HandleFunc("POST /api/join", func(w http.ResponseWriter, r *http.Request) {
+		var req clan.JoinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := clan.Join(ctx, req); err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// POST /api/chat — STREAMING. Relays `minti-cland chat` stdout to the
+	// browser token-by-token. No response timeout (chat can run minutes); the
+	// request context cancels the shelled CLI on client disconnect.
+	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Message string `json:"message"`
+			Model   string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Message) == "" {
+			httpError(w, http.StatusBadRequest, errors.New("message required"))
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			httpError(w, http.StatusInternalServerError, errors.New("streaming unsupported"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		if err := clan.ChatStream(r.Context(), req.Message, req.Model, w, flusher.Flush); err != nil {
+			// 200 + headers already sent — surface the error inside the stream
+			// so the SPA can show it in the chat bubble.
+			_, _ = io.WriteString(w, "\n[chat error: "+err.Error()+"]")
+			flusher.Flush()
+		}
+	})
+
+	// GET /api/peers — live registry (members + candidates), relayed verbatim.
+	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		raw, err := clan.Peers(ctx)
+		if err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeRaw(w, raw)
+	})
+
+	// POST /api/invite — mint a single-use connection token (founder hands it
+	// to a tester). Body: {ttl_seconds}. Returns the CLI's --json incl. connect.
+	mux.HandleFunc("POST /api/invite", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			TTLSeconds int `json:"ttl_seconds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+		defer cancel()
+		raw, err := clan.Invite(ctx, req.TTLSeconds)
+		if err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeRaw(w, raw)
+	})
+
+	// GET /api/knocks — pending knock requests awaiting approval.
+	mux.HandleFunc("GET /api/knocks", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		raw, err := clan.Knocks(ctx)
+		if err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeRaw(w, raw)
+	})
+
+	mux.HandleFunc("POST /api/knock/accept", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ ID string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		if err := clan.KnockAccept(ctx, req.ID); err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("POST /api/knock/deny", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ ID, Reason string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		if err := clan.KnockDeny(ctx, req.ID, req.Reason); err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// GET /api/cookbook — static model-pack manifest (v0.5: read-only).
+	mux.HandleFunc("GET /api/cookbook", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{"packs": clan.CookbookPacks()})
+	})
+
+	// POST /api/cookbook/install — returns the copy-paste `ollama pull` command
+	// (real one-click install is a fast-follow).
+	mux.HandleFunc("POST /api/cookbook/install", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		cmd, err := clan.CookbookInstallCmd(req.Name)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"command": cmd})
 	})
 
 	// ----- Memory M5: the spec §13 graph surface -----

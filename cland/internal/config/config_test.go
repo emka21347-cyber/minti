@@ -25,6 +25,19 @@ func TestDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigPath_MintiConfigOverride(t *testing.T) {
+	const want = "/some/explicit/cland.yaml"
+	t.Setenv("MINTI_CONFIG", want)
+	if got := DefaultConfigPath(); got != want {
+		t.Errorf("DefaultConfigPath with MINTI_CONFIG set = %q, want %q", got, want)
+	}
+	// Empty MINTI_CONFIG must fall through to the canonical path, not "".
+	t.Setenv("MINTI_CONFIG", "")
+	if got := DefaultConfigPath(); got == "" || got == want {
+		t.Errorf("DefaultConfigPath with empty MINTI_CONFIG = %q, want canonical path", got)
+	}
+}
+
 func TestLoad_MissingFileReturnsDefault(t *testing.T) {
 	c, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err != nil {

@@ -16,6 +16,13 @@ RestartSec=3
 User=minti
 Group=minti
 
+# MINTI_CONFIG points the shelled minti-cland CLI at the daemon's real config
+# (cland's DefaultConfigPath honors this env first). Without it the CLI — run
+# as the non-root `minti` user — would resolve $HOME/.config/minti/cland.yaml
+# and report the Clan as "unconfigured" even while the daemon is joined.
+# /etc/minti is granted read below (ReadOnlyPaths).
+Environment=MINTI_CONFIG=/etc/minti/cland.yaml
+
 # HOME for the shelled minti-cland CLI (mirrors minti-cland.service's
 # redirect — the minti system user has no real home). Reads only; see
 # the ProtectSystem note below.

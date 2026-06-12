@@ -92,13 +92,66 @@ func Probe(ctx context.Context) Snapshot {
 		}
 	}
 
-	// Always surface self as a member so a 1-node Clan still draws.
-	st.Members = []Member{{
+	// Self is always a member so a 1-node Clan still draws.
+	members := []Member{{
 		ID: st.SelfMemberID, Name: shortName(st.SelfMemberID), Address: st.SelfAddress,
 		State: "self", IsSelf: true, IsOrchestrator: st.IsSelfOrch,
 	}}
-	// TODO(phase-A+): populate peers/candidates from `minti-cland peers --json`
-	// and election history from `minti-cland election-history --json`.
+
+	// Real peers + candidates from `minti-cland peers --json`. Best-effort: a
+	// probe failure leaves the self-only view rather than erroring the page.
+	// OS + scores live under latest_ad, which is nil until a peer's first
+	// advertise (~5s after it joins) — render the node without them till then.
+	if peersOut, err := runCland(ctx, bin, "peers", "--json"); err == nil {
+		var pl struct {
+			Members []struct {
+				MemberID string `json:"member_id"`
+				Address  string `json:"address"`
+				LatestAd *struct {
+					OS             string `json:"os"`
+					ReasoningScore int    `json:"reasoning_score"`
+					SystemScore    int    `json:"system_score"`
+				} `json:"latest_ad"`
+			} `json:"members"`
+			Candidates []struct {
+				Address string `json:"address"`
+			} `json:"candidates"`
+		}
+		if json.Unmarshal(peersOut, &pl) == nil {
+			// Track addresses already shown so a peer that is BOTH an active
+			// member and a manually-added candidate doesn't draw as two nodes.
+			seenAddr := map[string]bool{st.SelfAddress: true}
+			for _, m := range pl.Members {
+				if m.MemberID == st.SelfMemberID {
+					continue // self already surfaced above
+				}
+				mem := Member{
+					ID:             m.MemberID,
+					Name:           shortName(m.MemberID),
+					Address:        m.Address,
+					State:          "active",
+					IsOrchestrator: m.MemberID == st.Orchestrator,
+				}
+				if m.LatestAd != nil {
+					mem.OS = m.LatestAd.OS
+					mem.ReasoningScore = m.LatestAd.ReasoningScore
+					mem.SystemScore = m.LatestAd.SystemScore
+				}
+				members = append(members, mem)
+				seenAddr[m.Address] = true
+			}
+			for _, c := range pl.Candidates {
+				if seenAddr[c.Address] {
+					continue // already drawn as an active member
+				}
+				seenAddr[c.Address] = true
+				members = append(members, Member{
+					Name: "candidate", Address: c.Address, State: "candidate",
+				})
+			}
+		}
+	}
+	st.Members = members
 
 	return st
 }

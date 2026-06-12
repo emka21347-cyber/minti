@@ -360,9 +360,11 @@ generate_user_plist() {
         "$src" > "$tmp"
     plutil -remove UserName "$tmp"
     if [[ "$label" == "com.minti.workspace" ]]; then
-        # The user agent runs as the real user: their HOME already
-        # resolves the CLI default config (via the symlink above), and
-        # PATH needs the user-local bin dir.
+        # The user agent runs as the real user. MINTI_CONFIG was already
+        # rewritten to "$APP_SUPPORT/cland/cland.yaml" by the sed above (it
+        # contained the /Library/Application Support/MINTI prefix), so the
+        # shelled CLI finds the per-user config. HOME→$HOME and PATH gains
+        # the user-local bin dir.
         plutil -replace EnvironmentVariables.HOME -string "$HOME" "$tmp"
         plutil -replace EnvironmentVariables.PATH -string "$INSTALL_DIR:/usr/local/bin:/usr/bin:/bin" "$tmp"
     fi

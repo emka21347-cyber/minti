@@ -103,7 +103,15 @@ func DefaultAuditLogPath() string {
 }
 
 // DefaultConfigPath returns the canonical cland.yaml path.
+//
+// MINTI_CONFIG overrides everything: a service whose account doesn't map to the
+// canonical path (e.g. the workspace service shelling the cland CLI under an
+// NT SERVICE virtual account) sets it once via AppEnvironmentExtra so every
+// shell-out resolves the right config without threading --config through.
 func DefaultConfigPath() string {
+	if v := os.Getenv("MINTI_CONFIG"); v != "" {
+		return v
+	}
 	if isLocalSystem() {
 		return filepath.Join(programData(), "MINTI", "cland", "cland.yaml")
 	}
