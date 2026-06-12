@@ -251,12 +251,25 @@
     },2000);
   }
 
+  var connected=false;
   function refresh(){ return api('/api/mesh').then(function(s){ renderHeader(s);
     renderMesh(s); // always render — you boot into the dashboard, connected or not
+    connected = !!s.clan_id;
     if(s.source!=='demo' && !s.clan_id) connectHint();
     return s;
   }).catch(function(e){ hdr.innerHTML='<span style="color:#c66;">'+esc(e.message)+'</span>'; }); }
   refresh(); setInterval(refresh,3000);
+
+  // Guard against accidentally closing the dashboard while connected. The
+  // browser shows its own generic confirm (the text can't be customized — a
+  // browser security rule). Closing only ends THIS view; your node keeps
+  // running in the background and stays in the Clan, and your Clan memory +
+  // installed models are saved — nothing is wiped except by an explicit
+  // wipe/uninstall.
+  window.addEventListener('beforeunload', function(e){
+    if(!connected) return undefined;
+    e.preventDefault(); e.returnValue=''; return '';
+  });
 
   // ---- chat (real streaming) ----
   function bubble(label,labelColor){
