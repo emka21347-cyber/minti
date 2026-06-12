@@ -166,11 +166,12 @@ func KnockDeny(ctx context.Context, id, reason string) error {
 
 // Pack is one entry in the model cookbook.
 type Pack struct {
-	Name    string `json:"name"`
-	Desc    string `json:"desc"`
-	Size    string `json:"size"`
-	Tag     string `json:"tag"`     // the `ollama pull` target
-	NeedRAM string `json:"need_ram"`
+	Name      string `json:"name"`
+	Desc      string `json:"desc"`
+	Size      string `json:"size"`
+	Tag       string `json:"tag"` // the `ollama pull` target
+	NeedRAM   string `json:"need_ram"`
+	Installed bool   `json:"installed"`
 }
 
 // CookbookPacks is the v0.5 static manifest. Real one-click install + a live
@@ -187,6 +188,74 @@ func CookbookPacks() []Pack {
 // ollamaBase is where Ollama listens on every node (loopback only). The
 // workspace unit's IPAddressAllow=127.0.0.0/8 permits this.
 const ollamaBase = "http://127.0.0.1:11434"
+
+// ollamaInstalled returns the set of model tags currently pulled on this node
+// (best-effort; empty if Ollama is unreachable).
+func ollamaInstalled(ctx context.Context) map[string]bool {
+	set := map[string]bool{}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ollamaBase+"/api/tags", nil)
+	if err != nil {
+		return set
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return set
+	}
+	defer resp.Body.Close()
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&tags) == nil {
+		for _, m := range tags.Models {
+			set[m.Name] = true
+		}
+	}
+	return set
+}
+
+// CookbookList returns the manifest with each pack's Installed flag set from
+// the node's live Ollama model list.
+func CookbookList(ctx context.Context) []Pack {
+	have := ollamaInstalled(ctx)
+	packs := CookbookPacks()
+	for i := range packs {
+		packs[i].Installed = have[packs[i].Tag]
+	}
+	return packs
+}
+
+// CookbookUninstall removes a pack's model from this node via Ollama's
+// DELETE /api/delete.
+func CookbookUninstall(ctx context.Context, name string) error {
+	tag := ""
+	for _, p := range CookbookPacks() {
+		if p.Name == name || p.Tag == name {
+			tag = p.Tag
+			break
+		}
+	}
+	if tag == "" {
+		return errors.New("unknown pack: " + name)
+	}
+	body, _ := json.Marshal(map[string]any{"name": tag})
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, ollamaBase+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return errors.New("Ollama not reachable on 127.0.0.1:11434")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("uninstall failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
 
 // CookbookInstallStream pulls a pack's model onto this node via Ollama's
 // streaming /api/pull, relaying human-readable progress ("pulling … 45%") to

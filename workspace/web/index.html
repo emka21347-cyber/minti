@@ -104,6 +104,7 @@
           <button id="mem-add" class="membtn" style="background:var(--mint); color:#003a22; border:none; padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-plus" aria-hidden="true"></i> add</button>
           <button id="mem-export" class="membtn" style="background:var(--surface); color:var(--cyan); border:1px solid var(--line); padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> export</button>
           <label class="membtn" style="background:var(--surface); color:var(--label); border:1px solid var(--line); padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-upload" aria-hidden="true"></i> import<input id="mem-import" type="file" accept=".json,application/json" style="display:none;"/></label>
+          <button id="mem-wipe" class="membtn" title="clear the whole Clan memory graph" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:3px 9px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-trash" aria-hidden="true"></i> wipe</button>
         </div>
         <div id="mem-chips" style="padding:6px 12px 4px; display:flex; gap:5px; flex-wrap:wrap; border-bottom:1px solid #121212;"></div>
         <div style="flex:1; min-height:0; display:flex;">
@@ -321,9 +322,13 @@
   // ---- cookbook ----
   function fetchCookbook(){ api('/api/cookbook').then(renderCookbook).catch(function(e){ document.getElementById('clist').innerHTML='<div style="color:#c66; font-size:12px;">'+esc(e.message)+'</div>'; }); }
   function renderCookbook(j){ var packs=(j&&j.packs)||[]; var h='';
-    packs.forEach(function(p){ h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;">'
-      +'<div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+esc(p.name)+'</span><span style="color:#5a5a5a;">'+esc(p.size)+'</span><span style="flex:1;"></span>'
-      +'<button class="in" data-t="'+esc(p.name)+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button></div>'
+    packs.forEach(function(p){
+      var tag = p.installed ? '<span style="color:#00d787; font-size:11px;"><i class="ti ti-check" aria-hidden="true"></i> installed</span>' : '<span style="color:#5a5a5a;">'+esc(p.size)+'</span>';
+      var btn = p.installed
+        ? '<button class="un" data-t="'+esc(p.name)+'" style="background:transparent; color:#c06; border:1px solid #4a1a2a; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-trash" aria-hidden="true"></i> uninstall</button>'
+        : '<button class="in" data-t="'+esc(p.name)+'" style="background:#00d787; color:#003a22; border:none; padding:4px 11px; border-radius:6px; cursor:pointer; font-size:11px;"><i class="ti ti-download" aria-hidden="true"></i> install</button>';
+      h+='<div style="background:#101414; border:1px solid #1e2a2a; border-radius:7px; padding:10px 12px; margin-bottom:8px; font-size:12px;">'
+      +'<div style="display:flex; align-items:center; gap:8px;"><span style="color:#eee;">'+esc(p.name)+'</span>'+tag+'<span style="flex:1;"></span>'+btn+'</div>'
       +'<div style="color:#8a8a8a; margin-top:3px;">'+esc(p.desc)+' &middot; '+esc(p.need_ram)+'</div>'
       +'<div class="cmd" style="display:none; margin-top:7px; color:var(--cyan); background:var(--bg); padding:6px 8px; border-radius:5px; font-size:10.5px;"></div></div>'; });
     document.getElementById('clist').innerHTML=h;
@@ -337,15 +342,22 @@
           var reader=resp.body.getReader(), dec=new TextDecoder(), buf='';
           function pump(){ return reader.read().then(function(r){ if(r.done){
               if(buf.indexOf('[install error')>=0){ cmdBox.style.color='#c96'; b.disabled=false; b.textContent='retry'; }
-              else { b.textContent='installed'; b.style.background='#1a3a2a'; b.style.color='#5fd7ff'; cmdBox.textContent='done — '+b.getAttribute('data-t')+' is ready.'; }
+              else { cmdBox.textContent='done.'; fetchCookbook(); } // refresh → flips to uninstall
               return; }
             buf+=dec.decode(r.value,{stream:true});
             var lines=buf.split('\n').filter(function(l){ return l.trim(); });
-            cmdBox.textContent=lines.length?lines[lines.length-1]:'…'; // show latest progress line
+            cmdBox.textContent=lines.length?lines[lines.length-1]:'…';
             return pump(); }); }
           return pump();
         })
         .catch(function(e){ cmdBox.style.color='#c96'; cmdBox.textContent='error: '+e.message; b.disabled=false; b.textContent='install'; });
+    }); });
+    document.querySelectorAll('.un').forEach(function(b){ b.addEventListener('click',function(){
+      if(!window.confirm('Remove '+b.getAttribute('data-t')+' from this node?')) return;
+      b.disabled=true; b.textContent='removing…';
+      api('/api/cookbook/uninstall',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.getAttribute('data-t')})})
+        .then(function(){ fetchCookbook(); }) // refresh → flips back to install
+        .catch(function(e){ b.disabled=false; b.textContent='uninstall'; var box=b.parentNode.parentNode.querySelector('.cmd'); box.style.display='block'; box.style.color='#c96'; box.textContent=e.message; });
     }); });
   }
 })();
@@ -632,6 +644,12 @@
       ev.target.value='';
     };
     rd.readAsText(f);
+  });
+  document.getElementById('mem-wipe').addEventListener('click',function(){
+    if(!window.confirm('Wipe the ENTIRE Clan memory graph?\n\nThis clears every node and edge for the whole Clan and gossips out to all members. It cannot be undone — export first if you want a backup.')) return;
+    api('/api/memory/wipe',{method:'POST'})
+      .then(function(){ note('Clan memory wiped','#c06'); fetchGraph(); })
+      .catch(function(e){ note('wipe failed: '+e.message,'#c06'); });
   });
 
   // ---- boot: fetch on first show; poll the cheap digest every 5 s ----

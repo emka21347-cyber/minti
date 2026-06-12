@@ -9,9 +9,9 @@
 //
 //	POST /api/join             POST /api/chat
 //	POST /api/invite           POST /api/knock/accept   POST /api/knock/deny
-//	POST /api/cookbook/install
+//	POST /api/cookbook/install POST /api/cookbook/uninstall
 //	POST /api/memory/node      POST /api/memory/edge
-//	POST /api/memory/archive   POST /api/memory/import
+//	POST /api/memory/archive   POST /api/memory/import   POST /api/memory/wipe
 //
 // /api/join changes Clan membership and /api/invite mints join tokens — both
 // are especially sensitive. GET /api/memory/blueprint is read-only but EXPORTS
@@ -174,9 +174,28 @@ func New(webFS fs.FS) *Server {
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
-	// GET /api/cookbook — static model-pack manifest (v0.5: read-only).
-	mux.HandleFunc("GET /api/cookbook", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"packs": clan.CookbookPacks()})
+	// GET /api/cookbook — model-pack manifest with each pack's live installed
+	// state (from the node's Ollama).
+	mux.HandleFunc("GET /api/cookbook", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer cancel()
+		writeJSON(w, map[string]any{"packs": clan.CookbookList(ctx)})
+	})
+
+	// POST /api/cookbook/uninstall — remove a pack's model from this node.
+	mux.HandleFunc("POST /api/cookbook/uninstall", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := clan.CookbookUninstall(ctx, req.Name); err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
 	})
 
 	// POST /api/cookbook/install — STREAMING. Pulls the model onto this node via
@@ -250,6 +269,19 @@ func New(webFS fs.FS) *Server {
 		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 		defer cancel()
 		raw, err := clan.MemoryLink(ctx, e.From, e.To, e.Relation)
+		if err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeRaw(w, raw)
+	})
+
+	// POST /api/memory/wipe — clear the whole Clan memory graph (loopback-only
+	// replace-with-empty). Destructive; the SPA confirms first.
+	mux.HandleFunc("POST /api/memory/wipe", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		raw, err := clan.MemoryWipe(ctx)
 		if err != nil {
 			httpError(w, http.StatusBadGateway, err)
 			return

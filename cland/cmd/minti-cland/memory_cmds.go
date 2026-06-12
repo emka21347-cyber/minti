@@ -155,9 +155,58 @@ func cmdMemory(args []string) error {
 		return cmdMemoryExport(args[1:])
 	case "import":
 		return cmdMemoryImport(args[1:])
+	case "wipe":
+		return cmdMemoryWipe(args[1:])
 	default:
 		return fmt.Errorf("unknown memory subcommand %q", args[0])
 	}
+}
+
+// cmdMemoryWipe clears the Clan memory graph by replacing it with a valid empty
+// blueprint (ExportBlueprint computes the checksum the import handler verifies),
+// reusing the loopback-only import-replace path.
+func cmdMemoryWipe(args []string) error {
+	fs := flag.NewFlagSet("memory wipe", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "")
+	stateDirFlag := fs.String("state", "", "")
+	jsonOut := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args)
+
+	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	clan, err := store.LoadClan()
+	if err != nil {
+		return err
+	}
+	if !clan.IsActive() {
+		return errors.New("unaffiliated")
+	}
+	cli, base, err := localDaemonClient(cfg, clan, id)
+	if err != nil {
+		return err
+	}
+	bp, err := memory.ExportBlueprint(memory.NewGraph(), clan.ClanID, "", false, time.Now())
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(memory.ImportRequest{Blueprint: bp, Mode: "replace"})
+	resp, err := cli.Post(base+"/clan/memory/import", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("memory wipe (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if *jsonOut {
+		fmt.Println(strings.TrimSpace(string(raw)))
+		return nil
+	}
+	fmt.Println("Clan memory wiped.")
+	return nil
 }
 
 // ---------- export / import (Clan Blueprint, spec §13.10) ----------

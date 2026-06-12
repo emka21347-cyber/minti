@@ -210,6 +210,16 @@ func MemoryImportBlueprint(ctx context.Context, blueprint []byte) (json.RawMessa
 	return runCland(ctx, bin, "memory", "import", tmp, "--json")
 }
 
+// MemoryWipe clears the Clan memory graph (shells `memory wipe`, which replaces
+// the graph with an empty one via the loopback-only import-replace path).
+func MemoryWipe(ctx context.Context) (json.RawMessage, error) {
+	bin, err := exec.LookPath("minti-cland")
+	if err != nil {
+		return nil, fmt.Errorf("demo mode: minti-cland not installed")
+	}
+	return runCland(ctx, bin, "memory", "wipe", "--json")
+}
+
 // ScribeInfo is the JSON payload at /api/scribe.
 type ScribeInfo struct {
 	Source        string `json:"source"`
