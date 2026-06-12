@@ -226,44 +226,34 @@
     if(!det.dataset.init){ det.dataset.init='1'; det.innerHTML='<span style="color:#ececec">'+esc(shortId(self.id))+' (this node)</span><br/><span style="color:#8a8a8a">'+esc(self.address||'')+'</span>'; }
   }
 
-  // ---- join overlay (shown when unconfigured) ----
-  var joinOverlay=null;
-  function showJoin(){
-    if(joinOverlay){ joinOverlay.style.display='flex'; return; }
-    joinOverlay=document.createElement('div');
-    joinOverlay.style.cssText='position:absolute; inset:0; background:rgba(4,6,6,.92); z-index:20; display:flex; align-items:center; justify-content:center;';
-    joinOverlay.innerHTML='<div style="width:380px; max-width:90%; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:20px;">'
-      +'<div style="color:var(--mint); font-size:14px; margin-bottom:6px;">▚ Join a Clan</div>'
-      +'<div style="color:var(--label); font-size:12px; line-height:1.55; margin-bottom:12px;">Paste the connection token a Clan member shared with you. Your node will join and this dashboard goes live.</div>'
-      +'<textarea id="join-tok" placeholder="MINTI1-…" rows="3" style="width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--line); color:#eee; font-size:11px; padding:8px; border-radius:6px; resize:vertical; word-break:break-all;"></textarea>'
-      +'<div id="join-err" style="color:#c96; font-size:11px; min-height:15px; margin:5px 0;"></div>'
-      +'<button id="join-go" style="width:100%; background:var(--mint); color:#003a22; border:none; padding:9px; border-radius:6px; cursor:pointer; font-size:13px;">connect</button>'
-      +'<div id="join-status" style="color:var(--grey); font-size:11px; text-align:center; margin-top:8px;"></div></div>';
-    mw.appendChild(joinOverlay);
-    var go=joinOverlay.querySelector('#join-go'), errd=joinOverlay.querySelector('#join-err'), statusd=joinOverlay.querySelector('#join-status');
-    go.addEventListener('click',function(){
-      var tok=joinOverlay.querySelector('#join-tok').value.trim(); errd.textContent='';
-      if(!tok){ errd.textContent='paste a connection token first'; return; }
-      go.disabled=true; go.textContent='joining…'; statusd.textContent='';
-      api('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connect:tok})})
-        .then(function(){ statusd.textContent='joined — node restarting, connecting…'; pollLive(); })
-        .catch(function(e){ go.disabled=false; go.textContent='connect'; errd.textContent=e.message; });
-    });
+  // ---- connect via the chat (no modal) ----
+  // You boot straight into the dashboard; pasting a connection token into the
+  // chat joins the Clan — the original "type the token into the chat" flow.
+  var hintShown=false;
+  function connectHint(){
+    if(hintShown) return; hintShown=true;
+    bubble('▚ minti','#00d787').innerHTML='Not connected to a Clan yet. Paste the <b>connection token</b> a member shared with you (it starts with <code>MINTI1-</code>) into the box below and press send.';
   }
-  function hideJoin(){ if(joinOverlay) joinOverlay.style.display='none'; }
-  function pollLive(){ // after join, the daemon restarts; poll until live then reload
+  function doConnect(token){
+    bubble('you','#5fd7ff').textContent=token.slice(0,16)+'…  (connection token)';
+    var b=bubble('▚ minti','#00d787'); b.textContent='connecting…';
+    api('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connect:token})})
+      .then(function(){ b.textContent='joined — bringing your node online (a few seconds)…'; pollLive(b); })
+      .catch(function(e){ b.style.color='#c96'; b.textContent='couldn\'t connect: '+e.message; });
+  }
+  function pollLive(b){ // after join the daemon restarts into active mode
     var tries=0; var iv=setInterval(function(){ tries++;
       fetch('/api/mesh').then(function(r){return r.json();}).then(function(s){
-        if(s.source!=='unconfigured'){ clearInterval(iv); location.reload(); }
-        else if(tries>30){ clearInterval(iv); var sd=joinOverlay&&joinOverlay.querySelector('#join-status'); if(sd) sd.textContent='still connecting… give it a moment or reload'; }
+        if(s.clan_id){ clearInterval(iv); if(b) b.textContent='connected to clan '+shortId(s.clan_id)+'. welcome.'; refresh(); }
+        else if(tries>30){ clearInterval(iv); if(b){ b.style.color='#c96'; b.textContent='still connecting after 60s — check the token hasn\'t expired, then try again.'; } }
       }).catch(function(){});
     },2000);
   }
 
   function refresh(){ return api('/api/mesh').then(function(s){ renderHeader(s);
-    // Not in a Clan (no clan_id) → show the Join screen, unless we're in demo
-    // mode (dev box without minti-cland), which renders the demo graph.
-    if(s.source!=='demo' && !s.clan_id){ showJoin(); } else { hideJoin(); renderMesh(s); } return s;
+    renderMesh(s); // always render — you boot into the dashboard, connected or not
+    if(s.source!=='demo' && !s.clan_id) connectHint();
+    return s;
   }).catch(function(e){ hdr.innerHTML='<span style="color:#c66;">'+esc(e.message)+'</span>'; }); }
   refresh(); setInterval(refresh,3000);
 
@@ -273,21 +263,26 @@
     d.innerHTML='<span style="color:'+labelColor+';">'+esc(label)+'</span><br/><span class="bd" style="color:#ddd; white-space:pre-wrap;"></span>';
     log.appendChild(d); log.scrollTop=log.scrollHeight; return d.querySelector('.bd');
   }
-  function snd(){ var q=cin.value.trim(); if(!q)return;
-    bubble('you','#5fd7ff').textContent=q; cin.value='';
+  function snd(){ var q=cin.value.trim(); if(!q)return; cin.value='';
+    // A pasted connection token joins the Clan instead of chatting.
+    if(q.indexOf('MINTI1-')===0){ doConnect(q); return; }
+    bubble('you','#5fd7ff').textContent=q;
     var model=document.getElementById('chat-model').value;
-    var bd=bubble(model,'#00d787'); bd.textContent='…';
-    var first=true;
+    var bd=bubble(model,'#00d787');
+    bd.style.color='#8a8a8a'; bd.textContent='thinking… (routing to '+model+')';
+    var first=true, gotAny=false;
     fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q,model:model})})
       .then(function(resp){
-        if(!resp.ok){ return resp.text().then(function(t){ bd.textContent='[error: '+(t||resp.status)+']'; }); }
+        if(!resp.ok){ return resp.text().then(function(t){ bd.style.color='#c96'; bd.textContent='error: '+(t||('HTTP '+resp.status)); }); }
         var reader=resp.body.getReader(), dec=new TextDecoder();
-        function pump(){ return reader.read().then(function(r){ if(r.done)return;
-          if(first){ bd.textContent=''; first=false; }
-          bd.textContent+=dec.decode(r.value,{stream:true}); log.scrollTop=log.scrollHeight; return pump(); }); }
+        function pump(){ return reader.read().then(function(r){ if(r.done){
+            if(!gotAny){ bd.style.color='#c96'; bd.textContent='no response — is "'+model+'" pulled on the orchestrator? Install it from the Cookbook, or pick another model.'; }
+            return; }
+          if(first){ bd.textContent=''; bd.style.color='#ddd'; first=false; }
+          gotAny=true; bd.textContent+=dec.decode(r.value,{stream:true}); log.scrollTop=log.scrollHeight; return pump(); }); }
         return pump();
       })
-      .catch(function(e){ bd.textContent+='\n[error: '+e.message+']'; });
+      .catch(function(e){ bd.style.color='#c96'; bd.textContent='error: '+e.message; });
   }
   document.getElementById('csend').addEventListener('click',snd);
   cin.addEventListener('keydown',function(e){ if(e.key==='Enter')snd(); });
@@ -334,9 +329,23 @@
     document.getElementById('clist').innerHTML=h;
     document.querySelectorAll('.in').forEach(function(b){ b.addEventListener('click',function(){
       var cmdBox=b.parentNode.parentNode.querySelector('.cmd');
-      api('/api/cookbook/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.getAttribute('data-t')})})
-        .then(function(r){ cmdBox.style.display='block'; cmdBox.textContent='run on this node:  '+r.command; })
-        .catch(function(e){ cmdBox.style.display='block'; cmdBox.style.color='#c66'; cmdBox.textContent=e.message; });
+      cmdBox.style.display='block'; cmdBox.style.color='var(--cyan)'; cmdBox.textContent='starting…';
+      b.disabled=true; b.textContent='installing…';
+      fetch('/api/cookbook/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.getAttribute('data-t')})})
+        .then(function(resp){
+          if(!resp.ok){ return resp.text().then(function(t){ cmdBox.style.color='#c96'; cmdBox.textContent=t; b.disabled=false; b.textContent='install'; }); }
+          var reader=resp.body.getReader(), dec=new TextDecoder(), buf='';
+          function pump(){ return reader.read().then(function(r){ if(r.done){
+              if(buf.indexOf('[install error')>=0){ cmdBox.style.color='#c96'; b.disabled=false; b.textContent='retry'; }
+              else { b.textContent='installed'; b.style.background='#1a3a2a'; b.style.color='#5fd7ff'; cmdBox.textContent='done — '+b.getAttribute('data-t')+' is ready.'; }
+              return; }
+            buf+=dec.decode(r.value,{stream:true});
+            var lines=buf.split('\n').filter(function(l){ return l.trim(); });
+            cmdBox.textContent=lines.length?lines[lines.length-1]:'…'; // show latest progress line
+            return pump(); }); }
+          return pump();
+        })
+        .catch(function(e){ cmdBox.style.color='#c96'; cmdBox.textContent='error: '+e.message; b.disabled=false; b.textContent='install'; });
     }); });
   }
 })();

@@ -107,6 +107,7 @@ func cmdChat(args []string) error {
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var full strings.Builder
+	var gotContent bool
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -116,10 +117,19 @@ func cmdChat(args []string) error {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
-			Done bool `json:"done"`
+			Error string `json:"error"`
+			Done  bool   `json:"done"`
 		}
 		if json.Unmarshal([]byte(line), &chunk) != nil {
 			continue // tolerate keepalives / non-JSON framing
+		}
+		// Ollama reports a missing model (etc.) as an {"error":...} line — surface
+		// it instead of streaming nothing and looking hung.
+		if chunk.Error != "" {
+			return fmt.Errorf("%s", chunk.Error)
+		}
+		if chunk.Message.Content != "" {
+			gotContent = true
 		}
 		if *jsonOut {
 			full.WriteString(chunk.Message.Content)
@@ -129,6 +139,11 @@ func cmdChat(args []string) error {
 	}
 	if err := sc.Err(); err != nil {
 		return fmt.Errorf("stream read: %w", err)
+	}
+	// An empty 200 stream is how the runtime currently signals a model that
+	// isn't pulled (rather than a clean error) — don't look hung, say so.
+	if !gotContent {
+		return fmt.Errorf("no response from %q — is the model pulled? install it from the Cookbook or pick another", *model)
 	}
 	if *jsonOut {
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{"reply": full.String()})

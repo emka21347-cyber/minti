@@ -5,12 +5,16 @@
 package clan
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -180,12 +184,67 @@ func CookbookPacks() []Pack {
 	}
 }
 
-// CookbookInstallCmd returns the copy-paste command to install a pack.
-func CookbookInstallCmd(name string) (string, error) {
+// ollamaBase is where Ollama listens on every node (loopback only). The
+// workspace unit's IPAddressAllow=127.0.0.0/8 permits this.
+const ollamaBase = "http://127.0.0.1:11434"
+
+// CookbookInstallStream pulls a pack's model onto this node via Ollama's
+// streaming /api/pull, relaying human-readable progress ("pulling … 45%") to
+// w. ctx (the request) cancels the pull if the client disconnects.
+func CookbookInstallStream(ctx context.Context, name string, w io.Writer, flush func()) error {
+	tag := ""
 	for _, p := range CookbookPacks() {
 		if p.Name == name || p.Tag == name {
-			return "ollama pull " + p.Tag, nil
+			tag = p.Tag
+			break
 		}
 	}
-	return "", errors.New("unknown pack: " + name)
+	if tag == "" {
+		return errors.New("unknown pack: " + name)
+	}
+	body, _ := json.Marshal(map[string]any{"name": tag, "stream": true})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaBase+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return errors.New("Ollama not reachable on 127.0.0.1:11434 — is it installed and running?")
+	}
+	defer resp.Body.Close()
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lastPct := -1
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Status    string `json:"status"`
+			Error     string `json:"error"`
+			Completed int64  `json:"completed"`
+			Total     int64  `json:"total"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if ev.Error != "" {
+			return errors.New(ev.Error)
+		}
+		msg := ev.Status
+		if ev.Total > 0 { // downloading a layer — emit only on percent change to limit noise
+			pct := int(ev.Completed * 100 / ev.Total)
+			if pct == lastPct {
+				continue
+			}
+			lastPct = pct
+			msg = ev.Status + " " + strconv.Itoa(pct) + "%"
+		}
+		_, _ = io.WriteString(w, msg+"\n")
+		flush()
+	}
+	return sc.Err()
 }

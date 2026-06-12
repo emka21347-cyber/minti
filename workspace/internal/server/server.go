@@ -179,20 +179,28 @@ func New(webFS fs.FS) *Server {
 		writeJSON(w, map[string]any{"packs": clan.CookbookPacks()})
 	})
 
-	// POST /api/cookbook/install — returns the copy-paste `ollama pull` command
-	// (real one-click install is a fast-follow).
+	// POST /api/cookbook/install — STREAMING. Pulls the model onto this node via
+	// Ollama and relays progress ("pulling … 45%") token-by-token to the browser.
 	mux.HandleFunc("POST /api/cookbook/install", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Name string }
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpError(w, http.StatusBadRequest, err)
 			return
 		}
-		cmd, err := clan.CookbookInstallCmd(req.Name)
-		if err != nil {
-			httpError(w, http.StatusBadRequest, err)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			httpError(w, http.StatusInternalServerError, errors.New("streaming unsupported"))
 			return
 		}
-		writeJSON(w, map[string]any{"command": cmd})
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		if err := clan.CookbookInstallStream(r.Context(), req.Name, w, flusher.Flush); err != nil {
+			_, _ = io.WriteString(w, "\n[install error: "+err.Error()+"]")
+			flusher.Flush()
+		}
 	})
 
 	// ----- Memory M5: the spec §13 graph surface -----
