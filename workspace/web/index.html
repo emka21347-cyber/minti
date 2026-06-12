@@ -185,8 +185,10 @@
   // ---- header + mesh (real /api/mesh) ----
   var lastOrch='';
   function renderHeader(s){
-    if(s.source==='unconfigured'){ hdr.innerHTML='<span style="color:#c96;">not connected</span>'; return; }
     if(s.source==='demo'){ hdr.innerHTML='<span style="color:#c96;">demo mode</span> &middot; install + join for live data'; return; }
+    // No clan_id = not in a Clan yet (whether source is "unconfigured" or a
+    // configured-but-unaffiliated daemon that reports "live" with empty clan).
+    if(!s.clan_id){ hdr.innerHTML='<span style="color:#c96;">not connected</span>'; return; }
     var lease=s.lease_left_sec?('lease <span style="color:var(--mint);">'+s.lease_left_sec.toFixed(1)+'s</span>'):'';
     hdr.innerHTML='clan <span style="color:var(--label);">'+esc(shortId(s.clan_id))+'</span> &middot; '+esc(s.role||'')+' &middot; term <span style="color:var(--label);">'+(s.term||0)+'</span> &middot; '+lease;
     var oc=document.getElementById('chat-orch');
@@ -259,7 +261,9 @@
   }
 
   function refresh(){ return api('/api/mesh').then(function(s){ renderHeader(s);
-    if(s.source==='unconfigured'){ showJoin(); } else { hideJoin(); renderMesh(s); } return s;
+    // Not in a Clan (no clan_id) → show the Join screen, unless we're in demo
+    // mode (dev box without minti-cland), which renders the demo graph.
+    if(s.source!=='demo' && !s.clan_id){ showJoin(); } else { hideJoin(); renderMesh(s); } return s;
   }).catch(function(e){ hdr.innerHTML='<span style="color:#c66;">'+esc(e.message)+'</span>'; }); }
   refresh(); setInterval(refresh,3000);
 
