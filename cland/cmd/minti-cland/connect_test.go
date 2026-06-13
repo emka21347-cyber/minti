@@ -3,10 +3,13 @@ package main
 import "testing"
 
 func TestConnectBlob_RoundTrip(t *testing.T) {
+	// Synthetic fixtures (not a real node): token/addr/pin only exercise the
+	// encode↔decode round-trip, so any well-formed values work. Address uses the
+	// RFC 5737 documentation range.
 	const (
-		token = "If5ZmCmPa03dDedXHeE_GgdJITd15aP_aaRSXsoTfqU"
-		addr  = "192.168.1.195:7777"
-		pin   = "sha256:0124e9fd663d5e94c39a73efe125e7af226f86ad2ee654d68000b5fb1e4d6597"
+		token = "dGVzdC1pbnZpdGUtdG9rZW4tZml4dHVyZS1ub3QtcmVhbA"
+		addr  = "203.0.113.10:7777"
+		pin   = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	)
 	blob := encodeConnectBlob(token, addr, pin)
 	gotT, gotA, gotP, err := decodeConnectBlob(blob)
