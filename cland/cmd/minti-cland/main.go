@@ -94,6 +94,8 @@ func main() {
 			err = cmdMemory(os.Args[2:])
 		case "chat":
 			err = cmdChat(os.Args[2:])
+		case "agent":
+			err = cmdAgent(os.Args[2:])
 		case "scribe":
 			err = cmdScribe(os.Args[2:])
 		case "pin-scribe":
@@ -145,6 +147,9 @@ Usage:
        OR  --mnemonic "..." --address ip:port --pin sha256:...
        OR  --token <base64> --address ip:port --pin sha256:...
   minti-cland chat [--model m] <msg>   chat through the Clan (streams the reply)
+  minti-cland agent [--model m] [--mcp-dir d] <prompt>
+                                       run the agent loop (read-only tools; M1)
+       --json                          emit the raw NDJSON event stream
   minti-cland leave                    wipe local Clan state
   minti-cland revoke <member_id> [--reason "..."]
                                        kick a member

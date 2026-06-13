@@ -51,12 +51,39 @@ type ResultContent struct {
 	JSON []byte `json:"json,omitempty"` // raw JSON for non-text variants (resource refs etc.)
 }
 
+// ToolSchema is a tool's name + description + JSON-Schema input as advertised by
+// an MCP server. The agent harness (cland/internal/agent) calls ListTools to
+// build the model's tool catalog.
+type ToolSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
 // Errors callers check.
 var (
 	ErrUnknownNamespace = errors.New("toolexec: unknown MCP namespace")
 	ErrToolNotFound     = errors.New("toolexec: tool not found on server")
 	ErrSpawnFailed      = errors.New("toolexec: subprocess spawn failed")
 )
+
+// resolveServerBinary maps an MCP namespace like "mcp-recon" to:
+//   - server: "minti-mcp-recon" (the MCP server name used by permission.Check)
+//   - path:   <BinariesDir>/minti-mcp-recon[.exe on Windows]
+func (e *Executor) resolveServerBinary(namespace string) (server, path string, err error) {
+	if namespace == "" {
+		return "", "", fmt.Errorf("%w: empty namespace", ErrUnknownNamespace)
+	}
+	server = "minti-" + namespace
+	binaryName := server
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	if e.BinariesDir == "" {
+		return "", "", errors.New("toolexec: Executor.BinariesDir is empty")
+	}
+	return server, filepath.Join(e.BinariesDir, binaryName), nil
+}
 
 // resolveBinary maps a wire tool string like "mcp-recon.nmap_scan" to:
 //   - server: "minti-mcp-recon" (the MCP server name used by permission.Check)
@@ -72,16 +99,51 @@ func (e *Executor) resolveBinary(wireTool string) (server, tool, path string, er
 	if namespace == "" || tool == "" {
 		return "", "", "", fmt.Errorf("%w: empty namespace or tool", ErrUnknownNamespace)
 	}
-	server = "minti-" + namespace
-	binaryName := server
-	if runtime.GOOS == "windows" {
-		binaryName += ".exe"
+	server, path, err = e.resolveServerBinary(namespace)
+	return server, tool, path, err
+}
+
+// ListTools spawns the MCP server for `namespace` (e.g. "mcp-fs"), lists its
+// tools, and returns their schemas. Like Execute it is stateless — one fresh
+// subprocess per call. The agent Catalog calls this once per namespace and
+// caches the result, so the spawn cost is paid only at catalog-build time.
+func (e *Executor) ListTools(ctx context.Context, namespace string) ([]ToolSchema, error) {
+	_, binPath, err := e.resolveServerBinary(namespace)
+	if err != nil {
+		return nil, err
 	}
-	if e.BinariesDir == "" {
-		return "", "", "", errors.New("toolexec: Executor.BinariesDir is empty")
+
+	timeout := e.ExecTimeout
+	if timeout <= 0 {
+		timeout = DefaultExecTimeout
 	}
-	path = filepath.Join(e.BinariesDir, binaryName)
-	return server, tool, path, nil
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath)
+	client := mcp.NewClient(&mcp.Implementation{Name: "minti-cland-toolexec", Version: "0.1.0"}, nil)
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSpawnFailed, err)
+	}
+	defer session.Close()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+	out := make([]ToolSchema, 0, len(tools.Tools))
+	for _, t := range tools.Tools {
+		// t.InputSchema is the server's JSON Schema (client-side: a JSON value);
+		// marshal it back to raw bytes for the model's tool definition.
+		schema, _ := json.Marshal(t.InputSchema)
+		out = append(out, ToolSchema{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: schema,
+		})
+	}
+	return out, nil
 }
 
 // Execute spawns the MCP server, invokes the named tool with `args`, and
