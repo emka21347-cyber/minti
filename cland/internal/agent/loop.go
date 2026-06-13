@@ -52,6 +52,30 @@ type ModelReply struct {
 	ToolCalls []ToolCall
 }
 
+// Decision is the outcome of an approval prompt for a change-class tool.
+type Decision int
+
+const (
+	DecisionDeny    Decision = iota // default / fail-closed
+	DecisionApprove
+)
+
+// ApprovalRequest describes a pending change-tool call awaiting Approve/Deny.
+type ApprovalRequest struct {
+	CallID string
+	Tool   string // wire name "namespace.tool"
+	Class  ToolClass
+	Input  json.RawMessage
+}
+
+// Approver decides whether a change-class tool call may run. Await BLOCKS until
+// the user decides or ctx is cancelled. A returned error (e.g. timeout) is
+// treated as a deny — fail-closed. Implementations: a CLI stdin prompt, and (in
+// M1 S4) an in-process channel resolved by the daemon's POST /agent/approve.
+type Approver interface {
+	Await(ctx context.Context, req ApprovalRequest) (Decision, error)
+}
+
 // ModelCaller performs one (non-streaming) model turn. The cland daemon / CLI
 // implements this by POSTing the transcript + tool schemas to the runtime's
 // Anthropic /v1/messages endpoint (the only runtime surface that plumbs tools
@@ -65,16 +89,17 @@ type ModelCaller interface {
 // the model, executes read tools locally via the Executor, feeds results back,
 // and repeats until the model answers or the iteration cap is hit.
 //
-// M1 S1 scope: READ-ONLY. Change-class tools are refused with an error result
-// (the model sees the refusal and can adapt); the in-chat Approve/Deny gate
-// arrives in M1 S3.
+// Read tools auto-run. Change-class tools (fs.write_text, shell.exec,
+// pkg.install) require Approve/Deny via the Approver before they execute; if no
+// Approver is wired they are refused outright (fail-closed).
 type Loop struct {
 	Caller   ModelCaller
 	Executor toolexec.ExecutorIface
 	Catalog  *Catalog
 	Emitter  Emitter
-	System   string // optional system prompt
-	MaxIters int    // <=0 → DefaultMaxIters
+	Approver Approver // nil → change tools are refused
+	System   string   // optional system prompt
+	MaxIters int      // <=0 → DefaultMaxIters
 	Log      *slog.Logger
 }
 
@@ -134,11 +159,23 @@ func (l *Loop) runToolCall(ctx context.Context, tc ToolCall) ToolResult {
 	l.emit(Event{Type: EventToolCall, CallID: tc.ID, Tool: wire, Class: class.String(), Input: tc.Input})
 
 	if class == ClassChange {
-		// M1 S1 is read-only; the approval gate lands in S3. Refuse rather than
-		// execute, and tell the model why so it can choose a read-only path.
-		msg := "tool requires approval and is not available in read-only mode (the in-chat approval gate arrives in M1 S3)"
-		l.emit(Event{Type: EventToolResult, CallID: tc.ID, Tool: wire, IsError: true, Result: msg})
-		return ToolResult{ToolUseID: tc.ID, Content: "ERROR: " + msg, IsError: true}
+		if l.Approver == nil {
+			// Fail-closed: no approver wired (e.g. a read-only session) → refuse.
+			msg := "tool requires approval but this session has no approver (read-only mode)"
+			l.emit(Event{Type: EventToolResult, CallID: tc.ID, Tool: wire, IsError: true, Result: msg})
+			return ToolResult{ToolUseID: tc.ID, Content: "ERROR: " + msg, IsError: true}
+		}
+		l.emit(Event{Type: EventApprovalRequired, CallID: tc.ID, Tool: wire, Class: class.String(), Input: tc.Input})
+		dec, err := l.Approver.Await(ctx, ApprovalRequest{CallID: tc.ID, Tool: wire, Class: class, Input: tc.Input})
+		if err != nil || dec != DecisionApprove {
+			reason := "denied by user"
+			if err != nil {
+				reason = fmt.Sprintf("approval failed: %v", err) // timeout / ctx cancel → fail-closed
+			}
+			l.emit(Event{Type: EventToolResult, CallID: tc.ID, Tool: wire, IsError: true, Result: reason})
+			return ToolResult{ToolUseID: tc.ID, Content: "DENIED: " + reason, IsError: true}
+		}
+		// approved → fall through and execute like any other tool
 	}
 
 	l.emit(Event{Type: EventToolRunning, CallID: tc.ID, Tool: wire})

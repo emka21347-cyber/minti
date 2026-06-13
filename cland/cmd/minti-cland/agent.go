@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,7 @@ func cmdAgent(args []string) error {
 	system := fs.String("system", defaultAgentSystem, "system prompt")
 	mcpDir := fs.String("mcp-dir", "", "directory holding the minti-mcp-* binaries (default: config binaries_dir)")
 	maxIters := fs.Int("max-iters", agent.DefaultMaxIters, "max tool-call rounds")
+	readOnly := fs.Bool("read-only", false, "offer only read tools; change tools are refused (no approval prompt)")
 	jsonOut := fs.Bool("json", false, "emit the raw NDJSON event stream instead of a rendered transcript")
 	_ = fs.Parse(args)
 
@@ -94,8 +96,16 @@ func cmdAgent(args []string) error {
 
 	ctx := context.Background()
 	dbgLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	catalog, err := agent.BuildCatalog(ctx, executor,
-		func(wire string) bool { return agent.Classify(wire) == agent.ClassRead }, dbgLog)
+	// Default: offer all tools, gate change tools behind an interactive prompt.
+	// --read-only: offer read tools only and wire no approver (change tools refused).
+	var include func(wire string) bool
+	var approver agent.Approver
+	if *readOnly {
+		include = func(wire string) bool { return agent.Classify(wire) == agent.ClassRead }
+	} else {
+		approver = &consoleApprover{in: bufio.NewReader(os.Stdin), out: os.Stderr}
+	}
+	catalog, err := agent.BuildCatalog(ctx, executor, include, dbgLog)
 	if err != nil {
 		return fmt.Errorf("build tool catalog: %w", err)
 	}
@@ -105,7 +115,11 @@ func cmdAgent(args []string) error {
 	for i, t := range tc {
 		names[i] = t.Name
 	}
-	fmt.Fprintf(os.Stderr, "agent: %d read-only tools available: %s\n", len(tc), strings.Join(names, ", "))
+	mode := "read+change (change tools require approval)"
+	if *readOnly {
+		mode = "read-only"
+	}
+	fmt.Fprintf(os.Stderr, "agent: %d tools available [%s]: %s\n", len(tc), mode, strings.Join(names, ", "))
 
 	var emitter agent.Emitter
 	if *jsonOut {
@@ -119,15 +133,44 @@ func cmdAgent(args []string) error {
 		Executor: executor,
 		Catalog:  catalog,
 		Emitter:  emitter,
+		Approver: approver,
 		System:   *system,
 		MaxIters: *maxIters,
 	}
 	return loop.Run(ctx, prompt)
 }
 
-const defaultAgentSystem = "You are a MINTI node agent. You can call read-only tools to inspect the local " +
-	"filesystem and the web. Use them when they help; otherwise answer directly. " +
-	"When you have enough information, give a concise final answer with no tool call."
+const defaultAgentSystem = "You are a MINTI node agent. You can call tools to inspect the local filesystem " +
+	"and the web (read), and to change the system — write files, run shell commands, install packages. " +
+	"Change actions require the user to approve each call, so use them only when needed and with care. " +
+	"Use tools when they help; otherwise answer directly. When you have enough information, give a " +
+	"concise final answer with no tool call."
+
+// ---------- approval: interactive stdin prompt ----------
+
+// consoleApprover implements agent.Approver by prompting the local user on
+// stderr and reading y/N from stdin. Used by the CLI; the daemon's HTTP path
+// (M1 S4) uses a channel-based approver instead. Fail-closed: anything other
+// than an explicit yes is a deny, and a read error denies.
+type consoleApprover struct {
+	in  *bufio.Reader
+	out io.Writer
+}
+
+func (a *consoleApprover) Await(_ context.Context, req agent.ApprovalRequest) (agent.Decision, error) {
+	fmt.Fprintf(a.out, "\n⚠ APPROVAL REQUIRED — %s [%s]\n  args: %s\n  approve? [y/N]: ",
+		req.Tool, req.Class, truncate(string(req.Input), 300))
+	line, err := a.in.ReadString('\n')
+	if err != nil {
+		return agent.DecisionDeny, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return agent.DecisionApprove, nil
+	default:
+		return agent.DecisionDeny, nil
+	}
+}
 
 // ---------- model caller: Anthropic /v1/messages, non-streaming ----------
 

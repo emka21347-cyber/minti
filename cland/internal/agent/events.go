@@ -13,12 +13,13 @@ import (
 type EventType string
 
 const (
-	EventText        EventType = "text"              // model preamble / assistant text
-	EventToolCall    EventType = "tool_call"         // model requested a tool (classified)
-	EventToolRunning EventType = "tool_running"      // a read tool started executing
-	EventToolResult  EventType = "tool_result"       // a tool returned (or was refused)
-	EventFinal       EventType = "final"             // the model's final answer
-	EventError       EventType = "error"             // the loop failed
+	EventText             EventType = "text"              // model preamble / assistant text
+	EventToolCall         EventType = "tool_call"         // model requested a tool (classified)
+	EventApprovalRequired EventType = "approval_required" // a change tool is blocked pending Approve/Deny
+	EventToolRunning      EventType = "tool_running"      // a tool started executing
+	EventToolResult       EventType = "tool_result"       // a tool returned (or was refused/denied)
+	EventFinal            EventType = "final"             // the model's final answer
+	EventError            EventType = "error"             // the loop failed
 )
 
 // Event is one item in the agent stream. Fields are populated per Type; unused

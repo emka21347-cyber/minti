@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/minti/cland/internal/toolexec"
@@ -199,6 +200,87 @@ func TestLoopRefusesChangeTool(t *testing.T) {
 	}
 	if !sawRefusal {
 		t.Error("expected an error tool_result refusing the change tool")
+	}
+}
+
+type fakeApprover struct {
+	decision Decision
+	err      error
+	calls    int
+	lastReq  ApprovalRequest
+}
+
+func (f *fakeApprover) Await(_ context.Context, req ApprovalRequest) (Decision, error) {
+	f.calls++
+	f.lastReq = req
+	return f.decision, f.err
+}
+
+// changeCatalog offers write_text (a change tool), no read filter.
+func changeCatalog(t *testing.T) *Catalog {
+	t.Helper()
+	lister := fakeLister{byNS: map[string][]toolexec.ToolSchema{
+		"mcp-fs": {{Name: "write_text", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}}
+	cat, err := BuildCatalog(context.Background(), lister, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildCatalog: %v", err)
+	}
+	return cat
+}
+
+func TestLoopChangeApproved(t *testing.T) {
+	caller := &fakeCaller{replies: []ModelReply{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write_text", Input: json.RawMessage(`{"path":"todo.txt","content":"buy milk"}`)}}},
+		{Text: "wrote the file"},
+	}}
+	exec := &fakeExecutor{result: textResult("ok, 8 bytes written")}
+	appr := &fakeApprover{decision: DecisionApprove}
+	em := &recordingEmitter{}
+	loop := &Loop{Caller: caller, Executor: exec, Catalog: changeCatalog(t), Emitter: em, Approver: appr}
+
+	if err := loop.Run(context.Background(), "write todo.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if appr.calls != 1 || appr.lastReq.Tool != "mcp-fs.write_text" {
+		t.Errorf("approver: calls=%d tool=%q", appr.calls, appr.lastReq.Tool)
+	}
+	if len(exec.executed) != 1 || exec.executed[0] != "mcp-fs.write_text" {
+		t.Errorf("approved change must execute; executed=%v", exec.executed)
+	}
+	want := []EventType{EventToolCall, EventApprovalRequired, EventToolRunning, EventToolResult, EventFinal}
+	if got := em.types(); !equalTypes(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+}
+
+func TestLoopChangeDenied(t *testing.T) {
+	caller := &fakeCaller{replies: []ModelReply{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write_text", Input: json.RawMessage(`{"path":"todo.txt"}`)}}},
+		{Text: "ok, I won't write it"},
+	}}
+	exec := &fakeExecutor{result: textResult("should not run")}
+	appr := &fakeApprover{decision: DecisionDeny}
+	em := &recordingEmitter{}
+	loop := &Loop{Caller: caller, Executor: exec, Catalog: changeCatalog(t), Emitter: em, Approver: appr}
+
+	if err := loop.Run(context.Background(), "write todo.txt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if appr.calls != 1 {
+		t.Errorf("approver should be consulted once, got %d", appr.calls)
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("denied change must NOT execute; executed=%v", exec.executed)
+	}
+	var denied bool
+	for _, ev := range em.events {
+		if ev.Type == EventToolResult && ev.IsError && strings.Contains(ev.Result, "denied") {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Error("expected an error tool_result noting the denial")
 	}
 }
 
