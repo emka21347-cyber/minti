@@ -732,7 +732,8 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("agent client: %w", err)
 	}
 	agentSvc := newAgentService(toolExecutor, agentCli,
-		fmt.Sprintf("https://%s:%d", agentHost, cfg.Listen.Port), "hermes3:8b", log)
+		fmt.Sprintf("https://%s:%d", agentHost, cfg.Listen.Port), "hermes3:8b",
+		id.MemberID, audit, log)
 	agentSvc.register(srv)
 	log.Info("agent enabled", "endpoints", "/agent/chat /agent/approve")
 

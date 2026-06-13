@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/minti/cland/internal/agent"
+	"github.com/minti/cland/internal/auditlog"
 	"github.com/minti/cland/internal/toolexec"
 	"github.com/minti/cland/internal/transport"
 )
@@ -21,11 +22,13 @@ import (
 // the daemon's own /v1/messages over loopback (reusing the router); change tools
 // are gated by a per-request ChannelApprover resolved by POST /agent/approve.
 type agentService struct {
-	executor    *toolexec.Executor
-	cli         *transport.Client // loopback HMAC client for model calls
-	base        string            // https://127.0.0.1:<port>
+	executor     *toolexec.Executor
+	cli          *transport.Client // loopback HMAC client for model calls
+	base         string            // https://127.0.0.1:<port>
 	defaultModel string
-	log         *slog.Logger
+	selfID       string
+	audit        auditlog.Logger
+	log          *slog.Logger
 
 	catalogOnce sync.Once
 	catalog     *agent.Catalog
@@ -36,12 +39,14 @@ type agentService struct {
 	reqSeq  atomic.Uint64
 }
 
-func newAgentService(executor *toolexec.Executor, cli *transport.Client, base, defaultModel string, log *slog.Logger) *agentService {
+func newAgentService(executor *toolexec.Executor, cli *transport.Client, base, defaultModel, selfID string, audit auditlog.Logger, log *slog.Logger) *agentService {
 	return &agentService{
 		executor:     executor,
 		cli:          cli,
 		base:         base,
 		defaultModel: defaultModel,
+		selfID:       selfID,
+		audit:        audit,
 		log:          log,
 		pending:      make(map[string]*agent.ChannelApprover),
 	}
@@ -115,7 +120,7 @@ func (s *agentService) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	emitter := &reqIDEmitter{reqID: reqID, inner: agent.NewNDJSONEmitter(w)}
+	emitter := &streamEmitter{reqID: reqID, inner: agent.NewNDJSONEmitter(w), audit: s.audit, selfID: s.selfID}
 	loop := &agent.Loop{
 		Caller:   &anthropicCaller{cli: s.cli, base: s.base, model: model},
 		Executor: s.executor,
@@ -162,14 +167,49 @@ func (s *agentService) handleApprove(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-// reqIDEmitter stamps every event with the agent request id before delegating,
-// so the browser can correlate approval_required → POST /agent/approve.
-type reqIDEmitter struct {
-	reqID string
-	inner agent.Emitter
+// streamEmitter stamps every event with the agent request id (so the browser
+// can correlate approval_required → POST /agent/approve) AND writes an audit
+// entry for security-relevant events. The agent loop executes tools directly
+// (no HMAC token, since it's the local node acting on itself) so it bypasses the
+// /mcp/execute audit path — this re-establishes the audit trail: every tool
+// call, approval prompt, and result is recorded to audit.jsonl.
+type streamEmitter struct {
+	reqID  string
+	inner  agent.Emitter
+	audit  auditlog.Logger
+	selfID string
 }
 
-func (e *reqIDEmitter) Emit(ev agent.Event) error {
+func (e *streamEmitter) Emit(ev agent.Event) error {
 	ev.ReqID = e.reqID
+	if e.audit != nil {
+		switch ev.Type {
+		case agent.EventToolCall:
+			_ = e.audit.Write(auditlog.Event{
+				MemberID: e.selfID, Server: "minti-cland", Tool: "agent:" + ev.Tool,
+				Decision: "request", Reason: "agent_tool_call",
+				Args: map[string]any{"req_id": e.reqID, "call_id": ev.CallID, "class": ev.Class, "input": string(ev.Input)},
+			})
+		case agent.EventApprovalRequired:
+			_ = e.audit.Write(auditlog.Event{
+				MemberID: e.selfID, Server: "minti-cland", Tool: "agent:" + ev.Tool,
+				Decision: "prompt", Reason: "approval_required",
+				Args: map[string]any{"req_id": e.reqID, "call_id": ev.CallID, "class": ev.Class},
+			})
+		case agent.EventToolResult:
+			decision := "allow"
+			errStr := ""
+			if ev.IsError {
+				decision = "deny"
+				errStr = ev.Result
+			}
+			_ = e.audit.Write(auditlog.Event{
+				MemberID: e.selfID, Server: "minti-cland", Tool: "agent:" + ev.Tool,
+				Decision: decision, Reason: "agent_tool_result",
+				Args:  map[string]any{"req_id": e.reqID, "call_id": ev.CallID},
+				Error: errStr,
+			})
+		}
+	}
 	return e.inner.Emit(ev)
 }
