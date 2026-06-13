@@ -17,6 +17,7 @@ var knownNamespaces = []string{
 	"mcp-http",
 	"mcp-pkg",
 	"mcp-recon",
+	"mcp-search",
 	"mcp-shell",
 	"mcp-wiki",
 }

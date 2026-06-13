@@ -29,8 +29,9 @@ type MCPPolicy struct {
 	Shell ShellPolicy `yaml:"shell"`
 	Recon ReconPolicy `yaml:"recon"`
 	Pkg   PkgPolicy   `yaml:"pkg"`
-	HTTP  HTTPPolicy  `yaml:"http"`
-	Wiki  WikiPolicy  `yaml:"wiki"`
+	HTTP   HTTPPolicy   `yaml:"http"`
+	Wiki   WikiPolicy   `yaml:"wiki"`
+	Search SearchPolicy `yaml:"search"`
 }
 
 type FSPolicy struct {
@@ -66,6 +67,12 @@ type HTTPPolicy struct {
 // inherently low-risk; the only knob is DenyTools (e.g. operator wants to
 // allow wiki_search but block wiki_get to avoid huge article payloads).
 type WikiPolicy struct {
+	DenyTools []string `yaml:"deny_tools"`
+}
+
+// SearchPolicy gates the keyless web-search MCP server (DuckDuckGo). Like wiki,
+// search is read-only network egress; the only knob is DenyTools.
+type SearchPolicy struct {
 	DenyTools []string `yaml:"deny_tools"`
 }
 

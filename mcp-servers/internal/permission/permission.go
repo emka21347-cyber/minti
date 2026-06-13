@@ -52,6 +52,8 @@ func Check(p *policy.Policy, server, tool string, args map[string]any) (Decision
 		return checkHTTP(&p.MCP.HTTP, tool, args)
 	case "minti-mcp-wiki":
 		return checkWiki(&p.MCP.Wiki, tool, args)
+	case "minti-mcp-search":
+		return checkSearch(&p.MCP.Search, tool, args)
 	}
 	return Allow, ""
 }
@@ -149,6 +151,13 @@ func checkHTTP(p *policy.HTTPPolicy, tool string, args map[string]any) (Decision
 func checkWiki(p *policy.WikiPolicy, tool string, args map[string]any) (Decision, string) {
 	if denied(p.DenyTools, tool) {
 		return Deny, "tool '" + tool + "' is on wiki.deny_tools"
+	}
+	return Allow, ""
+}
+
+func checkSearch(p *policy.SearchPolicy, tool string, args map[string]any) (Decision, string) {
+	if denied(p.DenyTools, tool) {
+		return Deny, "tool '" + tool + "' is on search.deny_tools"
 	}
 	return Allow, ""
 }
