@@ -11,7 +11,7 @@ RUNTIME_BIN   := $(RUNTIME_DIR)/minti-runtime
 RUNTIME_BIN_LINUX := $(RUNTIME_DIR)/dist/minti-runtime-linux-amd64
 
 MCP_DIR       := mcp-servers
-MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http mcp-wiki
+MCP_SERVERS   := mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http mcp-wiki mcp-search
 MCP_BINS      := $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix $(EXE),$(MCP_SERVERS)))
 MCP_BINS_LINUX:= $(addprefix $(MCP_DIR)/dist/minti-,$(addsuffix -linux-amd64,$(MCP_SERVERS)))
 

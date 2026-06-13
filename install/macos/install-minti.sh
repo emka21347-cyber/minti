@@ -211,6 +211,21 @@ if [[ $EUID -eq 0 ]]; then
         ok "$INSTALL_DIR/$name (quarantine xattr stripped)"
     done
 
+    # MCP tool servers → the binaries_dir the daemon's agent loop spawns from
+    # (cland.yaml.darwin.example: /usr/local/libexec/minti/mcp).
+    mcp_dir="/usr/local/libexec/minti/mcp"
+    if [ -d "$SCRIPT_DIR/bin/mcp" ]; then
+        install -d -m 0755 "$mcp_dir"
+        mcp_n=0
+        for f in "$SCRIPT_DIR/bin/mcp/"minti-mcp-*; do
+            [ -e "$f" ] || continue
+            install -m 0755 "$f" "$mcp_dir/$(basename "$f")"
+            xattr -d com.apple.quarantine "$mcp_dir/$(basename "$f")" 2>/dev/null || true
+            mcp_n=$((mcp_n+1))
+        done
+        ok "$mcp_n MCP tool servers -> $mcp_dir"
+    fi
+
     # ---------- 3. state dirs ----------
     info "Preparing state dirs"
     for sub in cland runtime workspace; do

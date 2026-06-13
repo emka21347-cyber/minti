@@ -86,6 +86,28 @@ try {
     Remove-Item env:GOOS, env:GOARCH -ErrorAction SilentlyContinue
 }
 
+# ---------- 1b. cross-compile the MCP tool servers ----------
+# The native cland agent loop (M1) spawns these over stdio for tool execution.
+$mcpServers = @('mcp-fs','mcp-shell','mcp-recon','mcp-pkg','mcp-http','mcp-wiki','mcp-search')
+$mcpSrcDir  = Join-Path $repoRoot 'mcp-servers'
+$mcpOutDir  = Join-Path $outDir 'mcp'
+New-Item -ItemType Directory -Path $mcpOutDir -Force | Out-Null
+$env:GOOS = 'windows'; $env:GOARCH = 'amd64'
+try {
+    Push-Location $mcpSrcDir
+    try {
+        foreach ($s in $mcpServers) {
+            Write-Step "Cross-compiling minti-$s.exe"
+            $out = Join-Path $mcpOutDir "minti-$s.exe"
+            & $GoExe build -trimpath -ldflags "-X main.version=$Version -s -w" -o $out "./cmd/$s"
+            if ($LASTEXITCODE -ne 0) { Write-Err "go build minti-$s failed (exit $LASTEXITCODE)"; exit 1 }
+            Write-Ok "$out"
+        }
+    } finally { Pop-Location }
+} finally {
+    Remove-Item env:GOOS, env:GOARCH -ErrorAction SilentlyContinue
+}
+
 # ---------- 2. NSSM (shared cache with the M5-B builder) ----------
 
 New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
@@ -136,6 +158,12 @@ New-Item -ItemType Directory -Path (Join-Path $stageRoot 'configs') -Force | Out
 
 foreach ($b in $builds) {
     Copy-Item -Path (Join-Path $outDir $b.Name) -Destination (Join-Path $stageRoot "bin\$($b.Name)") -Force
+}
+# Stage the MCP tool servers under bin\mcp\ (installer copies them to the
+# mcp.binaries_dir the daemon's agent loop spawns from).
+New-Item -ItemType Directory -Path (Join-Path $stageRoot 'bin\mcp') -Force | Out-Null
+Get-ChildItem -Path $mcpOutDir -Filter 'minti-mcp-*.exe' | ForEach-Object {
+    Copy-Item -Path $_.FullName -Destination (Join-Path $stageRoot "bin\mcp\$($_.Name)") -Force
 }
 Copy-Item -Path $nssmExe -Destination (Join-Path $stageRoot 'bin\nssm.exe') -Force
 Set-Content -Encoding ASCII -Path (Join-Path $stageRoot 'bin\nssm.sha256') -Value $nssmExeHash

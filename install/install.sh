@@ -261,18 +261,18 @@ else
     warn "Build it with: cd runtime-adapter && go build -o minti-runtime ./cmd/minti-runtime"
 fi
 
-# ---------- MCP servers (M2) ----------
-# MCP servers are NOT daemons — they're spawned over stdio by agent clients
-# (opencode in M3, mcptest for local validation now). Just stage the binaries
-# under /opt/minti/mcp/ and let agents pick them up by path.
+# ---------- MCP servers ----------
+# MCP servers are NOT daemons — they're spawned over stdio by the native cland
+# agent loop (M1) for tool execution. Just stage the binaries under
+# /opt/minti/mcp/ (cland.yaml mcp.binaries_dir) and the daemon picks them up.
 mcp_dir="/opt/minti/mcp"
 install -d -m 0755 /opt/minti
 install -d -m 0755 "${mcp_dir}"
 
 mcp_status="skipped (binaries not built)"
 mcp_count=0
-mcp_total=5
-declare -a mcp_servers=(mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http)
+mcp_total=7
+declare -a mcp_servers=(mcp-fs mcp-shell mcp-recon mcp-pkg mcp-http mcp-wiki mcp-search)
 
 for s in "${mcp_servers[@]}"; do
     bin=""
@@ -498,80 +498,26 @@ else
     warn "Without it, addon packs (minti-pack-hermes3, etc) will fail at postinst."
 fi
 
-# ---------- opencode (M3 — bundled agent client) ----------
-# Per PRD §6.3 + P1, opencode (sst, MIT) is the bundled default terminal agent.
-# We use upstream's official install script (a single shell-piped command) and
-# symlink the resulting binary into /usr/local/bin so all users find it on PATH.
-opencode_status="skipped"
+# ---------- opencode (optional — no longer the default agent) ----------
+# The native cland agent loop (M1) is the default agent: it drives MCP tools
+# from the dashboard with per-call approval. opencode (sst, MIT) is now an
+# OPTIONAL terminal client only — we no longer pipe its remote installer during
+# a MINTI install (one less third-party curl|bash). Power users who want it run
+# `curl -fsSL https://opencode.ai/install | bash` themselves and point it at the
+# local runtime using the config template we still drop below.
+opencode_status="not installed (optional; the native dashboard agent is the default)"
 if command -v opencode >/dev/null 2>&1; then
-    opencode_status="already installed ($(opencode --version 2>&1 | head -1 || echo 'version-unknown'))"
-    ok "opencode already installed."
-else
-    info "Installing opencode via the official install script..."
-    # The official installer is non-interactive when piped. It writes to
-    # ~/.opencode/bin (HOME of the executing user); run it as $SUDO_USER if
-    # available so the binary lands in the human's home rather than /root.
-    real_user="${SUDO_USER:-root}"
-    if [[ "${real_user}" != "root" ]]; then
-        real_home="$(getent passwd "${real_user}" | cut -d: -f6)"
-        if su - "${real_user}" -c 'curl -fsSL https://opencode.ai/install | bash' >/dev/null 2>&1; then
-            ok "opencode install script completed (as ${real_user})."
-        else
-            warn "opencode install script failed under ${real_user}; trying as root..."
-            real_user="root"; real_home="/root"
-            curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || true
-        fi
-    else
-        real_home="/root"
-        curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || true
-    fi
-
-    # Symlink wherever the binary actually landed so PATH always finds it.
-    oc_bin=""
-    for candidate in \
-        "${real_home}/.opencode/bin/opencode" \
-        "${real_home}/.local/bin/opencode" \
-        "/root/.opencode/bin/opencode" \
-        "/usr/local/bin/opencode"; do
-        if [[ -x "${candidate}" ]]; then
-            oc_bin="${candidate}"
-            break
-        fi
-    done
-    if [[ -n "${oc_bin}" ]]; then
-        if [[ "${oc_bin}" != "/usr/local/bin/opencode" ]]; then
-            ln -sf "${oc_bin}" /usr/local/bin/opencode
-        fi
-        opencode_status="installed at ${oc_bin} (symlinked to /usr/local/bin)"
-        ok "${opencode_status}"
-    else
-        opencode_status="install failed — try manually: curl -fsSL https://opencode.ai/install | bash"
-        warn "opencode install: binary not found after install. ${opencode_status}"
-    fi
+    opencode_status="present ($(opencode --version 2>&1 | head -1 || echo 'version-unknown')) — optional add-on"
+    ok "opencode present (optional add-on)."
 fi
 
-# Install the MINTI opencode config template + drop into the invoking user's
-# home if they don't already have one. Preserves user-modified configs.
+# Always drop the MINTI opencode config template so an optional opencode install
+# can point at the local runtime; we do NOT auto-create a per-user config.
 oc_template_src="${repo_root}/install/opencode.config.example.json"
 oc_template_dst="/etc/minti/opencode.config.example.json"
 if [[ -f "${oc_template_src}" ]]; then
     install -m 0644 "${oc_template_src}" "${oc_template_dst}"
-    ok "Wrote opencode config template to ${oc_template_dst}"
-
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        user_home="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
-        if [[ -n "${user_home}" && -d "${user_home}" ]]; then
-            user_oc_dir="${user_home}/.config/opencode"
-            user_oc="${user_oc_dir}/opencode.json"
-            if [[ ! -f "${user_oc}" ]]; then
-                install -d -m 0755 -o "${SUDO_USER}" -g "${SUDO_USER}" "${user_oc_dir}"
-                install -m 0644 -o "${SUDO_USER}" -g "${SUDO_USER}" "${oc_template_dst}" "${user_oc}"
-                ok "Installed default opencode config for ${SUDO_USER} at ${user_oc}"
-            else
-                ok "Preserving existing ${user_oc} for ${SUDO_USER}"
-            fi
-        fi
-    fi
+    ok "Wrote opencode config template to ${oc_template_dst} (for the optional opencode client)"
 fi
 
 # ---------- minti-pack-recon (M2; optional — only if built locally) ----------
@@ -621,8 +567,10 @@ else
 fi
 printf "  3. Smoke-test an MCP tool:\n"
 printf "       mcptest --yes --arg path=\$HOME %s/minti-mcp-fs list_dir\n" "${mcp_dir}"
-printf "  4. Launch the bundled agent (configure with /connect on first run):\n"
-printf "       opencode\n"
+printf "  4. Use the agent from the dashboard (the default): open the workspace,\n"
+printf "     toggle %sagent%s in chat — reads run automatically, changes need your approval.\n" "${bold}" "${reset}"
+printf "     (Optional terminal client: install opencode yourself and point it at\n"
+printf "      %s using %s.)\n" "${oc_template_dst:-/etc/minti/opencode.config.example.json}" "the dropped config template"
 printf "  5. Install optional %saddon packs%s (Debian/Ubuntu metapackages; auto-fetch\n" "${bold}" "${reset}"
 printf "     content via minti-pack-fetch — set MINTI_PACK_NO_FETCH=1 to defer):\n"
 printf "       sudo apt install ./dist/minti-pack-hermes3_*.deb       # ~5 GB, agent-tuned chat\n"

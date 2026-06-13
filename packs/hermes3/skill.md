@@ -45,8 +45,9 @@ curl -sN -X POST http://127.0.0.1:7780/v1/chat/completions \
   }'
 ```
 
-Or, with the bundled `opencode` client, select **MINTI Runtime (local) → Hermes
-3 8B** from the model picker.
+Or, from the dashboard, toggle **agent** in chat to let the node use this model
+with tools. (With the optional `opencode` client, select **MINTI Runtime
+(local) → Hermes 3 8B** from the model picker.)
 
 ## Default-model behaviour
 

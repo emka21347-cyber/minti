@@ -68,6 +68,14 @@ for arch in arm64 amd64; do
         -ldflags "-X main.version=${VERSION} -s -w" -o "${stage}/bin/minti-workspace" ./cmd/minti-workspace )
     ok "3 binaries (darwin-${arch})"
 
+    info "cross-compiling MCP servers for darwin-${arch}"
+    mkdir -p "${stage}/bin/mcp"
+    for s in fs shell recon http pkg wiki search; do
+        ( cd "${repo_root}/mcp-servers" && GOOS=darwin GOARCH="${arch}" "${GO}" build -trimpath \
+            -ldflags "-X main.version=${VERSION} -s -w" -o "${stage}/bin/mcp/minti-mcp-${s}" "./cmd/mcp-${s}" )
+    done
+    ok "7 MCP servers (darwin-${arch})"
+
     cp "${script_dir}/install-minti.sh"   "${stage}/install-minti.sh"
     cp "${script_dir}/uninstall-minti.sh" "${stage}/uninstall-minti.sh"
     cp "${script_dir}/README.md"          "${stage}/README.md"

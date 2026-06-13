@@ -269,11 +269,12 @@ Write-Ok 'services quiesced'
 # ---------- 4. create dirs ----------
 
 Write-Step 'Creating directories'
-foreach ($d in @($dirCland, $dirRuntime, $dirWorkspace, $stCland, $stRuntime, $stWorkspace,
+$dirMcp = Join-Path $InstallRoot 'mcp'   # matches cland.yaml mcp.binaries_dir
+foreach ($d in @($dirCland, $dirRuntime, $dirWorkspace, $dirMcp, $stCland, $stRuntime, $stWorkspace,
         (Join-Path $stCland 'logs'), (Join-Path $stRuntime 'logs'), (Join-Path $stWorkspace 'logs'))) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
 }
-Write-Ok "$InstallRoot\{cland,runtime,workspace}"
+Write-Ok "$InstallRoot\{cland,runtime,workspace,mcp}"
 Write-Ok "$StateRoot\{cland,runtime,workspace} (+logs)"
 
 # ---------- 5. stage binaries + per-service NSSM copies ----------
@@ -295,6 +296,19 @@ Write-Ok "minti-cland.exe     -> $exeCland"
 Write-Ok "minti-runtime.exe   -> $exeRuntime"
 Write-Ok "minti-workspace.exe -> $exeWorkspace"
 Write-Ok 'nssm.exe            -> each service dir'
+
+# MCP tool servers — the daemon's agent loop spawns these from mcp.binaries_dir.
+$bundledMcpDir = Join-Path $ZipRoot 'bin\mcp'
+if (Test-Path $bundledMcpDir) {
+    $mcpCopied = 0
+    Get-ChildItem -Path $bundledMcpDir -Filter 'minti-mcp-*.exe' | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination (Join-Path $dirMcp $_.Name) -Force
+        $mcpCopied++
+    }
+    Write-Ok "$mcpCopied MCP tool servers -> $dirMcp"
+} else {
+    Write-Warn "no bundled MCP servers found at $bundledMcpDir — the agent's tools will be unavailable"
+}
 
 # ---------- 6. stage configs (preserve existing on re-install) ----------
 

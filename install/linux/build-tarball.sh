@@ -49,7 +49,7 @@ build cland           ./cmd/minti-cland      minti-cland
 build runtime-adapter ./cmd/minti-runtime    minti-runtime
 build workspace       ./cmd/minti-workspace  minti-workspace
 build pack-manager    ./cmd/minti-pack-fetch minti-pack-fetch
-for s in fs shell recon http pkg; do
+for s in fs shell recon http pkg wiki search; do
     build mcp-servers "./cmd/mcp-${s}" "minti-mcp-${s}"
 done
 build mcp-servers ./cmd/mcptest mcptest
