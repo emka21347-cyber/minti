@@ -96,6 +96,8 @@ func main() {
 			err = cmdChat(os.Args[2:])
 		case "agent":
 			err = cmdAgent(os.Args[2:])
+		case "agent-approve":
+			err = cmdAgentApprove(os.Args[2:])
 		case "scribe":
 			err = cmdScribe(os.Args[2:])
 		case "pin-scribe":
@@ -710,6 +712,29 @@ func runDaemon(args []string) error {
 		"binaries_dir", cfg.MCP.BinariesDir,
 		"max_token_lifetime", cfg.MCP.MaxTokenLifetime,
 		"endpoints", "/mcp/execute")
+
+	// ----- M1: native agent loop -----
+	// The loop runs in the daemon (it spawns MCP servers for tool execution and
+	// only the cland unit has network egress). Model turns route through our own
+	// /v1/messages over loopback (reusing the router); read tools auto-run,
+	// change tools are gated by the browser via /agent/approve.
+	agentHost := cfg.Listen.Address
+	if agentHost == "" || agentHost == "0.0.0.0" || agentHost == "::" {
+		agentHost = "127.0.0.1"
+	}
+	agentCli, err := transport.NewClient(transport.ClientOpts{
+		MemberID:    id.MemberID,
+		KeyProvider: kp,
+		Pin:         clan.ClanCertPin,
+		Timeout:     30 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("agent client: %w", err)
+	}
+	agentSvc := newAgentService(toolExecutor, agentCli,
+		fmt.Sprintf("https://%s:%d", agentHost, cfg.Listen.Port), "hermes3:8b", log)
+	agentSvc.register(srv)
+	log.Info("agent enabled", "endpoints", "/agent/chat /agent/approve")
 
 	// ----- Phase H-1: key rotation 2PC -----
 	proposeStore := keyrotate.NewProposeStore(nil)

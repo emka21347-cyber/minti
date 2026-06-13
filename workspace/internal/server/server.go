@@ -103,6 +103,56 @@ func New(webFS fs.FS) *Server {
 		}
 	})
 
+	// POST /api/agent/chat — STREAMING NDJSON. Relays `minti-cland agent --json`
+	// (a thin client to the daemon's in-process loop). Change tools surface
+	// `approval_required` events the SPA resolves via /api/agent/approve.
+	mux.HandleFunc("POST /api/agent/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Message  string `json:"message"`
+			Model    string `json:"model"`
+			ReadOnly bool   `json:"read_only"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Message) == "" {
+			httpError(w, http.StatusBadRequest, errors.New("message required"))
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			httpError(w, http.StatusInternalServerError, errors.New("streaming unsupported"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		if err := clan.AgentChatStream(r.Context(), req.Message, req.Model, req.ReadOnly, w, flusher.Flush); err != nil {
+			// 200 already sent — surface the failure as a trailing error event.
+			ev, _ := json.Marshal(map[string]string{"type": "error", "text": "agent error: " + err.Error()})
+			_, _ = w.Write(append(ev, '\n'))
+			flusher.Flush()
+		}
+	})
+
+	// POST /api/agent/approve — resolve a pending change-tool approval.
+	mux.HandleFunc("POST /api/agent/approve", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ReqID   string `json:"req_id"`
+			CallID  string `json:"call_id"`
+			Approve bool   `json:"approve"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ReqID == "" || req.CallID == "" {
+			httpError(w, http.StatusBadRequest, errors.New("req_id and call_id required"))
+			return
+		}
+		if err := clan.AgentApprove(r.Context(), req.ReqID, req.CallID, req.Approve); err != nil {
+			httpError(w, http.StatusBadGateway, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
 	// GET /api/peers — live registry (members + candidates), relayed verbatim.
 	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)

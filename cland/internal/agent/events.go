@@ -26,6 +26,7 @@ const (
 // fields are omitted from the wire form.
 type Event struct {
 	Type    EventType       `json:"type"`
+	ReqID   string          `json:"req_id,omitempty"`   // agent request id (set by the daemon HTTP path; correlates POST /agent/approve)
 	Text    string          `json:"text,omitempty"`     // text / final / error message
 	CallID  string          `json:"call_id,omitempty"`  // correlates tool_call→running→result
 	Tool    string          `json:"tool,omitempty"`     // wire name "namespace.tool"

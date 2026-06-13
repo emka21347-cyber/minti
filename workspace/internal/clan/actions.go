@@ -56,6 +56,81 @@ func Join(ctx context.Context, req JoinRequest) error {
 // request context — a client disconnect cancels it and exec.CommandContext
 // kills the CLI (no orphaned inference). On failure the CLI's stderr is
 // returned (caller already sent 200 headers, so it surfaces inline).
+// AgentChatStream relays `minti-cland agent --json` stdout (the NDJSON agent
+// event stream) to w. Mirrors ChatStream: the agent loop runs in the cland
+// daemon (which spawns MCP servers + has network egress — the workspace unit is
+// loopback-only); this shelled CLI is a thin client to the daemon. Change tools
+// surface `approval_required` events the SPA resolves via POST /api/agent/approve.
+func AgentChatStream(ctx context.Context, message, model string, readOnly bool, w io.Writer, flush func()) error {
+	bin, err := exec.LookPath("minti-cland")
+	if err != nil {
+		return errors.New("minti-cland not installed")
+	}
+	args := []string{"agent", "--json"}
+	if strings.TrimSpace(model) != "" {
+		args = append(args, "--model", model)
+	}
+	if readOnly {
+		args = append(args, "--read-only")
+	}
+	args = append(args, message) // flags-before-positional (Go flag parsing)
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := stdout.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				_ = cmd.Process.Kill()
+				break
+			}
+			flush()
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	}
+	return nil
+}
+
+// AgentApprove resolves a single pending agent approval by shelling
+// `minti-cland agent-approve` (which POSTs to the daemon's /agent/approve).
+func AgentApprove(ctx context.Context, reqID, callID string, approve bool) error {
+	bin, err := exec.LookPath("minti-cland")
+	if err != nil {
+		return errors.New("minti-cland not installed")
+	}
+	args := []string{"agent-approve", "--req", reqID, "--call", callID}
+	if !approve {
+		args = append(args, "--deny")
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	}
+	return nil
+}
+
 func ChatStream(ctx context.Context, message, model string, w io.Writer, flush func()) error {
 	bin, err := exec.LookPath("minti-cland")
 	if err != nil {

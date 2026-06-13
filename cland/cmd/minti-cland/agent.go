@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -17,28 +16,23 @@ import (
 	"github.com/minti/cland/internal/agent"
 	"github.com/minti/cland/internal/config"
 	"github.com/minti/cland/internal/crypto"
-	"github.com/minti/cland/internal/toolexec"
 	"github.com/minti/cland/internal/transport"
 )
 
-// cmdAgent runs the native Hermes-agent loop (M1) for a single prompt. The loop
-// offers the node's read-only MCP tools to the model, executes the tools it
-// calls locally, feeds results back, and prints the exchange. Model turns route
-// through the local daemon's /v1/messages (the tool-capable runtime endpoint);
-// tools execute in-process here via toolexec.
-//
-// M1 S1: read-only. Change tools (fs.write_text, shell.exec, pkg.install) are
-// refused until the approval gate (S3).
+// cmdAgent is a thin client to the daemon's native agent loop. It POSTs the
+// prompt to /agent/chat, streams the NDJSON event stream, and renders it. The
+// loop itself runs in the daemon (which spawns MCP servers + has network egress);
+// this command holds no tools. In interactive (non-JSON) mode it prompts the
+// terminal for Approve/Deny on each change tool and POSTs /agent/approve; in
+// --json mode it just streams (approvals come via `agent-approve`, e.g. from the
+// workspace dashboard).
 func cmdAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
 	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
 	model := fs.String("model", "hermes3:8b", "model to drive the agent")
-	system := fs.String("system", defaultAgentSystem, "system prompt")
-	mcpDir := fs.String("mcp-dir", "", "directory holding the minti-mcp-* binaries (default: config binaries_dir)")
-	maxIters := fs.Int("max-iters", agent.DefaultMaxIters, "max tool-call rounds")
-	readOnly := fs.Bool("read-only", false, "offer only read tools; change tools are refused (no approval prompt)")
-	jsonOut := fs.Bool("json", false, "emit the raw NDJSON event stream instead of a rendered transcript")
+	readOnly := fs.Bool("read-only", false, "offer only read tools; change tools are refused")
+	jsonOut := fs.Bool("json", false, "stream the raw NDJSON events (no interactive approval prompts)")
 	_ = fs.Parse(args)
 
 	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
@@ -47,40 +41,97 @@ func cmdAgent(args []string) error {
 		prompt = strings.TrimSpace(string(b))
 	}
 	if prompt == "" {
-		return errors.New("usage: minti-cland agent [--model m] [--mcp-dir d] <prompt>")
+		return errors.New("usage: minti-cland agent [--model m] [--read-only] [--json] <prompt>")
 	}
 
-	cfg, id, store, err := loadCommon(*cfgPath, *stateDirFlag)
+	cli, base, err := agentClient(*cfgPath, *stateDirFlag)
 	if err != nil {
 		return err
+	}
+
+	body, _ := json.Marshal(map[string]any{"message": prompt, "model": *model, "read_only": *readOnly})
+	resp, err := cli.Post(base+"/agent/chat", "application/json", body)
+	if err != nil {
+		return fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("agent failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	render := &consoleEmitter{w: os.Stdout}
+	stdin := bufio.NewReader(os.Stdin)
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		if *jsonOut {
+			fmt.Printf("%s\n", line)
+		}
+		var ev agent.Event
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if !*jsonOut {
+			_ = render.Emit(ev)
+		}
+		// Interactive approval: only when attended (non-JSON) and not read-only.
+		if ev.Type == agent.EventApprovalRequired && !*jsonOut && !*readOnly {
+			approve := promptYesNo(stdin)
+			if err := postApprove(cli, base, ev.ReqID, ev.CallID, approve); err != nil {
+				fmt.Fprintf(os.Stderr, "approve failed: %v\n", err)
+			}
+		}
+	}
+	return sc.Err()
+}
+
+// cmdAgentApprove resolves a single pending approval out-of-band — used by the
+// workspace dashboard relay (and available for scripting). It POSTs to the
+// daemon's /agent/approve.
+func cmdAgentApprove(args []string) error {
+	fs := flag.NewFlagSet("agent-approve", flag.ExitOnError)
+	cfgPath := fs.String("config", config.DefaultConfigPath(), "path to cland config")
+	stateDirFlag := fs.String("state", "", "state directory (overrides config)")
+	reqID := fs.String("req", "", "agent request id (from the approval_required event)")
+	callID := fs.String("call", "", "tool call id (from the approval_required event)")
+	deny := fs.Bool("deny", false, "deny instead of approve")
+	_ = fs.Parse(args)
+	if *reqID == "" || *callID == "" {
+		return errors.New("usage: minti-cland agent-approve --req <id> --call <id> [--deny]")
+	}
+	cli, base, err := agentClient(*cfgPath, *stateDirFlag)
+	if err != nil {
+		return err
+	}
+	return postApprove(cli, base, *reqID, *callID, !*deny)
+}
+
+// agentClient builds the loopback HMAC client + base URL the agent commands use
+// to reach the local daemon. Mirrors cmdChat's transport setup.
+func agentClient(cfgPath, stateDir string) (*transport.Client, string, error) {
+	cfg, id, store, err := loadCommon(cfgPath, stateDir)
+	if err != nil {
+		return nil, "", err
 	}
 	clan, err := store.LoadClan()
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	if !clan.IsActive() {
-		return errors.New("unaffiliated — join a Clan first")
+		return nil, "", errors.New("unaffiliated — join a Clan first")
 	}
-
-	binDir := *mcpDir
-	if binDir == "" {
-		binDir = cfg.MCP.BinariesDir
-	}
-	if binDir == "" {
-		return errors.New("no MCP binaries dir (set --mcp-dir or config mcp.binaries_dir)")
-	}
-
-	// Model transport: a long-timeout HMAC client to the local daemon, mirroring
-	// cmdChat. The daemon's router proxies /v1/messages to the orchestrator's
-	// runtime (self-route on a solo node).
 	host := cfg.Listen.Address
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	base := fmt.Sprintf("https://%s:%d", host, cfg.Listen.Port)
 	kp, err := crypto.NewSimpleKeyProvider(clan.ClanKey())
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	cli, err := transport.NewClient(transport.ClientOpts{
 		MemberID:    id.MemberID,
@@ -89,90 +140,47 @@ func cmdAgent(args []string) error {
 		Timeout:     30 * time.Minute,
 	})
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-
-	executor := &toolexec.Executor{BinariesDir: binDir}
-
-	ctx := context.Background()
-	dbgLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	// Default: offer all tools, gate change tools behind an interactive prompt.
-	// --read-only: offer read tools only and wire no approver (change tools refused).
-	var include func(wire string) bool
-	var approver agent.Approver
-	if *readOnly {
-		include = func(wire string) bool { return agent.Classify(wire) == agent.ClassRead }
-	} else {
-		approver = &consoleApprover{in: bufio.NewReader(os.Stdin), out: os.Stderr}
-	}
-	catalog, err := agent.BuildCatalog(ctx, executor, include, dbgLog)
-	if err != nil {
-		return fmt.Errorf("build tool catalog: %w", err)
-	}
-
-	tc := catalog.Tools()
-	names := make([]string, len(tc))
-	for i, t := range tc {
-		names[i] = t.Name
-	}
-	mode := "read+change (change tools require approval)"
-	if *readOnly {
-		mode = "read-only"
-	}
-	fmt.Fprintf(os.Stderr, "agent: %d tools available [%s]: %s\n", len(tc), mode, strings.Join(names, ", "))
-
-	var emitter agent.Emitter
-	if *jsonOut {
-		emitter = agent.NewNDJSONEmitter(os.Stdout)
-	} else {
-		emitter = &consoleEmitter{w: os.Stdout}
-	}
-
-	loop := &agent.Loop{
-		Caller:   &anthropicCaller{cli: cli, base: base, model: *model},
-		Executor: executor,
-		Catalog:  catalog,
-		Emitter:  emitter,
-		Approver: approver,
-		System:   *system,
-		MaxIters: *maxIters,
-	}
-	return loop.Run(ctx, prompt)
+	return cli, fmt.Sprintf("https://%s:%d", host, cfg.Listen.Port), nil
 }
 
+func postApprove(cli *transport.Client, base, reqID, callID string, approve bool) error {
+	body, _ := json.Marshal(map[string]any{"req_id": reqID, "call_id": callID, "approve": approve})
+	resp, err := cli.Post(base+"/agent/approve", "application/json", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("approve failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+func promptYesNo(in *bufio.Reader) bool {
+	fmt.Fprint(os.Stderr, "  approve? [y/N]: ")
+	line, err := in.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// defaultAgentSystem is the system prompt the daemon's agent loop uses.
 const defaultAgentSystem = "You are a MINTI node agent. You can call tools to inspect the local filesystem " +
 	"and the web (read), and to change the system — write files, run shell commands, install packages. " +
 	"Change actions require the user to approve each call, so use them only when needed and with care. " +
 	"Use tools when they help; otherwise answer directly. When you have enough information, give a " +
 	"concise final answer with no tool call."
 
-// ---------- approval: interactive stdin prompt ----------
-
-// consoleApprover implements agent.Approver by prompting the local user on
-// stderr and reading y/N from stdin. Used by the CLI; the daemon's HTTP path
-// (M1 S4) uses a channel-based approver instead. Fail-closed: anything other
-// than an explicit yes is a deny, and a read error denies.
-type consoleApprover struct {
-	in  *bufio.Reader
-	out io.Writer
-}
-
-func (a *consoleApprover) Await(_ context.Context, req agent.ApprovalRequest) (agent.Decision, error) {
-	fmt.Fprintf(a.out, "\n⚠ APPROVAL REQUIRED — %s [%s]\n  args: %s\n  approve? [y/N]: ",
-		req.Tool, req.Class, truncate(string(req.Input), 300))
-	line, err := a.in.ReadString('\n')
-	if err != nil {
-		return agent.DecisionDeny, err
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return agent.DecisionApprove, nil
-	default:
-		return agent.DecisionDeny, nil
-	}
-}
-
-// ---------- model caller: Anthropic /v1/messages, non-streaming ----------
+// ---------- model caller: Anthropic /v1/messages, non-streaming (used by the daemon loop) ----------
 
 type anthropicCaller struct {
 	cli   *transport.Client
@@ -253,7 +261,7 @@ func (c *anthropicCaller) Call(_ context.Context, system string, transcript []ag
 
 	resp, err := c.cli.Post(c.base+"/v1/messages", "application/json", body)
 	if err != nil {
-		return agent.ModelReply{}, fmt.Errorf("call local daemon: %w (is minti-cland running?)", err)
+		return agent.ModelReply{}, fmt.Errorf("call runtime: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
@@ -306,6 +314,8 @@ func (e *consoleEmitter) Emit(ev agent.Event) error {
 		fmt.Fprintf(e.w, "\n%s\n", ev.Text)
 	case agent.EventToolCall:
 		fmt.Fprintf(e.w, "  → %s [%s] %s\n", ev.Tool, ev.Class, truncate(string(ev.Input), 160))
+	case agent.EventApprovalRequired:
+		fmt.Fprintf(e.w, "  ⚠ APPROVAL REQUIRED — %s [%s] %s\n", ev.Tool, ev.Class, truncate(string(ev.Input), 200))
 	case agent.EventToolRunning:
 		// quiet — tool_result follows
 	case agent.EventToolResult:
