@@ -18,7 +18,7 @@
   }
   html,body{ margin:0; background:#060606; color:#eee; font-family:var(--mono); }
   body{ display:flex; justify-content:center; padding:24px 12px; min-height:100vh; box-sizing:border-box; }
-  #app{ width:100%; max-width:920px; }
+  #app{ width:100%; max-width:920px; display:flex; flex-direction:column; }
   .ti{ font-style:normal; }
   input,select,button{ font-family:var(--mono); }
   @keyframes mpulse{ 0%{ r:var(--r0); opacity:.7 } 100%{ r:var(--r1); opacity:0 } }
@@ -31,14 +31,14 @@
 </head>
 <body>
 <div id="app">
-<div id="mw" style="position:relative; background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5;">
+<div id="mw" style="position:relative; background:var(--bg); border:1px solid #2a2a2a; border-radius:10px; overflow:hidden; color:#eee; font-size:13px; line-height:1.5; flex:1; min-height:0; display:flex; flex-direction:column;">
   <div style="display:flex; align-items:center; gap:10px; padding:8px 13px; background:#141414; border-bottom:1px solid #242424;">
     <span style="color:var(--cyan);">&#9626;</span><span style="color:var(--mint); font-weight:500; letter-spacing:2px;">MINTI</span><span style="color:#5a5a5a;">workspace</span><span style="flex:1;"></span>
     <span id="hdr" style="color:#6a6a6a; font-size:11px;">connecting&hellip;</span>
     <span style="color:var(--mint); font-size:11px;"><i class="ti ti-lock" aria-hidden="true" style="vertical-align:-2px;"></i></span>
   </div>
 
-  <div style="display:flex; min-height:440px;">
+  <div style="display:flex; flex:1; min-height:0;">
     <div style="width:46px; background:#0d0d0d; border-right:1px solid #1e1e1e; padding:8px 0; display:flex; flex-direction:column; align-items:center; gap:4px;">
       <div class="nav" data-p="home" title="Deck" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; background:#16201e; color:var(--mint);"><i class="ti ti-layout-grid" aria-hidden="true" style="font-size:18px;"></i></div>
       <div class="nav" data-p="knocks" title="Knocks" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:7px; cursor:pointer; color:var(--grey); position:relative;"><i class="ti ti-door-enter" aria-hidden="true" style="font-size:18px;"></i><span id="kb" style="position:absolute; top:-2px; right:-2px; background:var(--mint); color:#003a22; font-size:10px; min-width:14px; height:14px; line-height:14px; border-radius:7px;">2</span></div>
@@ -47,8 +47,8 @@
       <div style="flex:1;"></div><div style="width:8px; height:8px; border-radius:50%; background:var(--mint);"></div>
     </div>
 
-    <div style="flex:1; min-width:0;">
-      <div class="pane" id="p-home" style="display:flex; height:440px;">
+    <div style="flex:1; min-width:0; min-height:0;">
+      <div class="pane" id="p-home" style="display:flex; height:100%;">
         <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid #1c1c1c;">
           <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px;">
             <i class="ti ti-message-2" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">chat</span><span id="chat-orch" style="color:#4a4a4a; font-size:11px;">&rarr; clan</span>
@@ -84,19 +84,19 @@
         </div>
       </div>
 
-      <div class="pane" id="p-knocks" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
+      <div class="pane" id="p-knocks" style="display:none; padding:14px 16px; height:100%; overflow-y:auto;">
         <div style="font-size:14px; margin-bottom:10px;">Pending knocks</div><div id="klist"></div>
         <div style="margin-top:12px; border-top:1px solid #1c1c1c; padding-top:11px;">
           <button id="mint" style="background:var(--mint); color:#003a22; border:none; padding:7px 13px; border-radius:6px; cursor:pointer; font-size:12px;"><i class="ti ti-plus" aria-hidden="true" style="vertical-align:-2px;"></i> mint connection token</button>
           <div id="ibox" style="display:none; margin-top:9px; background:var(--surface); border:1px solid var(--line); border-radius:7px; padding:10px; font-size:11px;"><div style="color:var(--grey); margin-bottom:5px;">expires in <span style="color:var(--mint);">4:58</span></div><code style="display:block; color:var(--cyan); background:var(--bg); padding:7px; border-radius:5px; font-size:10.5px; word-break:break-all;">minti-cland join --token aF3k&hellip;9Zx --address 192.168.56.101 --pin sha256:7e2b&hellip;</code></div>
         </div>
       </div>
-      <div class="pane" id="p-cook" style="display:none; padding:14px 16px; height:440px; overflow-y:auto;">
+      <div class="pane" id="p-cook" style="display:none; padding:14px 16px; height:100%; overflow-y:auto;">
         <div style="font-size:14px;">Cookbook</div><div style="color:#5a5a5a; font-size:11px; margin-bottom:11px;">model packs &mdash; pull to this node via Ollama</div><div id="clist"></div>
       </div>
 
       <!-- Memory M5: the Clan Memory graph (spec §13) -->
-      <div class="pane" id="p-memory" style="display:none; height:440px; flex-direction:column;">
+      <div class="pane" id="p-memory" style="display:none; height:100%; flex-direction:column;">
         <div style="padding:9px 12px; border-bottom:1px solid #161616; display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
           <i class="ti ti-topology-star-3" aria-hidden="true" style="color:var(--cyan); font-size:15px;"></i><span style="font-size:13px;">memory</span>
           <span id="mem-src" style="color:#5a5a5a; font-size:11px;">loading&hellip;</span>
