@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/minti/cland/internal/agent"
 	"github.com/minti/cland/internal/auditlog"
@@ -66,6 +67,18 @@ func (s *agentService) getCatalog(ctx context.Context) (*agent.Catalog, error) {
 		s.catalog, s.catalogErr = agent.BuildCatalog(ctx, s.executor, nil, s.log)
 	})
 	return s.catalog, s.catalogErr
+}
+
+// agentSystemPrompt is the base prompt plus the node's current date/time — the
+// model has no clock, so without this it guesses the date from its training era.
+// For anything else time-sensitive (recent events, "latest" versions) the prompt
+// already steers it to web_search.
+func agentSystemPrompt() string {
+	now := time.Now()
+	return defaultAgentSystem +
+		" The current date is " + now.Format("Monday, 2006-01-02") +
+		" (local time " + now.Format("15:04 MST") +
+		"). For anything more recent than your training data, use web_search rather than guessing."
 }
 
 type agentChatRequest struct {
@@ -127,7 +140,7 @@ func (s *agentService) handleChat(w http.ResponseWriter, r *http.Request) {
 		Catalog:  catalog,
 		Emitter:  emitter,
 		Approver: approver,
-		System:   defaultAgentSystem,
+		System:   agentSystemPrompt(),
 		Log:      s.log,
 	}
 	if err := loop.Run(r.Context(), req.Message); err != nil {
