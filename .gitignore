@@ -63,3 +63,16 @@ cland/windows/nssm/.cache/
 *.tmp
 *.bak
 status/minti-status-linux
+
+# Archived tree: gitignore patterns with slashes are root-anchored, so the
+# pre-rework rules stopped matching after the archive/ move. Re-anchor them.
+archive/cland/cland
+archive/runtime-adapter/minti-runtime
+archive/pack-manager/minti-pack-fetch
+archive/status/minti-status
+archive/status/minti-status-linux
+archive/status/docs/*.gif
+archive/runtime-adapter/dist/
+archive/apt-repo/db/
+archive/apt-repo/conf/distributions.local
+archive/cland/windows/nssm/.cache/
