@@ -78,20 +78,35 @@ These are not aspirations; they are enforced in review and in code.
 
 ## Hardware
 
-The target is deliberately the hardware nobody else serves.
+The target is deliberately the hardware nobody else serves. These are the
+machines it actually runs on, read from each one's own firmware rather than
+from memory:
 
-| Machine | Status |
-|---|---|
-| Lenovo Y-series, 2017–18 | Works |
-| MacBook 2013–2015 | Prime target; needs EFI boot and the `wl` driver |
-| MacBook 2016–2017 | Should work |
-| MacBook 2018–2020 (T2) | Stretch; SSD and keyboard sit behind the T2 |
-| Apple Silicon | Will not work — different architecture |
+| Star | Machine | CPU | RAM | Storage |
+|---|---|---|---|---|
+| HADAR | Lenovo Legion Y530-15ICH (2018) | i7-8750H, 12 threads | 16 GB | 1 TB spinning disk |
+| ALGORAB | MacBook Pro 13" Retina (Mid 2014) | i5-4278U | 8 GB | 128 GB SSD |
+| CEBALRAI | MacBook Air 13" (Early 2014) | i5-4260U | 8 GB | 256 GB SSD |
+| ATRIA | MacBook Air 13" (Early 2015) | i5-5250U | 4 GB | 256 GB SSD |
 
-The floor is 4 GB of RAM and a GPU old enough that modern runtimes decline
-it. That constraint is the point: comparable projects that route AI across
-machines require recent GPUs, which excludes exactly the hardware this is
-for.
+Model years come from each machine's Apple model identifier plus its CPU part
+number, because one identifier covers two years — `MacBookPro11,1` is Late
+2013 or Mid 2014, and the i5-4278U is the 2014 part.
+
+**The floor is ATRIA**: 4 GB of RAM, no model resident, nothing to serve
+with. Whether a machine like that can hold a real role in the pipeline is the
+question the project is written to answer, and it is allowed to come back no.
+
+**The other floor is the GPU.** HADAR's GeForce GTX 1050 works perfectly and
+the modern runtime refused it anyway, demanding a driver newer than the
+distribution ships — the card had to be given a driver from the vendor's own
+repository before it would serve a single token. It then went from 16.1 to
+36.2 tokens per second. That is the constraint in one story: the hardware is
+capable, and the software ecosystem has quietly moved on without it.
+
+Untested, in rough order of likelihood: MacBooks from 2016–2017, then the
+2018–2020 T2 machines, where the SSD and keyboard sit behind the T2 chip.
+Apple Silicon will not work; it is a different architecture.
 
 ---
 
