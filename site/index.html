@@ -7,50 +7,215 @@
 <meta name="description" content="A household's old laptops joined into one trust group, with no server in the middle. A bootable Debian desktop and a LAN daemon that routes AI work to whichever machine can do it.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='7' height='7' fill='%235fd7ff'/%3E%3Crect x='8' y='8' width='7' height='7' fill='%235fd7ff'/%3E%3C/svg%3E">
 <style>
-:root { --bg:#060606; --mint:#00d787; --cyan:#5fd7ff; --grey:#8a8a8a; --value:#eeeeee; }
+/* The page wears the fourteen palettes the ISO ships, in order, one every six
+   seconds. The colours are generated from
+   iso/config/includes.chroot/usr/share/minti/palettes/*.env — the same values
+   the desktop, greeter, splash and installer use, not a reinterpretation.
+   Each keyframe set drives a concrete property on the few elements that use
+   that colour; animating inherited custom properties on :root instead cost a
+   2014 MacBook as much as the dashboard this project is busy making cheaper. */
+:root { --cycle: 84s; }
 * { box-sizing:border-box; margin:0; padding:0; }
 html, body { height:100%; }
 body {
-  background:var(--bg); color:var(--value);
+  background:#060606; color:#e9e6da;
   font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace;
   font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased;
   display:flex; align-items:center; justify-content:center; padding:24px;
 }
-main { max-width:480px; text-align:center; }
-.mark { display:inline-block; margin-bottom:28px; }
+/* A static scanline wash. No animation: this project has measured what a
+   permanently moving pixel costs a 2014 laptop, so the texture holds still. */
+body::after {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:9;
+  background:repeating-linear-gradient(180deg,
+    rgba(0,0,0,.04) 0 1px, transparent 1px 3px);
+}
+
+/* ---- the terminal ----
+   Sized the way a terminal opens: 80 columns by 24 rows. The width is in `ch`
+   and the height in `em` so it stays 80x24 whatever the reader's font size is,
+   rather than being a pixel box that only looks right on one screen.
+   Two columns: the mark holds the left one on its own, every word lives in
+   the right one. */
+.term { width:100%; max-width:80ch; min-height:38.4em;
+        display:grid; grid-template-columns:auto 1fr; column-gap:26px;
+        /* align-content centres the whole two-column block inside the 24 rows;
+           align-items keeps the mark level with the first line of text rather
+           than floating it to the middle of its own column */
+        align-content:center; align-items:start; }
+
+.mark { color:#5fd7ff; }
 .mark svg { display:block; }
-h1 { color:var(--mint); font-size:18px; letter-spacing:.5em; text-indent:.5em; font-weight:700; margin-bottom:6px; }
-.tag { color:var(--grey); font-size:12px; margin-bottom:32px; }
-p  { color:var(--value); margin-bottom:14px; }
-.dim { color:var(--grey); font-size:12px; }
-.rule { color:#1e2a2a; margin:24px 0; user-select:none; }
-a { color:var(--cyan); text-decoration:none; }
+h1 { color:#00d787; font-size:18px; letter-spacing:.5em; font-weight:700; margin-bottom:6px; }
+.tag { color:#6d756f; font-size:12px; margin-bottom:18px; }
+/* Blocksatz: the paragraphs are set justified, the way a terminal that has
+   run its text through `fmt` sets them. */
+p  { margin-bottom:14px; text-align:justify; text-align-last:left; }
+.dim { color:#6d756f; font-size:12px; }
+/* The headline is short and sits at the top of the column; Blocksatz would
+   tear its one or two lines apart, so it stays flush left. */
+.lede { text-align:left; }
+.rule { color:#1d2320; margin:16px 0; user-select:none; }
+a { color:#5fd7ff; text-decoration:none; }
 a:hover { text-decoration:underline; }
+/* A terminal cursor after the last line. The blink sits on the wrapper and
+   the palette colour on the block itself, so the two animations don't
+   collide on one element. */
+.blink { display:inline-block; animation:blink 1.1s steps(1) infinite; }
+.cur { display:inline-block; width:.55em; height:1.05em;
+       background:#00d787; vertical-align:text-bottom; margin-left:4px; }
+@keyframes blink { 0%,55%{opacity:1} 56%,100%{opacity:0} }
+
+body { animation:pal-body var(--cycle) steps(1) infinite; }
+h1 { animation:pal-nom var(--cycle) steps(1) infinite; }
+.tag,.dim { animation:pal-ghost var(--cycle) steps(1) infinite; }
+.mark,a { animation:pal-data var(--cycle) steps(1) infinite; }
+.rule { animation:pal-line var(--cycle) steps(1) infinite; }
+.cur { animation:pal-cur var(--cycle) steps(1) infinite; }
+@keyframes pal-body{
+  0.000%{background-color:#060606;color:#e9e6da}
+  7.143%{background-color:#000000;color:#ffd9a8}
+  14.286%{background-color:#0a0806;color:#f0e6d2}
+  21.429%{background-color:#0b0714;color:#efeaff}
+  28.571%{background-color:#000000;color:#fff8e0}
+  35.714%{background-color:#0d0507;color:#ffe4e9}
+  42.857%{background-color:#030a09;color:#e0f5f2}
+  50.000%{background-color:#040905;color:#e8f7ea}
+  57.143%{background-color:#05060f;color:#e6e8ff}
+  64.286%{background-color:#0a0612;color:#ede4ff}
+  71.429%{background-color:#0d0509;color:#ffeaf5}
+  78.571%{background-color:#000000;color:#f5f5f5}
+  85.714%{background-color:#efeaff;color:#0b0714}
+  92.857%{background-color:#ffffff;color:#000000}
+  100%{background-color:#060606;color:#e9e6da}
+}
+@keyframes pal-nom{
+  0.000%{color:#00d787}
+  7.143%{color:#ff9900}
+  14.286%{color:#ffb000}
+  21.429%{color:#a6ff00}
+  28.571%{color:#ffdd00}
+  35.714%{color:#ff4d6d}
+  42.857%{color:#19c2b0}
+  50.000%{color:#4ade5c}
+  57.143%{color:#5c6cff}
+  64.286%{color:#9b5cff}
+  71.429%{color:#ff8ec9}
+  78.571%{color:#e8e8e8}
+  85.714%{color:#3f5c0a}
+  92.857%{color:#000080}
+  100%{color:#00d787}
+}
+@keyframes pal-ghost{
+  0.000%{color:#6d756f}
+  7.143%{color:#8a6a40}
+  14.286%{color:#7a7060}
+  21.429%{color:#776f8a}
+  28.571%{color:#8a8266}
+  35.714%{color:#8a6b72}
+  42.857%{color:#5f8180}
+  50.000%{color:#6a8c72}
+  57.143%{color:#6b708f}
+  64.286%{color:#7a6b96}
+  71.429%{color:#96707f}
+  78.571%{color:#6e6e6e}
+  85.714%{color:#5a5470}
+  92.857%{color:#5c5c5c}
+  100%{color:#6d756f}
+}
+@keyframes pal-data{
+  0.000%{color:#5fd7ff}
+  7.143%{color:#00e050}
+  14.286%{color:#ffd98a}
+  21.429%{color:#8d6bff}
+  28.571%{color:#ffef8a}
+  35.714%{color:#ffa8b8}
+  42.857%{color:#a6ece5}
+  50.000%{color:#e0c07a}
+  57.143%{color:#b4bcff}
+  64.286%{color:#d9b3ff}
+  71.429%{color:#ffd9ec}
+  78.571%{color:#b0b0b0}
+  85.714%{color:#4a2b8f}
+  92.857%{color:#0000c0}
+  100%{color:#5fd7ff}
+}
+@keyframes pal-line{
+  0.000%{color:#1d2320}
+  7.143%{color:#241505}
+  14.286%{color:#241c0d}
+  21.429%{color:#1d1830}
+  28.571%{color:#2b2710}
+  35.714%{color:#2a1216}
+  42.857%{color:#0d2825}
+  50.000%{color:#1c3722}
+  57.143%{color:#141833}
+  64.286%{color:#2a1f45}
+  71.429%{color:#33192a}
+  78.571%{color:#1f1f1f}
+  85.714%{color:#9b93b0}
+  92.857%{color:#808080}
+  100%{color:#1d2320}
+}
+@keyframes pal-cur{
+  0.000%{background-color:#00d787}
+  7.143%{background-color:#ff9900}
+  14.286%{background-color:#ffb000}
+  21.429%{background-color:#a6ff00}
+  28.571%{background-color:#ffdd00}
+  35.714%{background-color:#ff4d6d}
+  42.857%{background-color:#19c2b0}
+  50.000%{background-color:#4ade5c}
+  57.143%{background-color:#5c6cff}
+  64.286%{background-color:#9b5cff}
+  71.429%{background-color:#ff8ec9}
+  78.571%{background-color:#e8e8e8}
+  85.714%{background-color:#3f5c0a}
+  92.857%{background-color:#000080}
+  100%{background-color:#00d787}
+}
+
+/* A visitor who has asked their system for less motion gets palette A, still. */
+@media (prefers-reduced-motion: reduce){
+  body, h1, .tag, .dim, .mark, a, .rule, .cur, .blink { animation:none !important; }
+}
+@media (max-width:640px){
+  body { padding:16px; }
+  /* two columns need width; below this the mark simply sits above the text */
+  .term { min-height:0; grid-template-columns:1fr; }
+  h1 { letter-spacing:.34em; }
+  p { text-align:left; }          /* Blocksatz needs room; a phone has none */
+  .mark { margin-bottom:18px; }
+  .mark svg { width:72px; height:72px; }
+}
 </style>
 </head>
 <body>
-<main>
+<div class="term">
   <span class="mark" aria-hidden="true">
-    <svg width="72" height="72" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
-      <rect x="4"  y="4"  width="32" height="32" fill="#5fd7ff"/>
-      <rect x="36" y="36" width="32" height="32" fill="#5fd7ff"/>
+    <svg width="112" height="112" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+      <rect x="4"  y="4"  width="32" height="32" fill="currentColor"/>
+      <rect x="36" y="36" width="32" height="32" fill="currentColor"/>
     </svg>
   </span>
-  <h1>MINTI</h1>
-  <div class="tag">Open agents. Open weights. Clan-aware.</div>
-  <p>Old laptops, joined into one trust group, with no server in the middle.</p>
-  <p class="dim">A bootable Debian desktop you flash onto a machine that is
-  otherwise on its way to being e-waste. Each one is given a name from the
-  sky, finds the others on the network, proves who it is, and passes work to
-  whichever machine can actually do it. A 4&nbsp;GB laptop with no models on
-  it can ask a question and have the strongest machine in the house answer.
-  Nothing leaves for a company; there is no account and no cloud endpoint in
-  the path.</p>
-  <p class="dim">It is a research vehicle first, and the question is narrow
-  enough to fail: can a household's old machines form a trust group with no
-  server, and can the weakest of them earn a real role in it?</p>
-  <div class="rule">────────────</div>
-  <p class="dim"><a href="https://github.com/emka21347-cyber/minti">github.com/emka21347-cyber/minti</a></p>
-</main>
+  <div class="content">
+    <h1>MINTI</h1>
+    <div class="tag">Open agents. Open weights. Clan-aware.</div>
+    <p class="lede">Old laptops, joined into one trust group, with no server in the middle.</p>
+    <p class="dim">A bootable Debian desktop you flash onto a machine that is
+    otherwise on its way to being e-waste. Each one is given a name from the
+    sky, finds the others on the network, proves who it is, and passes work to
+    whichever machine can actually do it. A 4&nbsp;GB laptop with no models on
+    it can ask a question and have the strongest machine in the house answer.
+    Nothing leaves for a company; there is no account and no cloud endpoint in
+    the path.</p>
+    <p class="dim">It is a research vehicle first, and the question is narrow
+    enough to fail: can a household's old machines form a trust group with no
+    server, and can the weakest of them earn a real role in it?</p>
+    <div class="rule">────────────</div>
+    <p class="dim"><a href="https://github.com/emka21347-cyber/minti">github.com/emka21347-cyber/minti</a><span class="blink"><span class="cur"></span></span></p>
+  </div>
+</div>
+<script src="palette.js" defer></script>
 </body>
 </html>
