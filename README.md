@@ -57,7 +57,7 @@ the house your GPU should not mean lending it your filesystem. *(Adopted
 September 2026 and implemented on the working line — this is one of the
 things not yet in the snapshot below.)*
 
-The daemon that does all of this is `cland`. The desktop it ships on is a
+The daemon that does all of this is [`cland`](src/cland/). The desktop it ships on is a
 live-build Debian image with XFCE, an installer, and a dashboard that
 refuses to display a number it did not measure.
 
@@ -114,18 +114,12 @@ sent you the link, that is the honest position.
 
 | Path | What it is |
 |---|---|
-| [`PRD.md`](PRD.md) | Product requirements — every locked decision, each with the reason it was taken |
-| [`STATUS.md`](STATUS.md) | Session log, newest first |
-| [`archive/cland/`](archive/cland/) | The clan daemon — identity, discovery, membership, election, routing, transport |
-| [`archive/`](archive/) | The rest of the Go stack: runtime adapter, workspace, MCP servers |
-| [`iso/`](iso/) | The live-build image: package lists, theming, installer, boot |
-| [`docs/`](docs/) | Plans, measurements and handovers |
-| [`CHANGELOG.md`](CHANGELOG.md) | Flashable versions |
-
-> **`archive/` is a misleading name and it is being fixed.** It is not dead
-> code — it holds the daemon and every other Go binary that ships on the
-> image. The directory was renamed during a reorganisation and the rename
-> back has not reached this branch yet.
+| [`src/cland/`](src/cland/) | The clan daemon — identity, discovery, membership, election, routing, transport. 101 Go files, 23,925 lines, 8,619 of them tests |
+| [`src/runtime-adapter/`](src/runtime-adapter/) | The shim in front of the local model runtime |
+| [`src/workspace/`](src/workspace/) | The dashboard the desktop shows |
+| [`src/mcp-servers/`](src/mcp-servers/) | Tools the resident agent is allowed to call |
+| [`site/`](site/) | The project page |
+| [`CHANGELOG.md`](CHANGELOG.md) | Released builds |
 
 ---
 
